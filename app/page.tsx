@@ -16,11 +16,14 @@ type Filing = {
   owner_roles?: string[];
   owner_names?: string[];
 };
+
 type Suggestion = { ticker: string; cik: string; name: string };
+
+type FormFilter = "all" | "8-K" | "10-Q" | "10-K" | "S1" | "sec16";
 
 const SAMPLE = ["AAPL", "MSFT", "AMZN"];
 
-// --- helpers ---
+// ---------- helpers ----------
 function resolveCIKLocalOrNumeric(value: string): string | null {
   const v = value.trim().toUpperCase();
   if (!v) return null;
@@ -43,40 +46,37 @@ async function resolveCIK(value: string): Promise<string | null> {
   }
 }
 
-type FormFilter = "all" | "8-K" | "10-Q" | "10-K" | "S1" | "sec16";
-
+// ========== Page ==========
 export default function Home() {
-  const [input, setInput] = useState("");
+  // search & results
+  const [input, setInput] = useState<string>("");
   const [resolvedCik, setResolvedCik] = useState<string>("");
   const [filings, setFilings] = useState<Filing[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Reporting person filters
-  const [ownerQuery, setOwnerQuery] = useState("");
-  const [relDirector, setRelDirector] = useState(false);
-  const [relOfficer, setRelOfficer] = useState(false);
-  const [relTenPct, setRelTenPct] = useState(false);
-
-  // Form filter dropdown + max history
+  // filters
   const [formFilter, setFormFilter] = useState<FormFilter>("all");
-  const [maxCount, setMaxCount] = useState<number>(300);
-
-  // NEW: Date range
-  const [startDate, setStartDate] = useState<string>(""); // "YYYY-MM-DD"
+  const [ownerQuery, setOwnerQuery] = useState<string>("");
+  const [relDirector, setRelDirector] = useState<boolean>(false);
+  const [relOfficer, setRelOfficer] = useState<boolean>(false);
+  const [relTenPct, setRelTenPct] = useState<boolean>(false);
+  const [startDate, setStartDate] = useState<string>(""); // YYYY-MM-DD
   const [endDate, setEndDate] = useState<string>("");
+  const [maxCount, setMaxCount] = useState<number>(300);
 
   // suggestions
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [openSuggest, setOpenSuggest] = useState(false);
-  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [openSuggest, setOpenSuggest] = useState<boolean>(false);
+  const [suggestLoading, setSuggestLoading] = useState<boolean>(false);
   const [activeIndex, setActiveIndex] = useState<number>(-1);
 
+  // refs
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Close suggestions when clicking outside
+  // close suggest on outside click
   useEffect(() => {
     function onDocMouseDown(e: MouseEvent) {
       const root = rootRef.current;
@@ -90,7 +90,7 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
 
-  // fetch suggestions
+  // fetch suggestions from /api/suggest
   useEffect(() => {
     const q = input.trim();
     if (q.length < 1) {
@@ -107,7 +107,6 @@ export default function Home() {
         if (abortRef.current) abortRef.current.abort();
         const ac = new AbortController();
         abortRef.current = ac;
-
         setSuggestLoading(true);
         setOpenSuggest(true);
 
@@ -171,41 +170,44 @@ export default function Home() {
     }
   }
 
+  // ---------- main fetch with safe params ----------
   async function fetchFilingsFor(value: string) {
-  const cik = await resolveCIK(value);
-  if (!cik) {
-    setError("Ticker/CIK not recognized. Try any ticker (TSLA, V, BRK.B), a company name (TESLA), or a 10-digit CIK.");
-    return;
-  }
-  setResolvedCik(cik);
-  setLoading(true);
-  setError(null);
-  try {
-    // 🔽 REPLACE THIS FETCH LINE
-    const params = new URLSearchParams();
-    params.set("max", String(maxCount));
-    if (startDate) params.set("from", startDate);
-    if (endDate)   params.set("to", endDate);
+    const cik = await resolveCIK(value);
+    if (!cik) {
+      setError("Ticker/CIK not recognized. Try any ticker (TSLA, V, BRK.B), a company name (TESLA), or a 10-digit CIK.");
+      return;
+    }
+    setResolvedCik(cik);
+    setLoading(true);
+    setError(null);
+    try {
+      // Build safe query params
+      const params = new URLSearchParams();
+      params.set("max", String(maxCount));
 
-    const r = await fetch(`/api/filings/${cik}?${params.toString()}`, { cache: "no-store" });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j?.error || "Failed to fetch filings");
-    setFilings(j);
-  } catch (e: any) {
-    setError(e?.message || "Error fetching filings");
-  } finally {
-    setLoading(false);
-  }
-}
+      // Add dates only if valid ISO
+      const ISO = /^\d{4}-\d{2}-\d{2}$/;
+      if (startDate && ISO.test(startDate)) params.set("from", startDate);
+      if (endDate && ISO.test(endDate)) params.set("to", endDate);
 
-  // apply filters (form filter + owner name/roles + date range)
+      // Ensure CIK path is digits-only, 10 chars
+      const cikSafe = (cik || "").replace(/\D/g, "").padStart(10, "0");
+
+      const r = await fetch(`/api/filings/${cikSafe}?${params.toString()}`, { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Failed to fetch filings");
+      setFilings(j);
+    } catch (e: any) {
+      setError(e?.message || "Error fetching filings");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ---------- derived (client-side) filters ----------
   const filtered = useMemo(() => {
     const oq = ownerQuery.trim().toLowerCase();
     const wantsRel = relDirector || relOfficer || relTenPct;
-
-    // normalize date strings ("YYYY-MM-DD"); SEC dates are already like this
-    const start = startDate || "";
-    const end = endDate || "";
 
     return filings.filter((f) => {
       const form = (f.form || "").toUpperCase();
@@ -213,25 +215,21 @@ export default function Home() {
       const is8K = form.startsWith("8-K");
       const is161 = form === "3" || form === "4" || form === "5";
 
-      // Date range filter (string compare works for YYYY-MM-DD)
-      if (start && f.filed_at < start) return false;
-      if (end && f.filed_at > end) return false;
-
-      // Form filter dropdown
+      // Form dropdown filter (client-side too; server already did date)
       if (formFilter === "8-K" && !is8K) return false;
       if (formFilter === "10-Q" && form !== "10-Q") return false;
       if (formFilter === "10-K" && form !== "10-K") return false;
       if (formFilter === "S1" && !isS1) return false;
       if (formFilter === "sec16" && !is161) return false;
 
-      // Reporting person name filter (applies to 3/4/5)
+      // Owner name match (only meaningful for 3/4/5)
       if (oq) {
         if (!is161) return false;
         const names = (f.owner_names || []).join(" ").toLowerCase();
         if (!names.includes(oq)) return false;
       }
 
-      // Relationship filters (only for 3/4/5)
+      // Owner roles
       if (wantsRel) {
         if (!is161) return false;
         const roles = (f.owner_roles || []).map((x) => x.toLowerCase());
@@ -242,8 +240,9 @@ export default function Home() {
 
       return true;
     });
-  }, [filings, ownerQuery, relDirector, relOfficer, relTenPct, formFilter, startDate, endDate]);
+  }, [filings, ownerQuery, relDirector, relOfficer, relTenPct, formFilter]);
 
+  // ---------- render ----------
   return (
     <main className="min-h-screen">
       <div className="mx-auto max-w-5xl px-4 py-10">
@@ -314,7 +313,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* Controls: form filter, owner query/roles, date range, max results */}
+        {/* Controls: form filter, owner name/roles, date range, max results */}
         <div className="w-full max-w-3xl mb-5">
           <div className="rounded-xl border bg-white p-3 flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm">
@@ -415,17 +414,18 @@ export default function Home() {
 
         {error && <div className="text-red-600 text-sm mb-4">Error: {error}</div>}
 
-        {/* Empty state if nothing searched yet */}
+        {/* Empty state */}
         {!loading && filings.length === 0 && !error && (
           <div className="text-sm text-gray-600 border rounded-xl bg-white p-6">
             <div className="font-medium mb-1">Start by searching a ticker/company/CIK.</div>
             <div>
-              Tip: pick a <em>Form Filter</em>, set a <em>Date Range</em>, or switch to “Only Forms 3/4/5” to search by
+              Tip: choose a <em>Form Filter</em>, set a <em>Date Range</em>, or switch to “Only Forms 3/4/5” to search by
               <em> Reporting Person</em>.
             </div>
           </div>
         )}
 
+        {/* Results */}
         <section className="grid md:grid-cols-2 gap-4 mt-4">
           {filtered.map((f, i) => (
             <article key={i} className="rounded-2xl bg-white p-4 shadow-sm border">
@@ -453,17 +453,20 @@ export default function Home() {
                   ))}
                 </div>
               )}
+
               {typeof f.amount_usd === "number" && (
                 <div className="mt-2 text-sm">
                   <span className="font-semibold">Largest amount: </span>
                   ${(f.amount_usd / 1_000_000).toFixed(1)}M
                 </div>
               )}
+
               {f.items && f.items.length > 0 && (
                 <div className="mt-3 text-xs text-gray-600">
                   <span className="font-semibold">Items:</span> {f.items.join(", ")}
                 </div>
               )}
+
               <div className="mt-4 flex gap-3">
                 <a className="text-sm underline" href={f.source_url} target="_blank">Filing index</a>
                 {f.primary_doc_url && (
@@ -474,10 +477,12 @@ export default function Home() {
           ))}
         </section>
 
-                <footer className="mt-10 border-t pt-4 text-center text-xs text-gray-500">
+        {/* Footer disclosure */}
+        <footer className="mt-10 border-t pt-4 text-center text-xs text-gray-500">
           This site republishes SEC EDGAR filings and BLS data.
-        </footer>
 
+          herevna.io
+        </footer>
       </div>
     </main>
   );
