@@ -16,7 +16,7 @@ type Filing = {
 };
 type Suggestion = { ticker: string; cik: string; name: string };
 
-const SAMPLE = ["AAPL", "MSFT", "AMZN"];
+const SAMPLE = ["AAPL", "MSFT", "AMZN", "TSLA", "NVDA"];
 
 function resolveCIKLocalOrNumeric(value: string): string | null {
   const v = value.trim().toUpperCase();
@@ -222,7 +222,7 @@ export default function Home() {
               className="rounded-xl bg-black text-white px-4 py-2 disabled:opacity-60"
               disabled={loading}
             >
-              {loading ? "Fetching…" : "Fetch"}
+              {loading ? "Getting…" : "Get"}
             </button>
           </div>
 
@@ -270,10 +270,11 @@ export default function Home() {
                 setInput(t);
                 fetchFilingsFor(t);
               }}
-              className="text-xs rounded-full bg-gray-100 px-3 py-1"
+              className="text-xs rounded-full bg-gray-100 px-3 py-1 disabled:opacity-60"
+              disabled={loading && input === t}
               title={(tickerMap as Record<string, string>)[t] || ""}
             >
-              {t}
+              {loading && input === t ? "Getting…" : t}
             </button>
           ))}
         </div>
@@ -300,7 +301,7 @@ export default function Home() {
         {error && <div className="text-red-600 text-sm mb-4">Error: {error}</div>}
 
         <section className="grid md:grid-cols-2 gap-4">
-          {filings.map((f, i) => (
+          {filtered.map((f, i) => (
             <article key={i} className="rounded-2xl bg-white p-4 shadow-sm border">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-500">{f.filed_at}</span>
@@ -310,7 +311,10 @@ export default function Home() {
               {f.badges && f.badges.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {f.badges.map((b, idx) => (
-                    <span key={idx} className="text-[11px] rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 px-2 py-0.5">
+                    <span
+                      key={idx}
+                      className="text-[11px] rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 px-2 py-0.5"
+                    >
                       {b}
                     </span>
                   ))}
@@ -328,9 +332,13 @@ export default function Home() {
                 </div>
               )}
               <div className="mt-4 flex gap-3">
-                <a className="text-sm underline" href={f.source_url} target="_blank">Filing index</a>
+                <a className="text-sm underline" href={f.source_url} target="_blank">
+                  Filing index
+                </a>
                 {f.primary_doc_url && (
-                  <a className="text-sm underline" href={f.primary_doc_url} target="_blank">Primary document</a>
+                  <a className="text-sm underline" href={f.primary_doc_url} target="_blank">
+                    Primary document
+                  </a>
                 )}
               </div>
             </article>
