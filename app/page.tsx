@@ -195,7 +195,7 @@ export default function Home() {
     <main className="min-h-screen">
       <div className="mx-auto max-w-5xl px-4 py-10">
         <header className="mb-6">
-          <h1 className="text-2xl font-semibold">EDGAR Filing Cards</h1>
+          <h1 className="text-2xl font-semibold">EDGAR Tracker</h1>
           <p className="text-gray-600 text-sm mt-1">
             Enter a <strong>Ticker</strong> (AAPL/BRK.B), <strong>Company</strong> (TESLA), or <strong>CIK</strong> (10 digits).
           </p>
