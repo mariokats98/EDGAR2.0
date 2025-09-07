@@ -172,25 +172,31 @@ export default function Home() {
   }
 
   async function fetchFilingsFor(value: string) {
-    const cik = await resolveCIK(value);
-    if (!cik) {
-      setError("Ticker/CIK not recognized. Try any ticker (TSLA, V, BRK.B), a company name (TESLA), or a 10-digit CIK.");
-      return;
-    }
-    setResolvedCik(cik);
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await fetch(`/api/filings/${cik}?max=${encodeURIComponent(String(maxCount))}`, { cache: "no-store" });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || "Failed to fetch filings");
-      setFilings(j);
-    } catch (e: any) {
-      setError(e?.message || "Error fetching filings");
-    } finally {
-      setLoading(false);
-    }
+  const cik = await resolveCIK(value);
+  if (!cik) {
+    setError("Ticker/CIK not recognized. Try any ticker (TSLA, V, BRK.B), a company name (TESLA), or a 10-digit CIK.");
+    return;
   }
+  setResolvedCik(cik);
+  setLoading(true);
+  setError(null);
+  try {
+    // 🔽 REPLACE THIS FETCH LINE
+    const params = new URLSearchParams();
+    params.set("max", String(maxCount));
+    if (startDate) params.set("from", startDate);
+    if (endDate)   params.set("to", endDate);
+
+    const r = await fetch(`/api/filings/${cik}?${params.toString()}`, { cache: "no-store" });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j?.error || "Failed to fetch filings");
+    setFilings(j);
+  } catch (e: any) {
+    setError(e?.message || "Error fetching filings");
+  } finally {
+    setLoading(false);
+  }
+}
 
   // apply filters (form filter + owner name/roles + date range)
   const filtered = useMemo(() => {
