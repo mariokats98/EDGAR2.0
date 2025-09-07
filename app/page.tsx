@@ -7,7 +7,7 @@ export default function HomePage() {
       {/* Hero */}
       <section className="mx-auto max-w-6xl px-4 pt-16 pb-10 text-center">
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight text-gray-900">
-          Simplifying <span className="text-blue-600">Economic</span>, <span className="text-emerald-600">Market</span> &amp;  <span className="text-red-600">Regulatory Data</span>
+          Simplifying <span className="text-blue-600">Economic</span>, <span className="text-emerald-600">Market</span> &amp;  <span className="text-red-600">Regulatory</span> Data
         </h1>
         <p className="mt-3 text-gray-600 max-w-2xl mx-auto">
           Your one place to search filings, explore economic data, and scan market insights.
