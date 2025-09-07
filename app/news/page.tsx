@@ -1,4 +1,3 @@
-// app/news/page.tsx
 "use client";
 import { useEffect, useMemo, useState } from "react";
 
@@ -16,8 +15,6 @@ type NewsItem = {
 export default function NewsPage() {
   const [tickers, setTickers] = useState("");
   const [q, setQ] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
   const [per, setPer] = useState(10);
   const [page, setPage] = useState(1);
 
@@ -30,10 +27,8 @@ export default function NewsPage() {
     setLoading(true); setError(null);
     try {
       const qs = new URLSearchParams({ page: String(p), per: String(per) });
-      if (tickers) qs.set("tickers", tickers);   // e.g. AAPL,MSFT
+      if (tickers) qs.set("tickers", tickers);
       if (q) qs.set("q", q);
-      if (from) qs.set("from", from);            // YYYY-MM-DD
-      if (to) qs.set("to", to);
       const r = await fetch(`/api/news?${qs.toString()}`, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || "News fetch failed");
@@ -48,7 +43,7 @@ export default function NewsPage() {
     }
   }
 
-  useEffect(() => { load(1); }, []); // initial fetch
+  useEffect(() => { load(1); }, []);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / per)), [total, per]);
 
@@ -56,7 +51,7 @@ export default function NewsPage() {
     <div className="mx-auto max-w-6xl px-4 py-10">
       <h1 className="text-2xl font-semibold mb-2">Market News</h1>
       <p className="text-gray-600 text-sm mb-4">
-        Filter by ticker, date, and keyword. Sources: Alpha Vantage, Finnhub, FMP (depending on which keys you added).
+        Filter by ticker or keyword. Powered by Alpha Vantage.
       </p>
 
       <div className="flex flex-wrap items-end gap-3 mb-4">
@@ -66,15 +61,7 @@ export default function NewsPage() {
         </label>
         <label className="flex-1 min-w-[220px]">
           <div className="text-xs text-gray-600">Keyword</div>
-          <input value={q} onChange={(e)=>setQ(e.target.value)} className="border rounded-md px-3 py-2 w-full" placeholder="earnings, guidance, AI…" />
-        </label>
-        <label>
-          <div className="text-xs text-gray-600">From</div>
-          <input value={from} onChange={(e)=>setFrom(e.target.value)} className="border rounded-md px-3 py-2" placeholder="2025-01-01" />
-        </label>
-        <label>
-          <div className="text-xs text-gray-600">To</div>
-          <input value={to} onChange={(e)=>setTo(e.target.value)} className="border rounded-md px-3 py-2" placeholder="2025-12-31" />
+          <input value={q} onChange={(e)=>setQ(e.target.value)} className="border rounded-md px-3 py-2 w-full" placeholder="earnings, AI, guidance…" />
         </label>
         <label>
           <div className="text-xs text-gray-600">Per page</div>
@@ -95,7 +82,7 @@ export default function NewsPage() {
         {items.map((n) => (
           <article key={n.id} className="rounded-xl bg-white p-4 shadow-sm border">
             <div className="text-xs text-gray-500 flex items-center justify-between">
-              <span>{n.source || "Source"}</span>
+              <span>{n.source || "Alpha Vantage"}</span>
               <span>{new Date(n.published_at).toLocaleString()}</span>
             </div>
             <h3 className="mt-2 font-medium">
@@ -122,4 +109,3 @@ export default function NewsPage() {
     </div>
   );
 }
-
