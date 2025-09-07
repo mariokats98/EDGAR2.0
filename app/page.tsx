@@ -4,9 +4,9 @@ import tickerMap from "./data/tickerMap.json";
 
 type Filing = {
   cik: string;
-  company: string;
+  company?: string;
   form: string;
-  filed_at: string;
+  filed_at: string; // "YYYY-MM-DD"
   title: string;
   source_url: string;
   primary_doc_url?: string | null;
@@ -14,10 +14,11 @@ type Filing = {
   badges?: string[];
   amount_usd?: number | null;
   owner_roles?: string[];
+  owner_names?: string[];
 };
 type Suggestion = { ticker: string; cik: string; name: string };
 
-const SAMPLE = ["AAPL", "MSFT", "AMZN", "NVDA", "NFLX"];
+const SAMPLE = ["AAPL", "MSFT", "AMZN"];
 
 // --- helpers ---
 function resolveCIKLocalOrNumeric(value: string): string | null {
@@ -29,7 +30,6 @@ function resolveCIKLocalOrNumeric(value: string): string | null {
   if (localMap[v]) return localMap[v];
   return null;
 }
-
 async function resolveCIK(value: string): Promise<string | null> {
   const local = resolveCIKLocalOrNumeric(value);
   if (local) return local;
@@ -43,27 +43,28 @@ async function resolveCIK(value: string): Promise<string | null> {
   }
 }
 
+type FormFilter = "all" | "8-K" | "10-Q" | "10-K" | "S1" | "sec16";
+
 export default function Home() {
   const [input, setInput] = useState("");
-  const [resolvedCik, setResolvedCik] = useState<string>("0000320193");
+  const [resolvedCik, setResolvedCik] = useState<string>("");
   const [filings, setFilings] = useState<Filing[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Relationship filters (for Forms 3/4/5)
+  // Reporting person filters
+  const [ownerQuery, setOwnerQuery] = useState("");
   const [relDirector, setRelDirector] = useState(false);
   const [relOfficer, setRelOfficer] = useState(false);
   const [relTenPct, setRelTenPct] = useState(false);
 
-  // NEW: dropdown to choose form filter
-  type FormFilter =
-    | "all"
-    | "8-K"
-    | "10-Q"
-    | "10-K"
-    | "S1"
-    | "sec16";
+  // Form filter dropdown + max history
   const [formFilter, setFormFilter] = useState<FormFilter>("all");
+  const [maxCount, setMaxCount] = useState<number>(300);
+
+  // NEW: Date range
+  const [startDate, setStartDate] = useState<string>(""); // "YYYY-MM-DD"
+  const [endDate, setEndDate] = useState<string>("");
 
   // suggestions
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -75,6 +76,7 @@ export default function Home() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Close suggestions when clicking outside
   useEffect(() => {
     function onDocMouseDown(e: MouseEvent) {
       const root = rootRef.current;
@@ -179,7 +181,7 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch(`/api/filings/${cik}`, { cache: "no-store" });
+      const r = await fetch(`/api/filings/${cik}?max=${encodeURIComponent(String(maxCount))}`, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || "Failed to fetch filings");
       setFilings(j);
@@ -190,25 +192,42 @@ export default function Home() {
     }
   }
 
-  useEffect(() => { fetchFilingsFor("AAPL"); }, []);
-
-  // apply filters
+  // apply filters (form filter + owner name/roles + date range)
   const filtered = useMemo(() => {
+    const oq = ownerQuery.trim().toLowerCase();
+    const wantsRel = relDirector || relOfficer || relTenPct;
+
+    // normalize date strings ("YYYY-MM-DD"); SEC dates are already like this
+    const start = startDate || "";
+    const end = endDate || "";
+
     return filings.filter((f) => {
       const form = (f.form || "").toUpperCase();
       const isS1 = form.startsWith("S-1") || form.startsWith("424B");
       const is8K = form.startsWith("8-K");
       const is161 = form === "3" || form === "4" || form === "5";
 
-      // Dropdown filter
+      // Date range filter (string compare works for YYYY-MM-DD)
+      if (start && f.filed_at < start) return false;
+      if (end && f.filed_at > end) return false;
+
+      // Form filter dropdown
       if (formFilter === "8-K" && !is8K) return false;
       if (formFilter === "10-Q" && form !== "10-Q") return false;
       if (formFilter === "10-K" && form !== "10-K") return false;
       if (formFilter === "S1" && !isS1) return false;
       if (formFilter === "sec16" && !is161) return false;
 
-      // Relationship filters (only if sec16)
-      if (formFilter === "sec16") {
+      // Reporting person name filter (applies to 3/4/5)
+      if (oq) {
+        if (!is161) return false;
+        const names = (f.owner_names || []).join(" ").toLowerCase();
+        if (!names.includes(oq)) return false;
+      }
+
+      // Relationship filters (only for 3/4/5)
+      if (wantsRel) {
+        if (!is161) return false;
         const roles = (f.owner_roles || []).map((x) => x.toLowerCase());
         if (relDirector && !roles.some((r) => r.startsWith("director"))) return false;
         if (relOfficer && !roles.some((r) => r.startsWith("officer"))) return false;
@@ -217,20 +236,20 @@ export default function Home() {
 
       return true;
     });
-  }, [filings, relDirector, relOfficer, relTenPct, formFilter]);
+  }, [filings, ownerQuery, relDirector, relOfficer, relTenPct, formFilter, startDate, endDate]);
 
   return (
     <main className="min-h-screen">
       <div className="mx-auto max-w-5xl px-4 py-10">
         <header className="mb-6">
-          <h1 className="text-2xl font-semibold">EDGAR Tracker</h1>
+          <h1 className="text-2xl font-semibold">EDGAR Filing Cards</h1>
           <p className="text-gray-600 text-sm mt-1">
-            Enter a <strong>Ticker</strong> (AAPL/BRK.B), <strong>Company</strong> (TESLA), or <strong>CIK</strong> (10 digits).
+            Search by <strong>Ticker</strong> (AAPL/BRK.B), <strong>Company</strong> (TESLA), or <strong>CIK</strong> (10 digits). Add owner filters for Forms 3/4/5.
           </p>
         </header>
 
-        {/* Primary search bar */}
-        <div className="relative w-full max-w-md mb-3" ref={rootRef}>
+        {/* Primary search (ticker/company/CIK) */}
+        <div className="relative w-full max-w-xl mb-3" ref={rootRef}>
           <div className="flex items-center gap-2">
             <input
               ref={inputRef}
@@ -256,8 +275,10 @@ export default function Home() {
           </div>
 
           {openSuggest && (
-            <div className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto"
-              onMouseDown={(e) => e.preventDefault()}>
+            <div
+              className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto"
+              onMouseDown={(e) => e.preventDefault()}
+            >
               {suggestLoading && (
                 <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
               )}
@@ -287,8 +308,8 @@ export default function Home() {
           )}
         </div>
 
-        {/* NEW: Form Filter dropdown + relationship checkboxes */}
-        <div className="w-full max-w-3xl mb-4">
+        {/* Controls: form filter, owner query/roles, date range, max results */}
+        <div className="w-full max-w-3xl mb-5">
           <div className="rounded-xl border bg-white p-3 flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm">
               <span className="text-gray-700 font-medium">Form Filter:</span>
@@ -309,6 +330,15 @@ export default function Home() {
             {formFilter === "sec16" && (
               <>
                 <label className="flex items-center gap-2 text-sm">
+                  <span className="text-gray-700">Reporting Person:</span>
+                  <input
+                    value={ownerQuery}
+                    onChange={(e) => setOwnerQuery(e.target.value)}
+                    placeholder="e.g., Elon Musk"
+                    className="border rounded-md px-2 py-1"
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={relDirector} onChange={(e) => setRelDirector(e.target.checked)} />
                   Director
                 </label>
@@ -322,11 +352,45 @@ export default function Home() {
                 </label>
               </>
             )}
+
+            {/* Date range */}
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-gray-700">From:</span>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="border rounded-md px-2 py-1"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-gray-700">To:</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="border rounded-md px-2 py-1"
+              />
+            </label>
+
+            <div className="flex-1" />
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-gray-700">Max results:</span>
+              <input
+                type="number"
+                min={50}
+                max={2000}
+                step={50}
+                value={maxCount}
+                onChange={(e) => setMaxCount(Math.max(50, Math.min(2000, Number(e.target.value) || 300)))}
+                className="border rounded-md px-2 py-1 w-24"
+              />
+            </label>
           </div>
         </div>
 
-        {/* sample quick buttons */}
-        <div className="flex gap-2 mb-4">
+        {/* Sample quick buttons (no auto fetch on load) */}
+        <div className="flex gap-2 mb-6">
           {SAMPLE.map((t) => (
             <button
               key={t}
@@ -345,7 +409,18 @@ export default function Home() {
 
         {error && <div className="text-red-600 text-sm mb-4">Error: {error}</div>}
 
-        <section className="grid md:grid-cols-2 gap-4">
+        {/* Empty state if nothing searched yet */}
+        {!loading && filings.length === 0 && !error && (
+          <div className="text-sm text-gray-600 border rounded-xl bg-white p-6">
+            <div className="font-medium mb-1">Start by searching a ticker/company/CIK.</div>
+            <div>
+              Tip: pick a <em>Form Filter</em>, set a <em>Date Range</em>, or switch to “Only Forms 3/4/5” to search by
+              <em> Reporting Person</em>.
+            </div>
+          </div>
+        )}
+
+        <section className="grid md:grid-cols-2 gap-4 mt-4">
           {filtered.map((f, i) => (
             <article key={i} className="rounded-2xl bg-white p-4 shadow-sm border">
               <div className="flex items-center justify-between">
