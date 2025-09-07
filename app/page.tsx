@@ -294,7 +294,7 @@ export default function Home() {
             <input type="checkbox" checked={showS1} onChange={(e) => setShowS1(e.target.checked)} /> S-1 / 424B
           </label>
           <span className="text-gray-500">
-            Resolved CIK: <code>{resolvedCik}</code>
+            : <code>{}</code>
           </span>
         </div>
 
