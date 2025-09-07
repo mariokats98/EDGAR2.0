@@ -17,8 +17,9 @@ type Filing = {
 };
 type Suggestion = { ticker: string; cik: string; name: string };
 
-const SAMPLE = ["AAPL", "MSFT", "AMZN"];
+const SAMPLE = ["AAPL", "MSFT", "AMZN", "NVDA", "NFLX"];
 
+// --- helpers ---
 function resolveCIKLocalOrNumeric(value: string): string | null {
   const v = value.trim().toUpperCase();
   if (!v) return null;
@@ -43,25 +44,28 @@ async function resolveCIK(value: string): Promise<string | null> {
 }
 
 export default function Home() {
-  const [input, setInput] = useState("AAPL");
+  const [input, setInput] = useState("");
   const [resolvedCik, setResolvedCik] = useState<string>("0000320193");
   const [filings, setFilings] = useState<Filing[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Existing form filters
-  const [show8K, setShow8K] = useState(true);
-  const [show10Q, setShow10Q] = useState(true);
-  const [show10K, setShow10K] = useState(true);
-  const [showS1, setShowS1] = useState(true);
-
-  // NEW relationship filter state
+  // Relationship filters (for Forms 3/4/5)
   const [relDirector, setRelDirector] = useState(false);
   const [relOfficer, setRelOfficer] = useState(false);
   const [relTenPct, setRelTenPct] = useState(false);
-  const [onlySection16, setOnlySection16] = useState(false); // Only 3/4/5
 
-  // Suggest UI state
+  // NEW: dropdown to choose form filter
+  type FormFilter =
+    | "all"
+    | "8-K"
+    | "10-Q"
+    | "10-K"
+    | "S1"
+    | "sec16";
+  const [formFilter, setFormFilter] = useState<FormFilter>("all");
+
+  // suggestions
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [openSuggest, setOpenSuggest] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
@@ -84,7 +88,7 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
 
-  // Suggestions fetch
+  // fetch suggestions
   useEffect(() => {
     const q = input.trim();
     if (q.length < 1) {
@@ -188,53 +192,44 @@ export default function Home() {
 
   useEffect(() => { fetchFilingsFor("AAPL"); }, []);
 
-  // apply filters (forms + relationships)
+  // apply filters
   const filtered = useMemo(() => {
-    const wantsRel = relDirector || relOfficer || relTenPct;
-
     return filings.filter((f) => {
       const form = (f.form || "").toUpperCase();
       const isS1 = form.startsWith("S-1") || form.startsWith("424B");
       const is8K = form.startsWith("8-K");
       const is161 = form === "3" || form === "4" || form === "5";
 
-      // Form filters
-      if (is8K && !show8K) return false;
-      if (form === "10-Q" && !show10Q) return false;
-      if (form === "10-K" && !show10K) return false;
-      if (isS1 && !showS1) return false;
+      // Dropdown filter
+      if (formFilter === "8-K" && !is8K) return false;
+      if (formFilter === "10-Q" && form !== "10-Q") return false;
+      if (formFilter === "10-K" && form !== "10-K") return false;
+      if (formFilter === "S1" && !isS1) return false;
+      if (formFilter === "sec16" && !is161) return false;
 
-      // Only Section 16 toggle
-      if (onlySection16 && !is161) return false;
-
-      // Relationship filters (only make sense for 3/4/5)
-      if (wantsRel) {
-        if (!is161) return false;
+      // Relationship filters (only if sec16)
+      if (formFilter === "sec16") {
         const roles = (f.owner_roles || []).map((x) => x.toLowerCase());
-        const hasDirector = roles.some((r) => r.startsWith("director"));
-        const hasOfficer = roles.some((r) => r.startsWith("officer"));
-        const hasTen = roles.some((r) => r.includes("10%"));
-
-        if (relDirector && !hasDirector) return false;
-        if (relOfficer && !hasOfficer) return false;
-        if (relTenPct && !hasTen) return false;
+        if (relDirector && !roles.some((r) => r.startsWith("director"))) return false;
+        if (relOfficer && !roles.some((r) => r.startsWith("officer"))) return false;
+        if (relTenPct && !roles.some((r) => r.includes("10%"))) return false;
       }
 
       return true;
     });
-  }, [filings, show8K, show10Q, show10K, showS1, relDirector, relOfficer, relTenPct, onlySection16]);
+  }, [filings, relDirector, relOfficer, relTenPct, formFilter]);
 
   return (
     <main className="min-h-screen">
       <div className="mx-auto max-w-5xl px-4 py-10">
         <header className="mb-6">
-          <h1 className="text-2xl font-semibold">EDGAR Filing Cards</h1>
+          <h1 className="text-2xl font-semibold">EDGAR Tracker</h1>
           <p className="text-gray-600 text-sm mt-1">
             Enter a <strong>Ticker</strong> (AAPL/BRK.B), <strong>Company</strong> (TESLA), or <strong>CIK</strong> (10 digits).
           </p>
         </header>
 
-        {/* Primary search bar (by ticker/company/CIK) */}
+        {/* Primary search bar */}
         <div className="relative w-full max-w-md mb-3" ref={rootRef}>
           <div className="flex items-center gap-2">
             <input
@@ -261,10 +256,8 @@ export default function Home() {
           </div>
 
           {openSuggest && (
-            <div
-              className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto"
-              onMouseDown={(e) => e.preventDefault()}
-            >
+            <div className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto"
+              onMouseDown={(e) => e.preventDefault()}>
               {suggestLoading && (
                 <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
               )}
@@ -294,32 +287,45 @@ export default function Home() {
           )}
         </div>
 
-        {/* NEW: Relationship search bar / filters */}
+        {/* NEW: Form Filter dropdown + relationship checkboxes */}
         <div className="w-full max-w-3xl mb-4">
-          <div className="rounded-xl border bg-white p-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="text-sm font-medium text-gray-700">Reporting Person Relationship:</span>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={relDirector} onChange={(e) => setRelDirector(e.target.checked)} />
-                Director
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={relOfficer} onChange={(e) => setRelOfficer(e.target.checked)} />
-                Officer
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={relTenPct} onChange={(e) => setRelTenPct(e.target.checked)} />
-                10% Owner
-              </label>
-              <label className="flex items-center gap-2 text-sm ml-auto">
-                <input type="checkbox" checked={onlySection16} onChange={(e) => setOnlySection16(e.target.checked)} />
-                Only Forms 3/4/5
-              </label>
-            </div>
+          <div className="rounded-xl border bg-white p-3 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-gray-700 font-medium">Form Filter:</span>
+              <select
+                value={formFilter}
+                onChange={(e) => setFormFilter(e.target.value as FormFilter)}
+                className="border rounded-md px-2 py-1 bg-white"
+              >
+                <option value="all">All forms</option>
+                <option value="8-K">8-K</option>
+                <option value="10-Q">10-Q</option>
+                <option value="10-K">10-K</option>
+                <option value="S1">S-1 / 424B</option>
+                <option value="sec16">Only Forms 3/4/5</option>
+              </select>
+            </label>
+
+            {formFilter === "sec16" && (
+              <>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={relDirector} onChange={(e) => setRelDirector(e.target.checked)} />
+                  Director
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={relOfficer} onChange={(e) => setRelOfficer(e.target.checked)} />
+                  Officer
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={relTenPct} onChange={(e) => setRelTenPct(e.target.checked)} />
+                  10% Owner
+                </label>
+              </>
+            )}
           </div>
         </div>
 
-        {/* sample buttons */}
+        {/* sample quick buttons */}
         <div className="flex gap-2 mb-4">
           {SAMPLE.map((t) => (
             <button
@@ -335,26 +341,6 @@ export default function Home() {
               {loading && input === t ? "Getting…" : t}
             </button>
           ))}
-        </div>
-
-        {/* existing form filters (kept) */}
-        <div className="flex flex-wrap items-center gap-3 mb-6 text-sm">
-          <span className="text-gray-700 font-medium">Filter:</span>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={show8K} onChange={(e) => setShow8K(e.target.checked)} /> 8-K
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={show10Q} onChange={(e) => setShow10Q(e.target.checked)} /> 10-Q
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={show10K} onChange={(e) => setShow10K(e.target.checked)} /> 10-K
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={showS1} onChange={(e) => setShowS1(e.target.checked)} /> S-1 / 424B
-          </label>
-          <span className="text-gray-500">
-            Resolved CIK: <code>{resolvedCik}</code>
-          </span>
         </div>
 
         {error && <div className="text-red-600 text-sm mb-4">Error: {error}</div>}
