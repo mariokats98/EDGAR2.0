@@ -1,40 +1,96 @@
 // app/components/Header.tsx
+
+"use client";
+import { useState } from "react";
+
 export default function Header() {
+  const [open, setOpen] = useState(false);
+
   return (
-    <header className="border-b bg-white">
+    <header className="border-b bg-white sticky top-0 z-50">
       <div className="mx-auto max-w-6xl flex items-center justify-between px-4 py-3">
-        {/* Brand */}
-        <a href="/" className="font-bold text-lg">Herevna.io</a>
+        {/* Logo */}
+        <a href="/" className="font-bold text-lg tracking-tight text-gray-900">
+          Herevna.io
+        </a>
 
         {/* Nav */}
-        <nav className="flex items-center gap-2">
-          <a href="/" className="px-3 py-2 rounded-md hover:bg-gray-100">Home</a>
-          <a href="/edgar" className="px-3 py-2 rounded-md hover:bg-gray-100">EDGAR</a>
-          <a href="/bls" className="px-3 py-2 rounded-md hover:bg-gray-100">BLS</a>
+        <nav className="flex gap-4 relative">
+          <a
+            href="/"
+            className="px-3 py-2 rounded-md hover:bg-gray-100 transition"
+          >
+            Home
+          </a>
+          <a
+            href="/edgar"
+            className="px-3 py-2 rounded-md hover:bg-gray-100 transition"
+          >
+            EDGAR
+          </a>
+          <a
+            href="/bls"
+            className="px-3 py-2 rounded-md hover:bg-gray-100 transition"
+          >
+            BLS
+          </a>
 
           {/* News dropdown */}
-          <details className="relative group">
-            <summary className="list-none px-3 py-2 rounded-md hover:bg-gray-100 cursor-pointer flex items-center gap-1">
-              News
-              <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 transition-transform group-open:rotate-180" aria-hidden>
-                <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.122l3.71-3.89a.75.75 0 111.08 1.04l-4.24 4.45a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z" clipRule="evenodd" />
-              </svg>
-            </summary>
-            <div role="menu" className="absolute right-0 mt-2 w-56 rounded-md border bg-white shadow-lg p-1 z-50">
-              <a role="menuitem" href="/news" className="block px-3 py-2 rounded hover:bg-gray-100 text-sm">All News</a>
-              <div className="my-1 h-px bg-gray-200" />
-              <a role="menuitem" href="/news?category=earnings" className="block px-3 py-2 rounded hover:bg-gray-100 text-sm">Earnings</a>
-              <a role="menuitem" href="/news?category=mna" className="block px-3 py-2 rounded hover:bg-gray-100 text-sm">M&amp;A</a>
-              <a role="menuitem" href="/news?category=filings" className="block px-3 py-2 rounded hover:bg-gray-100 text-sm">Filings-related</a>
-              <a role="menuitem" href="/news?category=macro" className="block px-3 py-2 rounded hover:bg-gray-100 text-sm">Macro / Economy</a>
-              <a role="menuitem" href="/news?category=themes" className="block px-3 py-2 rounded hover:bg-gray-100 text-sm">Themes (AI / Semis / Cloud)</a>
-              <div className="my-1 h-px bg-gray-200" />
-              <a role="menuitem" href="/news?tickers=AAPL,MSFT,NVDA" className="block px-3 py-2 rounded hover:bg-gray-100 text-sm">Watchlist: AAPL/MSFT/NVDA</a>
-              <a role="menuitem" href="/news?tickers=SPY,QQQ" className="block px-3 py-2 rounded hover:bg-gray-100 text-sm">Indexes: SPY/QQQ</a>
-            </div>
-          </details>
+          <div
+            className="relative"
+            onMouseEnter={() => setOpen(true)}
+            onMouseLeave={() => setOpen(false)}
+          >
+            <button
+              className="px-3 py-2 rounded-md hover:bg-gray-100 transition flex items-center gap-1"
+            >
+              News ▾
+            </button>
+            {open && (
+              <div className="absolute left-0 mt-2 w-40 rounded-md border bg-white shadow-lg z-50">
+                <a
+                  href="/news?category=markets"
+                  className="block px-4 py-2 text-sm hover:bg-gray-100"
+                >
+                  Markets
+                </a>
+                <a
+                  href="/news?category=earnings"
+                  className="block px-4 py-2 text-sm hover:bg-gray-100"
+                >
+                  Earnings
+                </a>
+                <a
+                  href="/news?category=ma"
+                  className="block px-4 py-2 text-sm hover:bg-gray-100"
+                >
+                  M&amp;A
+                </a>
+                <a
+                  href="/news?category=macro"
+                  className="block px-4 py-2 text-sm hover:bg-gray-100"
+                >
+                  Macro
+                </a>
+                <a
+                  href="/news"
+                  className="block px-4 py-2 text-sm hover:bg-gray-100"
+                >
+                  All News
+                </a>
+              </div>
+            )}
+          </div>
+
+          <a
+            href="/screener"
+            className="px-3 py-2 rounded-md hover:bg-gray-100 transition"
+          >
+            Screener
+          </a>
         </nav>
       </div>
     </header>
   );
 }
+
