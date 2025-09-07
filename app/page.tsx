@@ -13,10 +13,11 @@ type Filing = {
   items?: string[];
   badges?: string[];
   amount_usd?: number | null;
+  owner_roles?: string[];
 };
 type Suggestion = { ticker: string; cik: string; name: string };
 
-const SAMPLE = ["AAPL", "MSFT", "AMZN", "TSLA", "NVDA"];
+const SAMPLE = ["AAPL", "MSFT", "AMZN"];
 
 function resolveCIKLocalOrNumeric(value: string): string | null {
   const v = value.trim().toUpperCase();
@@ -42,17 +43,25 @@ async function resolveCIK(value: string): Promise<string | null> {
 }
 
 export default function Home() {
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState("AAPL");
   const [resolvedCik, setResolvedCik] = useState<string>("0000320193");
   const [filings, setFilings] = useState<Filing[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Existing form filters
   const [show8K, setShow8K] = useState(true);
   const [show10Q, setShow10Q] = useState(true);
   const [show10K, setShow10K] = useState(true);
   const [showS1, setShowS1] = useState(true);
 
+  // NEW relationship filter state
+  const [relDirector, setRelDirector] = useState(false);
+  const [relOfficer, setRelOfficer] = useState(false);
+  const [relTenPct, setRelTenPct] = useState(false);
+  const [onlySection16, setOnlySection16] = useState(false); // Only 3/4/5
+
+  // Suggest UI state
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [openSuggest, setOpenSuggest] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
@@ -75,6 +84,7 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
 
+  // Suggestions fetch
   useEffect(() => {
     const q = input.trim();
     if (q.length < 1) {
@@ -176,31 +186,55 @@ export default function Home() {
     }
   }
 
-  useEffect(() => {
-    fetchFilingsFor("AAPL");
-  }, []);
+  useEffect(() => { fetchFilingsFor("AAPL"); }, []);
 
+  // apply filters (forms + relationships)
   const filtered = useMemo(() => {
+    const wantsRel = relDirector || relOfficer || relTenPct;
+
     return filings.filter((f) => {
       const form = (f.form || "").toUpperCase();
-      if (form.startsWith("8-K")) return show8K;
-      if (form === "10-Q") return show10Q;
-      if (form === "10-K") return show10K;
-      if (form.startsWith("S-1") || form.startsWith("424B")) return showS1;
+      const isS1 = form.startsWith("S-1") || form.startsWith("424B");
+      const is8K = form.startsWith("8-K");
+      const is161 = form === "3" || form === "4" || form === "5";
+
+      // Form filters
+      if (is8K && !show8K) return false;
+      if (form === "10-Q" && !show10Q) return false;
+      if (form === "10-K" && !show10K) return false;
+      if (isS1 && !showS1) return false;
+
+      // Only Section 16 toggle
+      if (onlySection16 && !is161) return false;
+
+      // Relationship filters (only make sense for 3/4/5)
+      if (wantsRel) {
+        if (!is161) return false;
+        const roles = (f.owner_roles || []).map((x) => x.toLowerCase());
+        const hasDirector = roles.some((r) => r.startsWith("director"));
+        const hasOfficer = roles.some((r) => r.startsWith("officer"));
+        const hasTen = roles.some((r) => r.includes("10%"));
+
+        if (relDirector && !hasDirector) return false;
+        if (relOfficer && !hasOfficer) return false;
+        if (relTenPct && !hasTen) return false;
+      }
+
       return true;
     });
-  }, [filings, show8K, show10Q, show10K, showS1]);
+  }, [filings, show8K, show10Q, show10K, showS1, relDirector, relOfficer, relTenPct, onlySection16]);
 
   return (
     <main className="min-h-screen">
       <div className="mx-auto max-w-5xl px-4 py-10">
         <header className="mb-6">
-          <h1 className="text-2xl font-semibold">EDGAR Tracker</h1>
+          <h1 className="text-2xl font-semibold">EDGAR Filing Cards</h1>
           <p className="text-gray-600 text-sm mt-1">
             Enter a <strong>Ticker</strong> (AAPL/BRK.B), <strong>Company</strong> (TESLA), or <strong>CIK</strong> (10 digits).
           </p>
         </header>
 
+        {/* Primary search bar (by ticker/company/CIK) */}
         <div className="relative w-full max-w-md mb-3" ref={rootRef}>
           <div className="flex items-center gap-2">
             <input
@@ -234,7 +268,6 @@ export default function Home() {
               {suggestLoading && (
                 <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
               )}
-
               {!suggestLoading &&
                 suggestions.map((s, i) => {
                   const active = i === activeIndex;
@@ -254,7 +287,6 @@ export default function Home() {
                     </button>
                   );
                 })}
-
               {!suggestLoading && suggestions.length === 0 && (
                 <div className="px-3 py-2 text-sm text-gray-500">No matches</div>
               )}
@@ -262,6 +294,32 @@ export default function Home() {
           )}
         </div>
 
+        {/* NEW: Relationship search bar / filters */}
+        <div className="w-full max-w-3xl mb-4">
+          <div className="rounded-xl border bg-white p-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-sm font-medium text-gray-700">Reporting Person Relationship:</span>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={relDirector} onChange={(e) => setRelDirector(e.target.checked)} />
+                Director
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={relOfficer} onChange={(e) => setRelOfficer(e.target.checked)} />
+                Officer
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={relTenPct} onChange={(e) => setRelTenPct(e.target.checked)} />
+                10% Owner
+              </label>
+              <label className="flex items-center gap-2 text-sm ml-auto">
+                <input type="checkbox" checked={onlySection16} onChange={(e) => setOnlySection16(e.target.checked)} />
+                Only Forms 3/4/5
+              </label>
+            </div>
+          </div>
+        </div>
+
+        {/* sample buttons */}
         <div className="flex gap-2 mb-4">
           {SAMPLE.map((t) => (
             <button
@@ -279,6 +337,7 @@ export default function Home() {
           ))}
         </div>
 
+        {/* existing form filters (kept) */}
         <div className="flex flex-wrap items-center gap-3 mb-6 text-sm">
           <span className="text-gray-700 font-medium">Filter:</span>
           <label className="flex items-center gap-2">
@@ -294,7 +353,7 @@ export default function Home() {
             <input type="checkbox" checked={showS1} onChange={(e) => setShowS1(e.target.checked)} /> S-1 / 424B
           </label>
           <span className="text-gray-500">
-            : <code>{}</code>
+            Resolved CIK: <code>{resolvedCik}</code>
           </span>
         </div>
 
@@ -308,6 +367,13 @@ export default function Home() {
                 <span className="text-xs rounded-full bg-gray-100 px-2 py-1">{f.form}</span>
               </div>
               <h3 className="mt-2 font-medium">{f.title}</h3>
+
+              {f.owner_roles && f.owner_roles.length > 0 && (
+                <div className="mt-2 text-xs">
+                  <span className="font-semibold">Owner roles:</span> {f.owner_roles.join(", ")}
+                </div>
+              )}
+
               {f.badges && f.badges.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {f.badges.map((b, idx) => (
@@ -332,13 +398,9 @@ export default function Home() {
                 </div>
               )}
               <div className="mt-4 flex gap-3">
-                <a className="text-sm underline" href={f.source_url} target="_blank">
-                  Filing index
-                </a>
+                <a className="text-sm underline" href={f.source_url} target="_blank">Filing index</a>
                 {f.primary_doc_url && (
-                  <a className="text-sm underline" href={f.primary_doc_url} target="_blank">
-                    Primary document
-                  </a>
+                  <a className="text-sm underline" href={f.primary_doc_url} target="_blank">Primary document</a>
                 )}
               </div>
             </article>
