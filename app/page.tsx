@@ -473,6 +473,11 @@ export default function Home() {
             </article>
           ))}
         </section>
+
+                <footer className="mt-10 border-t pt-4 text-center text-xs text-gray-500">
+          This site republishes SEC EDGAR filings and BLS data.
+        </footer>
+
       </div>
     </main>
   );
