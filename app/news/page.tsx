@@ -1,3 +1,4 @@
+// app/news/page.tsx
 "use client";
 import { useEffect, useMemo, useState } from "react";
 
@@ -12,9 +13,23 @@ type NewsItem = {
   published_at: string;
 };
 
+const CATEGORIES = [
+  { value: "", label: "All" },
+  { value: "earnings", label: "Earnings" },
+  { value: "mna", label: "M&A" },
+  { value: "filings", label: "Filings-related" },
+  { value: "macro", label: "Macro / Economy" },
+  { value: "themes", label: "Themes (AI / Semis / Cloud)" },
+];
+
 export default function NewsPage() {
-  const [tickers, setTickers] = useState("");
-  const [q, setQ] = useState("");
+  // Hydrate defaults from URL (so /news?category=earnings preselects)
+  const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const defaultCategory = params.get("category") || "";
+
+  const [tickers, setTickers] = useState(params.get("tickers") || "");
+  const [q, setQ] = useState(params.get("q") || "");
+  const [category, setCategory] = useState(defaultCategory);
   const [per, setPer] = useState(10);
   const [page, setPage] = useState(1);
 
@@ -29,6 +44,7 @@ export default function NewsPage() {
       const qs = new URLSearchParams({ page: String(p), per: String(per) });
       if (tickers) qs.set("tickers", tickers);
       if (q) qs.set("q", q);
+      if (category) qs.set("category", category);
       const r = await fetch(`/api/news?${qs.toString()}`, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || "News fetch failed");
@@ -43,25 +59,28 @@ export default function NewsPage() {
     }
   }
 
-  useEffect(() => { load(1); }, []);
-
+  useEffect(() => { load(1); }, []); // initial
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / per)), [total, per]);
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-10">
       <h1 className="text-2xl font-semibold mb-2">Market News</h1>
-      <p className="text-gray-600 text-sm mb-4">
-        Filter by ticker or keyword. Powered by Alpha Vantage.
-      </p>
+      <p className="text-gray-600 text-sm mb-4">Curated by category. Filter further by ticker or keyword.</p>
 
       <div className="flex flex-wrap items-end gap-3 mb-4">
+        <label>
+          <div className="text-xs text-gray-600">Category</div>
+          <select value={category} onChange={(e)=>setCategory(e.target.value)} className="border rounded-md px-3 py-2">
+            {CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
+        </label>
         <label className="flex-1 min-w-[220px]">
           <div className="text-xs text-gray-600">Ticker(s)</div>
           <input value={tickers} onChange={(e)=>setTickers(e.target.value)} className="border rounded-md px-3 py-2 w-full" placeholder="AAPL,MSFT,TSLA" />
         </label>
         <label className="flex-1 min-w-[220px]">
           <div className="text-xs text-gray-600">Keyword</div>
-          <input value={q} onChange={(e)=>setQ(e.target.value)} className="border rounded-md px-3 py-2 w-full" placeholder="earnings, AI, guidance…" />
+          <input value={q} onChange={(e)=>setQ(e.target.value)} className="border rounded-md px-3 py-2 w-full" placeholder="earnings, guidance, AI…" />
         </label>
         <label>
           <div className="text-xs text-gray-600">Per page</div>
@@ -82,7 +101,7 @@ export default function NewsPage() {
         {items.map((n) => (
           <article key={n.id} className="rounded-xl bg-white p-4 shadow-sm border">
             <div className="text-xs text-gray-500 flex items-center justify-between">
-              <span>{n.source || "Alpha Vantage"}</span>
+              <span>{n.source || "Source"}</span>
               <span>{new Date(n.published_at).toLocaleString()}</span>
             </div>
             <h3 className="mt-2 font-medium">
