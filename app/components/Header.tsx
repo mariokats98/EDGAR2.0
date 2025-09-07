@@ -38,6 +38,7 @@ export default function Header() {
             <NavLink href="/" label="Home" />
             <NavLink href="/edgar" label="EDGAR" />
             <NavLink href="/bls" label="BLS" />
+            <NavLink href="/fred" label="FRED" />
 
             {/* News dropdown (desktop) */}
             <div
