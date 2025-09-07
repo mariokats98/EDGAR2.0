@@ -13,13 +13,13 @@ function tvSymbol(symbol: string, exchange?: string) {
   return `${prefix}:${symbol.toUpperCase()}`;
 }
 
-export default function TVChart({ symbol, exchange, height = 260 }: Props) {
+export default function TVChart({ symbol, exchange, height = 300 }: Props) {
   const idRef = useRef(`tv_${Math.random().toString(36).slice(2)}`);
 
   useEffect(() => {
     const container = document.getElementById(idRef.current);
     if (!container) return;
-    container.innerHTML = ""; // reset
+    container.innerHTML = "";
 
     const script = document.createElement("script");
     script.src = "https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js";
@@ -33,7 +33,6 @@ export default function TVChart({ symbol, exchange, height = 260 }: Props) {
       colorTheme: "light",
       isTransparent: false,
       autosize: true,
-      largeChartUrl: "", // set to a route like /chart?symbol=AAPL if you build one
     });
 
     const wrap = document.createElement("div");
@@ -42,10 +41,10 @@ export default function TVChart({ symbol, exchange, height = 260 }: Props) {
     inner.className = "tradingview-widget-container__widget";
     wrap.appendChild(inner);
     inner.appendChild(script);
-
     container.appendChild(wrap);
   }, [symbol, exchange, height]);
 
   return <div id={idRef.current} className="w-full" />;
 }
+
 
