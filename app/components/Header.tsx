@@ -1,12 +1,14 @@
 // app/components/Header.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 
 export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [newsOpen, setNewsOpen] = useState(false); // desktop dropdown
   const [newsMobileOpen, setNewsMobileOpen] = useState(false); // mobile accordion
+
+  const closeTimeout = useRef<NodeJS.Timeout | null>(null);
 
   // Close mobile menu on route change (in case user navigates via links)
   useEffect(() => {
@@ -40,8 +42,13 @@ export default function Header() {
             {/* News dropdown (desktop) */}
             <div
               className="relative"
-              onMouseEnter={() => setNewsOpen(true)}
-              onMouseLeave={() => setNewsOpen(false)}
+              onMouseEnter={() => {
+                if (closeTimeout.current) clearTimeout(closeTimeout.current);
+                setNewsOpen(true);
+              }}
+              onMouseLeave={() => {
+                closeTimeout.current = setTimeout(() => setNewsOpen(false), 150);
+              }}
             >
               <button
                 className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition inline-flex items-center gap-1"
@@ -54,7 +61,14 @@ export default function Header() {
               {newsOpen && (
                 <div
                   role="menu"
-                  className="absolute right-0 mt-2 w-56 rounded-md border bg-white shadow-lg p-1"
+                  className="absolute right-0 mt-2 w-56 rounded-md border bg-white shadow-lg p-1 z-50"
+                  onMouseEnter={() => {
+                    if (closeTimeout.current) clearTimeout(closeTimeout.current);
+                    setNewsOpen(true);
+                  }}
+                  onMouseLeave={() => {
+                    closeTimeout.current = setTimeout(() => setNewsOpen(false), 150);
+                  }}
                 >
                   <MenuItem href="/news" label="All News" />
                   <Divider />
