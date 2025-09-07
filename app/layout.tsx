@@ -1,9 +1,11 @@
+// app/layout.tsx
 import "./styles/globals.css";
+import type { Metadata } from "next";
 import Header from "./components/Header";
 
-export const metadata = {
-  title: "Herevna.io — EDGAR + BLS Aggregator",
-  description: "Herevna.io aggregates SEC EDGAR filings and BLS economic data in one interface.",
+export const metadata: Metadata = {
+  title: "Herevna.io",
+  description: "Aggregator for SEC EDGAR filings, BLS data, and Market News.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -11,11 +13,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="bg-gray-50 text-gray-900">
         <Header />
-        <main className="min-h-screen">{children}</main>
-        <footer className="border-t mt-10 py-6 text-center text-xs text-gray-500">
-          <p>
-            This site republishes SEC EDGAR filings and BLS data. © {new Date().getFullYear()} Herevna.io
-          </p>
+        <main>{children}</main>
+        <footer className="mt-10 border-t bg-white">
+          <div className="mx-auto max-w-6xl px-4 py-6 text-xs text-gray-600 flex flex-wrap items-center gap-3">
+            <span>© {new Date().getFullYear()} Herevna.io</span>
+            <span className="mx-2">•</span>
+            <span>This site republishes SEC EDGAR filings and BLS data.</span>
+          </div>
         </footer>
       </body>
     </html>
