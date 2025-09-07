@@ -64,25 +64,47 @@ type SeriesOut = {
   latest?: SeriesObs | null;
 };
 
-/* ============ Utilities ============ */
-function parseDateKey(s: string) {
-  // Accepts "YYYY", "YYYY-MM", or "YYYY-MM-DD"
-  const [yy, mm = "01", dd = "01"] = s.split("-");
-  return new Date(+yy, +mm - 1, +dd);
+/* ============ Date utils (robust for BLS) ============ */
+
+// Accepts "YYYY", "YYYY-MM", "YYYY-M01", "YYYY-Q1"
+function parseAnyDateKey(s: string): Date {
+  // YYYY-Qn
+  let m = s.match(/^(\d{4})-Q([1-4])$/i);
+  if (m) {
+    const y = +m[1], q = +m[2];
+    const month = (q - 1) * 3; // 0,3,6,9
+    return new Date(y, month, 1);
+  }
+  // YYYY-Mnn
+  m = s.match(/^(\d{4})-M(0[1-9]|1[0-2])$/i);
+  if (m) return new Date(+m[1], +m[2] - 1, 1);
+  // YYYY-MM
+  m = s.match(/^(\d{4})-(0[1-9]|1[0-2])$/);
+  if (m) return new Date(+m[1], +m[2] - 1, 1);
+  // YYYY
+  m = s.match(/^(\d{4})$/);
+  if (m) return new Date(+m[1], 0, 1);
+  // Fallback guard
+  const d = new Date(s);
+  return isNaN(+d) ? new Date(1970, 0, 1) : d;
 }
+
 function sortChrono(obs: SeriesObs[]) {
-  return [...obs].sort((a, b) => +parseDateKey(a.date) - +parseDateKey(b.date));
+  return [...obs].sort((a, b) => +parseAnyDateKey(a.date) - +parseAnyDateKey(b.date));
 }
+
 function uniqAscending(obs: SeriesObs[]) {
   const map = new Map<string, number>();
   for (const o of obs) map.set(o.date, o.value);
   return sortChrono(Array.from(map, ([date, value]) => ({ date, value })));
 }
+
 function monthsBetween(a: string, b: string) {
-  const A = parseDateKey(a), B = parseDateKey(b);
+  const A = parseAnyDateKey(a), B = parseAnyDateKey(b);
   return (B.getFullYear() - A.getFullYear()) * 12 + (B.getMonth() - A.getMonth());
 }
-function inferCadenceMonths(obs: SeriesObs[]) {
+
+function inferCadenceMonths(obs: SeriesObs[]): 1 | 3 | 12 {
   const s = sortChrono(obs);
   if (s.length < 3) return 1;
   const gaps: number[] = [];
@@ -94,6 +116,24 @@ function inferCadenceMonths(obs: SeriesObs[]) {
   if (avg > 2) return 3;  // quarterly-ish
   return 1;               // monthly-ish
 }
+
+function labelForX(dateStr: string, cadenceMonths: 1 | 3 | 12) {
+  const d = parseAnyDateKey(dateStr);
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
+  if (cadenceMonths === 12) return `${y}`;
+  if (cadenceMonths === 3) {
+    const q = Math.floor((m - 1) / 3) + 1;
+    return `${y}-Q${q}`;
+  }
+  return d.toLocaleString(undefined, { year: "numeric", month: "short" }); // e.g., "Jan 2024"
+}
+
+function prettyDate(dateStr: string, cadenceMonths: 1 | 3 | 12) {
+  return labelForX(dateStr, cadenceMonths);
+}
+
+/* ============ Deltas & formatting ============ */
 function deltas(obs: SeriesObs[]) {
   const s = sortChrono(obs);
   if (s.length < 2) return { shortLabel: "MoM", short: null as number | null, yoy: null as number | null };
@@ -107,6 +147,7 @@ function deltas(obs: SeriesObs[]) {
   const yoy = idx >= 0 && s[idx].value ? ((last - s[idx].value) / s[idx].value) * 100 : null;
   return { shortLabel, short, yoy };
 }
+
 function fmtPct(p: number | null) {
   if (p == null || !isFinite(p)) return "—";
   const sign = p > 0 ? "+" : "";
@@ -114,7 +155,6 @@ function fmtPct(p: number | null) {
 }
 
 /* ============ Chart (improved) ============ */
-// Always expects obs in chronological order (old → new)
 function LineChart({
   data,
   height = 170,
@@ -129,7 +169,7 @@ function LineChart({
   const s = sortChrono(data);
   if (s.length < 2) return null;
 
-  const width = 600; // viewBox width (scales to container)
+  const width = 600;
   const ys = s.map((d) => d.value);
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
@@ -141,12 +181,12 @@ function LineChart({
   const scaleY = (v: number) =>
     y1 === y0 ? height / 2 : height - pad - ((v - y0) / (y1 - y0)) * (height - pad * 2);
 
-  // Build path & area
+  // Path & area
   let d = `M ${pad},${scaleY(ys[0])}`;
   for (let i = 1; i < s.length; i++) d += ` L ${pad + i * dx},${scaleY(ys[i])}`;
   const area = `${d} L ${width - pad},${height - pad} L ${pad},${height - pad} Z`;
 
-  // X-axis ticks: evenly spaced indexes
+  // X ticks
   const cadence = inferCadenceMonths(s);
   const tickCount = Math.min(xTicksTarget, s.length);
   const step = Math.max(1, Math.round((s.length - 1) / (tickCount - 1)));
@@ -154,43 +194,29 @@ function LineChart({
   for (let i = 0; i < s.length; i += step) tickIdxs.push(i);
   if (tickIdxs[tickIdxs.length - 1] !== s.length - 1) tickIdxs.push(s.length - 1);
 
-  // Friendly tick label
-  function labelFor(dateStr: string) {
-    const d = parseDateKey(dateStr);
-    const y = d.getFullYear();
-    const m = d.getMonth() + 1;
-    if (cadence === 12) return `${y}`;               // annual
-    if (cadence === 3) {                             // quarterly
-      const q = Math.floor((m - 1) / 3) + 1;
-      return `${y}-Q${q}`;
-    }
-    // monthly: show YYYY-MMM
-    return d.toLocaleString(undefined, { year: "numeric", month: "short" });
-  }
-
-  // Y “nice” tick labels (min/mid/max)
+  // Y “nice” ticks
   const yTicks = [y0, (y0 + y1) / 2, y1];
 
   return (
     <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="trend chart">
-      {/* grid: horizontal */}
+      {/* horizontal grid */}
       {Array.from({ length: 5 }).map((_, i) => {
         const y = pad + ((height - pad * 2) / 4) * i;
         return <line key={`hy${i}`} x1={pad} y1={y} x2={width - pad} y2={y} stroke="#e5e7eb" />;
       })}
-      {/* grid: vertical at tick positions */}
+      {/* vertical grid at tick positions */}
       {tickIdxs.map((idx, i) => {
         const x = pad + idx * dx;
         return <line key={`vx${i}`} x1={x} y1={pad} x2={x} y2={height - pad} stroke="#f0f0f0" />;
       })}
-      {/* axis box */}
+      {/* axes */}
       <rect x={pad} y={pad} width={width - pad * 2} height={height - pad * 2} fill="none" stroke="#d1d5db" />
 
       {/* area + line */}
       <path d={area} fill="rgba(31,41,55,0.06)" />
       <path d={d} fill="none" stroke="#0f172a" strokeWidth={2} />
 
-      {/* first/last dots */}
+      {/* endpoints */}
       <circle cx={pad} cy={scaleY(ys[0])} r={2.6} fill="#0f172a" />
       <circle cx={width - pad} cy={scaleY(ys[ys.length - 1])} r={2.6} fill="#0f172a" />
 
@@ -204,7 +230,7 @@ function LineChart({
         const x = pad + idx * dx;
         return (
           <text key={`xl${i}`} x={x - 18} y={height - 2} fontSize="10" fill="#6b7280">
-            {labelFor(s[idx].date)}
+            {labelForX(s[idx].date, cadence)}
           </text>
         );
       })}
@@ -248,14 +274,11 @@ export default function BLSPage() {
     return keys.map((k) => INDICATORS[k].id).join(",");
   }
 
-  // Always normalize to chronological before slicing
   function normalizeSeries(s?: SeriesOut, keepLastPoints?: number): SeriesOut | null {
     if (!s) return null;
-    const asc = uniqAscending(s.observations);     // <-- critical: old → new
+    const asc = uniqAscending(s.observations); // old → new
     let obs = asc;
-    if (keepLastPoints && keepLastPoints > 0) {
-      obs = asc.slice(-keepLastPoints);
-    }
+    if (keepLastPoints && keepLastPoints > 0) obs = asc.slice(-keepLastPoints);
     return { ...s, observations: obs, latest: obs[obs.length - 1] ?? null };
   }
 
@@ -265,7 +288,6 @@ export default function BLSPage() {
     setLatestError(null);
     setLatestSeries(null);
     try {
-      // Fetch a wide window; we’ll slice to last N *points* chronologically
       const endYear = new Date().getFullYear();
       const startYear = Math.max(1980, endYear - Math.ceil(points / 12) - 1);
       const qs = new URLSearchParams({
@@ -321,6 +343,7 @@ export default function BLSPage() {
     const key = activeKey;
     const units = meta.units || INDICATORS[key].unitsHint;
     const last = meta.latest;
+    const cadence = inferCadenceMonths(meta.observations);
     const { shortLabel, short, yoy } = deltas(meta.observations);
     return (
       <div className="rounded-2xl border bg-white p-4">
@@ -328,7 +351,8 @@ export default function BLSPage() {
         <div className="text-xs text-gray-600">Units: {units}</div>
         {last && (
           <div className="text-2xl font-semibold mt-2">
-            {INDICATORS[key].fmt(last.value)} <span className="text-sm text-gray-500">({last.date})</span>
+            {INDICATORS[key].fmt(last.value)}{" "}
+            <span className="text-sm text-gray-500">({prettyDate(last.date, cadence)})</span>
           </div>
         )}
         <div className="flex flex-wrap gap-3 text-xs mt-2">
@@ -349,6 +373,7 @@ export default function BLSPage() {
       const units = match ? INDICATORS[match].unitsHint : s.units || "—";
       const fmt = match ? INDICATORS[match].fmt : (n: number) => n.toFixed(2);
       const last = s.latest;
+      const cadence = inferCadenceMonths(s.observations);
       const { shortLabel, short, yoy } = deltas(s.observations);
       return (
         <div key={s.id} className="rounded-2xl border bg-white p-4">
@@ -356,7 +381,7 @@ export default function BLSPage() {
           <div className="text-xs text-gray-600">Units: {units}</div>
           {last && (
             <div className="text-xs mt-1">
-              Latest: <span className="font-semibold">{fmt(last.value)}</span> on {last.date}
+              Latest: <span className="font-semibold">{fmt(last.value)}</span> on {prettyDate(last.date, cadence)}
             </div>
           )}
           <div className="flex flex-wrap gap-3 text-xs mt-2">
