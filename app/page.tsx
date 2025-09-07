@@ -42,7 +42,7 @@ async function resolveCIK(value: string): Promise<string | null> {
 }
 
 export default function Home() {
-  const [input, setInput] = useState("AAPL");
+  const [input, setInput] = useState("");
   const [resolvedCik, setResolvedCik] = useState<string>("0000320193");
   const [filings, setFilings] = useState<Filing[]>([]);
   const [loading, setLoading] = useState(false);
