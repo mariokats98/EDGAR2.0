@@ -1,20 +1,19 @@
 // app/api/screener/route.ts
 import { NextResponse } from "next/server";
 
-// -------- Types --------
 type ScreenerIn = {
-  exchange?: string;         // NASDAQ|NYSE|AMEX
+  exchange?: string;
   sector?: string;
   priceMin?: number;
   priceMax?: number;
   mcapMin?: number;
   mcapMax?: number;
   volMin?: number;
-  changePctMin?: number;     // e.g., 2 = +2% or more
-  analystMin?: number;       // 0..5 (Finnhub: strong buy=5 → strong sell=1)
-  page?: number;             // 1-based
-  per?: number;              // 10..100
-  symbols?: string;          // explicit list, comma-separated
+  changePctMin?: number;
+  analystMin?: number; // 1..5
+  page?: number;
+  per?: number;
+  symbols?: string;
 };
 
 type OutRow = {
@@ -27,11 +26,10 @@ type OutRow = {
   changePct?: number;
   volume?: number;
   marketCap?: number;
-  analystScore?: number | null; // 1..5
-  analystLabel?: string | null; // Strong Buy/Buy/Hold/Sell/Strong Sell
+  analystScore?: number | null;
+  analystLabel?: string | null;
 };
 
-// -------- Helpers --------
 function toNum(v: any): number | undefined {
   const n = Number(v);
   return Number.isFinite(n) ? n : undefined;
@@ -50,7 +48,9 @@ async function fmpFetch(path: string, params: Record<string,string | number | un
   const key = process.env.FMP_API_KEY;
   if (!key) throw new Error("Missing FMP_API_KEY");
   const qs = new URLSearchParams();
-  for (const [k,v] of Object.entries(params)) if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+  for (const [k,v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+  }
   qs.set("apikey", key);
   const r = await fetch(`https://financialmodelingprep.com/api/v3${path}?${qs.toString()}`, { cache });
   if (!r.ok) throw new Error(`FMP ${path} failed ${r.status}`);
@@ -59,7 +59,7 @@ async function fmpFetch(path: string, params: Record<string,string | number | un
 
 async function finnhubFetch(path: string, params: Record<string,string | number | undefined> = {}) {
   const key = process.env.FINNHUB_API_KEY;
-  if (!key) return null; // ratings optional
+  if (!key) return null;
   const qs = new URLSearchParams();
   for (const [k,v] of Object.entries(params)) if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
   qs.set("token", key);
@@ -68,9 +68,8 @@ async function finnhubFetch(path: string, params: Record<string,string | number 
   return r.json();
 }
 
-// Compute a 1..5 score from Finnhub latest month snapshot
+// Weighted 1..5 score from Finnhub recommendation snapshot
 function scoreFromFinnhub(rec: any): number | null {
-  // Finnhub recommendation-trends fields: buy, hold, sell, strongBuy, strongSell
   if (!rec) return null;
   const b  = Number(rec.buy) || 0;
   const h  = Number(rec.hold) || 0;
@@ -79,16 +78,13 @@ function scoreFromFinnhub(rec: any): number | null {
   const ss = Number(rec.strongSell) || 0;
   const total = b + h + s + sb + ss;
   if (total <= 0) return null;
-  // map counts to weighted score (1..5)
   const score = (5*sb + 4*b + 3*h + 2*s + 1*ss) / total;
   return Math.max(1, Math.min(5, score));
 }
 
-// -------- Main handler --------
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-
     const input: ScreenerIn = {
       exchange:   searchParams.get("exchange") || undefined,
       sector:     searchParams.get("sector") || undefined,
@@ -104,44 +100,47 @@ export async function GET(req: Request) {
       symbols:    searchParams.get("symbols") || undefined,
     };
 
-    // 1) Pull initial list via FMP stock-screener (server-side filters)
-    // doc: /api/v3/stock-screener
-    const screenerParams: Record<string, string | number | undefined> = {
-      exchange: input.exchange,     // e.g., "NASDAQ"
-      sector: input.sector,         // e.g., "Technology"
-      priceMoreThan: input.priceMin,
-      priceLowerThan: input.priceMax,
-      marketCapMoreThan: input.mcapMin,
-      marketCapLowerThan: input.mcapMax,
-      volumeMoreThan: input.volMin,
-      limit: 500,                   // get a generous set; we’ll page after enrich
-    };
-
+    // 1) Base universe
     let base: any[] = [];
     if (input.symbols) {
-      // explicit symbols override screener
       base = input.symbols.split(",").map(s => s.trim()).filter(Boolean).map(s => ({ symbol: s }));
     } else {
+      // FMP stock screener — all filters optional
+      const screenerParams: Record<string, string | number | undefined> = {
+        exchange: input.exchange, // "NASDAQ" | "NYSE" | "AMEX"
+        sector: input.sector,     // e.g., "Technology"
+        priceMoreThan: input.priceMin,
+        priceLowerThan: input.priceMax,
+        marketCapMoreThan: input.mcapMin,
+        marketCapLowerThan: input.mcapMax,
+        volumeMoreThan: input.volMin,
+        limit: 500,
+      };
       base = await fmpFetch("/stock-screener", screenerParams);
+      // Fallback to “most actives” if screen is empty
+      if (!Array.isArray(base) || base.length === 0) {
+        const actives = await fmpFetch("/stock_market/actives");
+        base = Array.isArray(actives) ? actives.map((a) => ({ symbol: a.symbol })) : [];
+      }
     }
 
-    // 2) Enrich with quotes (batch)
-    // doc: /api/v3/quote/{symbols}
-    const symbols = base.map((x) => x.symbol).filter(Boolean);
-    const uniq = Array.from(new Set(symbols));
-    const chunks: string[][] = [];
-    while (uniq.length) chunks.push(uniq.splice(0, 50));
+    // Dedupe symbol list
+    const symbols = Array.from(new Set(base.map((x) => x.symbol).filter(Boolean)));
+
+    // 2) Quotes
     const quotes: Record<string, any> = {};
+    const chunks: string[][] = [];
+    const _symbols = [...symbols];
+    while (_symbols.length) chunks.push(_symbols.splice(0, 50));
     for (const c of chunks) {
       const data = await fmpFetch(`/quote/${c.join(",")}`, {}, "no-store");
       for (const q of (data || [])) quotes[q.symbol] = q;
     }
 
-    // 3) Optional: analyst ratings from Finnhub (latest snapshot per symbol)
+    // 3) Analyst ratings (optional)
     const ratings: Record<string, {score: number|null, label: string|null}> = {};
     if (process.env.FINNHUB_API_KEY) {
-      // be gentle: cap at 60 symbols per request cycle to avoid rate limits
-      const slice = uniq.slice(0, 60);
+      const slice = symbols.slice(0, 60); // rate-limit friendly
       const recs = await Promise.all(slice.map(async (sym) => {
         const arr = await finnhubFetch("/stock/recommendation", { symbol: sym });
         const latest = Array.isArray(arr) && arr.length ? arr[0] : null;
@@ -151,15 +150,15 @@ export async function GET(req: Request) {
       for (const r of recs) ratings[r.sym] = { score: r.score, label: r.label };
     }
 
-    // 4) Compose and apply client-side extras (changePctMin, analystMin)
-    let out: OutRow[] = base.map((b): OutRow => {
-      const q = quotes[b.symbol] || {};
-      const r = ratings[b.symbol] || { score: null, label: null };
+    // 4) Compose + optional filters client-side
+    let out: OutRow[] = symbols.map((s) => {
+      const q = quotes[s] || {};
+      const r = ratings[s] || { score: null, label: null };
       return {
-        symbol: b.symbol,
-        name: b.companyName || b.company_name || b.company || q.name,
-        exchange: b.exchange || q.exchange,
-        sector: b.sector,
+        symbol: s,
+        name: q.name || q.companyName,
+        exchange: q.exchange,
+        sector: q.sector,
         price: Number(q.price) || Number(q.previousClose) || undefined,
         change: Number(q.change) || undefined,
         changePct: Number(q.changesPercentage) || Number(q.changes) || undefined,
@@ -177,7 +176,7 @@ export async function GET(req: Request) {
       out = out.filter(x => (x.analystScore ?? 0) >= input.analystMin!);
     }
 
-    // 5) Sort (default: biggest % gainer first)
+    // 5) Sort by biggest % gainer
     out.sort((a, b) => (b.changePct ?? -999) - (a.changePct ?? -999));
 
     // 6) Pagination
@@ -192,4 +191,3 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: e?.message || "Screener failed" }, { status: 500 });
   }
 }
-
