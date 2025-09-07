@@ -6,7 +6,7 @@ type Filing = {
   cik: string;
   company?: string;
   form: string;
-  filed_at: string; // "YYYY-MM-DD"
+  filed_at: string;
   title: string;
   source_url: string;
   primary_doc_url?: string | null;
@@ -16,14 +16,13 @@ type Filing = {
   owner_roles?: string[];
   owner_names?: string[];
 };
-
 type Suggestion = { ticker: string; cik: string; name: string };
-
 type FormFilter = "all" | "8-K" | "10-Q" | "10-K" | "S1" | "sec16";
 
+const PAGE_SIZE_DEFAULT = 10;
 const SAMPLE = ["AAPL", "MSFT", "AMZN"];
 
-// ---------- helpers ----------
+// ---- helpers ----
 function resolveCIKLocalOrNumeric(value: string): string | null {
   const v = value.trim().toUpperCase();
   if (!v) return null;
@@ -46,29 +45,32 @@ async function resolveCIK(value: string): Promise<string | null> {
   }
 }
 
-// ========== Page ==========
 export default function Home() {
   // search & results
-  const [input, setInput] = useState<string>("");
+  const [input, setInput] = useState("");
   const [resolvedCik, setResolvedCik] = useState<string>("");
   const [filings, setFilings] = useState<Filing[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // filters
   const [formFilter, setFormFilter] = useState<FormFilter>("all");
-  const [ownerQuery, setOwnerQuery] = useState<string>("");
-  const [relDirector, setRelDirector] = useState<boolean>(false);
-  const [relOfficer, setRelOfficer] = useState<boolean>(false);
-  const [relTenPct, setRelTenPct] = useState<boolean>(false);
-  const [startDate, setStartDate] = useState<string>(""); // YYYY-MM-DD
+  const [ownerQuery, setOwnerQuery] = useState("");
+  const [relDirector, setRelDirector] = useState(false);
+  const [relOfficer, setRelOfficer] = useState(false);
+  const [relTenPct, setRelTenPct] = useState(false);
+  const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
-  const [maxCount, setMaxCount] = useState<number>(300);
+
+  // pagination
+  const [page, setPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_DEFAULT);
+  const [total, setTotal] = useState<number>(0);
 
   // suggestions
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [openSuggest, setOpenSuggest] = useState<boolean>(false);
-  const [suggestLoading, setSuggestLoading] = useState<boolean>(false);
+  const [openSuggest, setOpenSuggest] = useState(false);
+  const [suggestLoading, setSuggestLoading] = useState(false);
   const [activeIndex, setActiveIndex] = useState<number>(-1);
 
   // refs
@@ -90,7 +92,7 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
 
-  // fetch suggestions from /api/suggest
+  // fetch suggestions
   useEffect(() => {
     const q = input.trim();
     if (q.length < 1) {
@@ -136,12 +138,16 @@ export default function Home() {
     setInput(s.ticker);
     setOpenSuggest(false);
     setActiveIndex(-1);
-    fetchFilingsFor(s.ticker);
+    setPage(1);
+    fetchFilingsFor(s.ticker, 1);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (!openSuggest || (suggestions.length === 0 && !suggestLoading)) {
-      if (e.key === "Enter") fetchFilingsFor(input);
+      if (e.key === "Enter") {
+        setPage(1);
+        fetchFilingsFor(input, 1);
+      }
       return;
     }
     if (e.key === "ArrowDown") {
@@ -161,7 +167,8 @@ export default function Home() {
       if (activeIndex >= 0 && activeIndex < suggestions.length) {
         onPickSuggestion(suggestions[activeIndex]);
       } else {
-        fetchFilingsFor(input);
+        setPage(1);
+        fetchFilingsFor(input, 1);
       }
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -170,8 +177,8 @@ export default function Home() {
     }
   }
 
-  // ---------- main fetch with safe params ----------
-  async function fetchFilingsFor(value: string) {
+  // main fetch with pagination
+  async function fetchFilingsFor(value: string, pageArg: number = page) {
     const cik = await resolveCIK(value);
     if (!cik) {
       setError("Ticker/CIK not recognized. Try any ticker (TSLA, V, BRK.B), a company name (TESLA), or a 10-digit CIK.");
@@ -181,22 +188,30 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      // Build safe query params
       const params = new URLSearchParams();
-      params.set("max", String(maxCount));
-
-      // Add dates only if valid ISO
+      params.set("page", String(pageArg));
+      params.set("max", String(pageSize));     // 10 per page
+      params.set("fast", "1");                 // speed first
       const ISO = /^\d{4}-\d{2}-\d{2}$/;
       if (startDate && ISO.test(startDate)) params.set("from", startDate);
       if (endDate && ISO.test(endDate)) params.set("to", endDate);
 
-      // Ensure CIK path is digits-only, 10 chars
-      const cikSafe = (cik || "").replace(/\D/g, "").padStart(10, "0");
+      // server-side form filter to reduce payload
+      const ff = formFilter.toUpperCase();
+      if (ff !== "ALL") {
+        params.set("form", ff === "SEC16" ? "SEC16" : ff); // "S1","SEC16","8-K","10-Q","10-K"
+      }
 
+      const cikSafe = (cik || "").replace(/\D/g, "").padStart(10, "0");
       const r = await fetch(`/api/filings/${cikSafe}?${params.toString()}`, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || "Failed to fetch filings");
-      setFilings(j);
+
+      setFilings(Array.isArray(j.data) ? j.data : []);
+      const meta = j.meta || {};
+      setTotal(typeof meta.total === "number" ? meta.total : (Array.isArray(j.data) ? j.data.length : 0));
+      setPage(meta.page || pageArg);
+      setPageSize(meta.page_size || pageSize);
     } catch (e: any) {
       setError(e?.message || "Error fetching filings");
     } finally {
@@ -204,32 +219,20 @@ export default function Home() {
     }
   }
 
-  // ---------- derived (client-side) filters ----------
+  // client-side extras (owner name/roles only; server already filtered date/form)
   const filtered = useMemo(() => {
     const oq = ownerQuery.trim().toLowerCase();
     const wantsRel = relDirector || relOfficer || relTenPct;
 
     return filings.filter((f) => {
       const form = (f.form || "").toUpperCase();
-      const isS1 = form.startsWith("S-1") || form.startsWith("424B");
-      const is8K = form.startsWith("8-K");
       const is161 = form === "3" || form === "4" || form === "5";
 
-      // Form dropdown filter (client-side too; server already did date)
-      if (formFilter === "8-K" && !is8K) return false;
-      if (formFilter === "10-Q" && form !== "10-Q") return false;
-      if (formFilter === "10-K" && form !== "10-K") return false;
-      if (formFilter === "S1" && !isS1) return false;
-      if (formFilter === "sec16" && !is161) return false;
-
-      // Owner name match (only meaningful for 3/4/5)
       if (oq) {
         if (!is161) return false;
         const names = (f.owner_names || []).join(" ").toLowerCase();
         if (!names.includes(oq)) return false;
       }
-
-      // Owner roles
       if (wantsRel) {
         if (!is161) return false;
         const roles = (f.owner_roles || []).map((x) => x.toLowerCase());
@@ -237,41 +240,106 @@ export default function Home() {
         if (relOfficer && !roles.some((r) => r.startsWith("officer"))) return false;
         if (relTenPct && !roles.some((r) => r.includes("10%"))) return false;
       }
-
       return true;
     });
-  }, [filings, ownerQuery, relDirector, relOfficer, relTenPct, formFilter]);
+  }, [filings, ownerQuery, relDirector, relOfficer, relTenPct]);
 
-  // ---------- render ----------
+  // total pages
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  // page buttons (1..N, cap showing 10 buttons with ellipses)
+  function renderPagination() {
+    if (totalPages <= 1) return null;
+
+    const buttons: number[] = [];
+    const maxButtons = 10;
+    let start = Math.max(1, page - 4);
+    let end = Math.min(totalPages, start + maxButtons - 1);
+    if (end - start + 1 < maxButtons) start = Math.max(1, end - maxButtons + 1);
+
+    for (let p = start; p <= end; p++) buttons.push(p);
+
+    return (
+      <div className="mt-6 flex items-center justify-center gap-2">
+        <button
+          className="px-3 py-1 border rounded-md text-sm disabled:opacity-50"
+          disabled={page === 1 || loading}
+          onClick={() => { const np = page - 1; setPage(np); fetchFilingsFor(input || resolvedCik, np); }}
+        >
+          Prev
+        </button>
+
+        {start > 1 && (
+          <>
+            <button
+              className="px-3 py-1 border rounded-md text-sm"
+              onClick={() => { setPage(1); fetchFilingsFor(input || resolvedCik, 1); }}
+            >
+              1
+            </button>
+            {start > 2 && <span className="text-sm text-gray-500">…</span>}
+          </>
+        )}
+
+        {buttons.map((p) => (
+          <button
+            key={p}
+            className={`px-3 py-1 border rounded-md text-sm ${p === page ? "bg-black text-white border-black" : ""}`}
+            disabled={loading}
+            onClick={() => { setPage(p); fetchFilingsFor(input || resolvedCik, p); }}
+          >
+            {p}
+          </button>
+        ))}
+
+        {end < totalPages && (
+          <>
+            {end < totalPages - 1 && <span className="text-sm text-gray-500">…</span>}
+            <button
+              className="px-3 py-1 border rounded-md text-sm"
+              onClick={() => { setPage(totalPages); fetchFilingsFor(input || resolvedCik, totalPages); }}
+            >
+              {totalPages}
+            </button>
+          </>
+        )}
+
+        <button
+          className="px-3 py-1 border rounded-md text-sm disabled:opacity-50"
+          disabled={page >= totalPages || loading}
+          onClick={() => { const np = page + 1; setPage(np); fetchFilingsFor(input || resolvedCik, np); }}
+        >
+          Next
+        </button>
+      </div>
+    );
+  }
+
+  // --- UI ---
   return (
     <main className="min-h-screen">
       <div className="mx-auto max-w-5xl px-4 py-10">
         <header className="mb-6">
           <h1 className="text-2xl font-semibold">EDGAR Filing Cards</h1>
           <p className="text-gray-600 text-sm mt-1">
-            Search by <strong>Ticker</strong> (AAPL/BRK.B), <strong>Company</strong> (TESLA), or <strong>CIK</strong> (10 digits). Add owner filters for Forms 3/4/5.
+            Search by <strong>Ticker</strong> (AAPL/BRK.B), <strong>Company</strong> (TESLA), or <strong>CIK</strong> (10 digits).
           </p>
         </header>
 
-        {/* Primary search (ticker/company/CIK) */}
+        {/* search */}
         <div className="relative w-full max-w-xl mb-3" ref={rootRef}>
           <div className="flex items-center gap-2">
             <input
               ref={inputRef}
               value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                if (e.target.value.trim().length >= 1) setOpenSuggest(true);
-              }}
-              onFocus={() => {
-                if (input.trim().length >= 1) setOpenSuggest(true);
-              }}
+              onChange={(e) => { setInput(e.target.value); if (e.target.value.trim().length >= 1) setOpenSuggest(true); }}
+              onFocus={() => { if (input.trim().length >= 1) setOpenSuggest(true); }}
               onKeyDown={onKeyDown}
               placeholder="Ticker (AAPL/BRK.B) • Company (TESLA) • CIK (0000320193)"
               className="border bg-white rounded-xl px-3 py-2 w-full"
             />
             <button
-              onClick={() => fetchFilingsFor(input)}
+              onClick={() => { setPage(1); fetchFilingsFor(input, 1); }}
               className="rounded-xl bg-black text-white px-4 py-2 disabled:opacity-60"
               disabled={loading}
             >
@@ -280,32 +348,27 @@ export default function Home() {
           </div>
 
           {openSuggest && (
-            <div
-              className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto"
-              onMouseDown={(e) => e.preventDefault()}
-            >
-              {suggestLoading && (
-                <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
-              )}
-              {!suggestLoading &&
-                suggestions.map((s, i) => {
-                  const active = i === activeIndex;
-                  return (
-                    <button
-                      key={`${s.cik}-${i}`}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => onPickSuggestion(s)}
-                      className={`w-full text-left px-3 py-2 ${active ? "bg-gray-100" : "hover:bg-gray-50"}`}
-                      title={s.name}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium">{s.ticker}</span>
-                        <span className="text-xs text-gray-500">{s.cik}</span>
-                      </div>
-                      <div className="text-xs text-gray-600 truncate">{s.name}</div>
-                    </button>
-                  );
-                })}
+            <div className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto"
+                 onMouseDown={(e) => e.preventDefault()}>
+              {suggestLoading && <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>}
+              {!suggestLoading && suggestions.map((s, i) => {
+                const active = i === activeIndex;
+                return (
+                  <button
+                    key={`${s.cik}-${i}`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => onPickSuggestion(s)}
+                    className={`w-full text-left px-3 py-2 ${active ? "bg-gray-100" : "hover:bg-gray-50"}`}
+                    title={s.name}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">{s.ticker}</span>
+                      <span className="text-xs text-gray-500">{s.cik}</span>
+                    </div>
+                    <div className="text-xs text-gray-600 truncate">{s.name}</div>
+                  </button>
+                );
+              })}
               {!suggestLoading && suggestions.length === 0 && (
                 <div className="px-3 py-2 text-sm text-gray-500">No matches</div>
               )}
@@ -313,14 +376,14 @@ export default function Home() {
           )}
         </div>
 
-        {/* Controls: form filter, owner name/roles, date range, max results */}
+        {/* filters */}
         <div className="w-full max-w-3xl mb-5">
           <div className="rounded-xl border bg-white p-3 flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm">
               <span className="text-gray-700 font-medium">Form Filter:</span>
               <select
                 value={formFilter}
-                onChange={(e) => setFormFilter(e.target.value as FormFilter)}
+                onChange={(e) => { setFormFilter(e.target.value as FormFilter); setPage(1); if (input || resolvedCik) fetchFilingsFor(input || resolvedCik, 1); }}
                 className="border rounded-md px-2 py-1 bg-white"
               >
                 <option value="all">All forms</option>
@@ -358,74 +421,31 @@ export default function Home() {
               </>
             )}
 
-            {/* Date range */}
             <label className="flex items-center gap-2 text-sm">
               <span className="text-gray-700">From:</span>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="border rounded-md px-2 py-1"
-              />
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border rounded-md px-2 py-1" />
             </label>
             <label className="flex items-center gap-2 text-sm">
               <span className="text-gray-700">To:</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="border rounded-md px-2 py-1"
-              />
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="border rounded-md px-2 py-1" />
             </label>
 
             <div className="flex-1" />
-            <label className="flex items-center gap-2 text-sm">
-              <span className="text-gray-700">Max results:</span>
-              <input
-                type="number"
-                min={50}
-                max={2000}
-                step={50}
-                value={maxCount}
-                onChange={(e) => setMaxCount(Math.max(50, Math.min(2000, Number(e.target.value) || 300)))}
-                className="border rounded-md px-2 py-1 w-24"
-              />
-            </label>
+            <span className="text-xs text-gray-500">Showing {filings.length} of {total} results</span>
           </div>
-        </div>
-
-        {/* Sample quick buttons (no auto fetch on load) */}
-        <div className="flex gap-2 mb-6">
-          {SAMPLE.map((t) => (
-            <button
-              key={t}
-              onClick={() => {
-                setInput(t);
-                fetchFilingsFor(t);
-              }}
-              className="text-xs rounded-full bg-gray-100 px-3 py-1 disabled:opacity-60"
-              disabled={loading && input === t}
-              title={(tickerMap as Record<string, string>)[t] || ""}
-            >
-              {loading && input === t ? "Getting…" : t}
-            </button>
-          ))}
         </div>
 
         {error && <div className="text-red-600 text-sm mb-4">Error: {error}</div>}
 
-        {/* Empty state */}
+        {/* empty state */}
         {!loading && filings.length === 0 && !error && (
           <div className="text-sm text-gray-600 border rounded-xl bg-white p-6">
             <div className="font-medium mb-1">Start by searching a ticker/company/CIK.</div>
-            <div>
-              Tip: choose a <em>Form Filter</em>, set a <em>Date Range</em>, or switch to “Only Forms 3/4/5” to search by
-              <em> Reporting Person</em>.
-            </div>
+            <div>Use the page buttons below the results to navigate 10 filings at a time.</div>
           </div>
         )}
 
-        {/* Results */}
+        {/* results */}
         <section className="grid md:grid-cols-2 gap-4 mt-4">
           {filtered.map((f, i) => (
             <article key={i} className="rounded-2xl bg-white p-4 shadow-sm border">
@@ -440,48 +460,50 @@ export default function Home() {
                   <span className="font-semibold">Owner roles:</span> {f.owner_roles.join(", ")}
                 </div>
               )}
-
               {f.badges && f.badges.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {f.badges.map((b, idx) => (
-                    <span
-                      key={idx}
-                      className="text-[11px] rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 px-2 py-0.5"
-                    >
+                    <span key={idx} className="text-[11px] rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 px-2 py-0.5">
                       {b}
                     </span>
                   ))}
                 </div>
               )}
-
               {typeof f.amount_usd === "number" && (
                 <div className="mt-2 text-sm">
                   <span className="font-semibold">Largest amount: </span>
                   ${(f.amount_usd / 1_000_000).toFixed(1)}M
                 </div>
               )}
-
               {f.items && f.items.length > 0 && (
                 <div className="mt-3 text-xs text-gray-600">
                   <span className="font-semibold">Items:</span> {f.items.join(", ")}
                 </div>
               )}
-
               <div className="mt-4 flex gap-3">
                 <a className="text-sm underline" href={f.source_url} target="_blank">Filing index</a>
-                {f.primary_doc_url && (
-                  <a className="text-sm underline" href={f.primary_doc_url} target="_blank">Primary document</a>
-                )}
+                {f.primary_doc_url && <a className="text-sm underline" href={f.primary_doc_url} target="_blank">Primary document</a>}
               </div>
             </article>
           ))}
         </section>
 
-        {/* Footer disclosure */}
+        {/* pagination */}
+        {renderPagination()}
+
+        {/* footer */}
         <footer className="mt-10 border-t pt-4 text-center text-xs text-gray-500">
-  This site republishes SEC EDGAR filings and BLS data. <br />
-  Powered by <a href="https://herevna.io" target="_blank" className="underline">Herevna.io</a>
-</footer>
+          <div>This site republishes SEC EDGAR filings and BLS data.</div>
+          <div className="mt-2 flex justify-center">
+            <a
+              href="https://herevna.io"
+              target="_blank"
+              className="inline-block bg-black text-white font-semibold px-3 py-1 rounded-full text-sm hover:bg-gray-800 transition"
+            >
+              Herevna.io
+            </a>
+          </div>
+        </footer>
       </div>
     </main>
   );
