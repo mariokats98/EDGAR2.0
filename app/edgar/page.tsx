@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
-import tickerMap from "./data/tickerMap.json";
+import { useState } from "react";
+import tickerMap from "../data/tickerMap.json";  
+
 
 type Filing = {
   cik: string;
