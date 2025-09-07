@@ -479,10 +479,9 @@ export default function Home() {
 
         {/* Footer disclosure */}
         <footer className="mt-10 border-t pt-4 text-center text-xs text-gray-500">
-          This site republishes SEC EDGAR filings and BLS data.
-
-          herevna.io
-        </footer>
+  This site republishes SEC EDGAR filings and BLS data. <br />
+  Powered by <a href="https://herevna.io" target="_blank" className="underline">Herevna.io</a>
+</footer>
       </div>
     </main>
   );
