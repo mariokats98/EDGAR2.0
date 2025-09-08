@@ -1,26 +1,37 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-/** Small helper: prevent page scroll when the chat is open (mobile friendly) */
+/** Prevent page scroll when the sheet is open (mobile) */
 function useLockBody(lock: boolean) {
   useEffect(() => {
     const original = document.body.style.overflow;
     if (lock) document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = original;
-    };
+    return () => { document.body.style.overflow = original; };
   }, [lock]);
 }
 
 type Msg = { role: "user" | "assistant"; content: string };
 
 const STARTERS = [
-  "Summarize Tesla’s latest 10-K",
-  "Show the CPI trend since 2000",
-  "What’s real GDP growth last quarter?",
-  "Find all 8-K filings for NVDA in 2024",
+  "Give me today’s CPI headline and link",
+  "List NVDA 8-Ks from 2024 with links",
+  "Download the latest TSLA 10-Q",
+  "Show real GDP last quarter with a link",
 ];
+
+/** simple URL finder */
+function extractUrls(text: string): string[] {
+  const urlRe = /\bhttps?:\/\/[^\s<>")]+/gi;
+  const found = text.match(urlRe) || [];
+  // de-dup and preserve order
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const u of found) {
+    if (!seen.has(u)) { seen.add(u); out.push(u); }
+  }
+  return out;
+}
 
 export default function AIChat() {
   const [open, setOpen] = useState(false);
@@ -30,23 +41,19 @@ export default function AIChat() {
     {
       role: "assistant",
       content:
-        "Hi! I can answer questions about EDGAR filings, BLS, BEA, and FRED. Try one of the examples below or type your own question.",
+        "Hi! Ask for filings or economic data and I’ll return **download links** when available. Example: “NVDA latest 8-K link” or “Real GDP link last quarter”.",
     },
   ]);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // lock scroll when open (mobile)
   useLockBody(open);
 
-  // auto scroll to bottom on new message
   useEffect(() => {
     const el = listRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [history, open]);
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [history, open, sending]);
 
-  // focus input when panel opens
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 150);
   }, [open]);
@@ -64,9 +71,12 @@ export default function AIChat() {
         body: JSON.stringify({ message }),
       });
       const j = await r.json();
-      const reply = j?.reply || j?.choices?.[0]?.message?.content || "No response.";
+      const reply =
+        j?.reply ||
+        j?.choices?.[0]?.message?.content ||
+        "No response.";
       setHistory((h) => [...h, { role: "assistant", content: reply }]);
-    } catch (e: any) {
+    } catch {
       setHistory((h) => [
         ...h,
         { role: "assistant", content: "Sorry — I couldn’t reach the chat service." },
@@ -102,28 +112,22 @@ export default function AIChat() {
           aria-modal="true"
           role="dialog"
           onClick={(e) => {
-            // click outside panel closes (but ignore clicks inside)
-            const target = e.target as HTMLElement;
-            if (target?.dataset?.overlay === "1") setOpen(false);
+            if ((e.target as HTMLElement)?.dataset?.overlay === "1") setOpen(false);
           }}
           data-overlay="1"
         >
           {/* Backdrop */}
           <div className="absolute inset-0 bg-black/30" />
 
-          {/* Sheet (mobile) / Panel (desktop) */}
+          {/* Sheet/Panel */}
           <div
             className="
               absolute right-0 bottom-0 md:bottom-auto md:top-1/2 md:-translate-y-1/2
               w-full md:w-[380px] h-[85vh] md:h-[560px]
               md:mr-4 md:rounded-2xl
-              bg-white shadow-xl border
-              flex flex-col
+              bg-white shadow-xl border flex flex-col
             "
-            style={{
-              // iOS safe-area padding so input isn’t behind the home bar
-              paddingBottom: "max(env(safe-area-inset-bottom), 0px)",
-            }}
+            style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0px)" }}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
@@ -134,9 +138,7 @@ export default function AIChat() {
                 </span>
                 <div className="leading-tight">
                   <div className="text-sm font-semibold">Herevna Assistant</div>
-                  <div className="text-[11px] text-gray-500">
-                    Ask about EDGAR, BLS, BEA, FRED
-                  </div>
+                  <div className="text-[11px] text-gray-500">I’ll return links when available</div>
                 </div>
               </div>
               <button
@@ -150,27 +152,68 @@ export default function AIChat() {
               </button>
             </div>
 
+            {/* Thinking bar */}
+            {sending && (
+              <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-600 bg-slate-50 border-b">
+                <span className="inline-flex h-2 w-2 animate-pulse rounded-full bg-blue-600" />
+                Assistant is thinking…
+              </div>
+            )}
+
             {/* Messages */}
-            <div
-              ref={listRef}
-              className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-slate-50"
-            >
-              {history.map((m, i) => (
-                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <div
-                    className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap
-                      ${m.role === "user"
-                        ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white"
-                        : "bg-white border"}`
-                    }
-                  >
-                    {m.content}
+            <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-slate-50">
+              {history.map((m, i) => {
+                const urls = useMemo(() => extractUrls(m.content), [m.content]);
+                const hasLinks = urls.length > 0 && m.role === "assistant";
+
+                return (
+                  <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                    <div
+                      className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap
+                        ${m.role === "user"
+                          ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white"
+                          : "bg-white border"}`
+                      }
+                    >
+                      {/* If assistant provided links, prioritize showing them as buttons */}
+                      {hasLinks ? (
+                        <div className="space-y-2">
+                          <div className="text-[11px] text-gray-600">
+                            Links found:
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            {urls.map((u, j) => (
+                              <a
+                                key={j}
+                                href={u}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-[13px] hover:bg-gray-50"
+                              >
+                                <span className="truncate">{u}</span>
+                                <span className="shrink-0 rounded-md bg-black text-white px-2 py-0.5 text-xs">
+                                  Open
+                                </span>
+                              </a>
+                            ))}
+                          </div>
+
+                          {/* Expandable raw text (optional) */}
+                          <details className="mt-1">
+                            <summary className="cursor-pointer text-[11px] text-gray-500">Show assistant text</summary>
+                            <div className="mt-1 text-[13px]">{m.content}</div>
+                          </details>
+                        </div>
+                      ) : (
+                        <>{m.content}</>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
 
               {/* Starters (only when short history) */}
-              {history.length <= 2 && (
+              {history.length <= 2 && !sending && (
                 <div className="mt-1 grid grid-cols-1 gap-2">
                   {STARTERS.map((s) => (
                     <button
@@ -192,7 +235,7 @@ export default function AIChat() {
                   ref={inputRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder="Ask about CPI, 10-K, real GDP, etc."
+                  placeholder="Ask for links: “Download latest TSLA 10-Q”, “CPI headline link”, etc."
                   className="flex-1 rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <button
@@ -201,7 +244,7 @@ export default function AIChat() {
                   className="rounded-xl px-3 py-2 text-sm text-white disabled:opacity-60
                              bg-gradient-to-r from-blue-600 to-indigo-600"
                 >
-                  {sending ? "Sending…" : "Send"}
+                  {sending ? "Sending..." : "Send"}
                 </button>
               </div>
             </form>
@@ -211,4 +254,3 @@ export default function AIChat() {
     </>
   );
 }
-
