@@ -1,60 +1,67 @@
 // app/api/lookup/[symbol]/route.ts
 import { NextResponse } from "next/server";
-const UA = process.env.SEC_USER_AGENT || "HerevnaBot/1.0 (admin@herevna.io)";
-const TICKERS_URL = "https://www.sec.gov/files/company_tickers.json";
-const PROFILE_URL = (cik10: string) => `https://data.sec.gov/submissions/CIK${cik10}.json`;
 
-type Entry = { cik_str: number; ticker: string; title: string };
-let cache: { when: number; data: Entry[] } | null = null;
+const SEC_HEADERS = {
+  "User-Agent": process.env.SEC_USER_AGENT || "Herevna/1.0 (contact@example.com)",
+  "Accept": "application/json",
+};
 
-async function loadTickers(): Promise<Entry[]> {
-  const now = Date.now();
-  if (cache && now - cache.when < 6 * 60 * 60 * 1000) return cache.data;
-  const r = await fetch(TICKERS_URL, { headers: { "User-Agent": UA, Accept: "application/json" }, cache: "no-store" });
-  if (!r.ok) throw new Error(`SEC tickers fetch failed (${r.status})`);
+type TickerRow = { cik_str: number; ticker: string; title: string };
+
+let CACHE: { rows: TickerRow[]; at: number } | null = null;
+const TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
+
+async function loadTickers(): Promise<TickerRow[]> {
+  if (CACHE && Date.now() - CACHE.at < TTL_MS) return CACHE.rows;
+  const url = "https://www.sec.gov/files/company_tickers.json";
+  const r = await fetch(url, { headers: SEC_HEADERS, cache: "no-store" });
+  if (!r.ok) throw new Error(`SEC tickers fetch failed: ${r.status}`);
   const j = await r.json();
-  const entries: Entry[] = Object.values(j as any);
-  cache = { when: now, data: entries };
-  return entries;
+  // file is an object keyed by index; normalize to array
+  const rows: TickerRow[] = Object.values(j).map((o: any) => ({
+    cik_str: Number(o.cik_str),
+    ticker: String(o.ticker || "").toUpperCase(),
+    title: String(o.title || ""),
+  }));
+  CACHE = { rows, at: Date.now() };
+  return rows;
 }
 
-const padCIK = (x: string | number) => String(x).padStart(10, "0");
-const norm = (s: string) => s.toLowerCase().replace(/[.\- ]/g, "");
-
-export async function GET(_req: Request, { params }: { params: { symbol: string } }) {
+export async function GET(
+  req: Request,
+  { params }: { params: { symbol: string } }
+) {
   try {
-    const raw = (params.symbol || "").trim();
-    if (!raw) return NextResponse.json({ error: "Missing symbol" }, { status: 400 });
-    const q = raw.toLowerCase();
+    const qRaw = (params.symbol || "").trim();
+    const q = qRaw.toUpperCase();
+    if (!q) return NextResponse.json({ data: [] });
 
-    // Already a CIK?
-    if (/^\d{10}$/.test(q)) {
-      const cik10 = q;
-      try {
-        const pr = await fetch(PROFILE_URL(cik10), { headers: { "User-Agent": UA, Accept: "application/json" }, cache: "no-store" });
-        if (pr.ok) {
-          const j = await pr.json();
-          return NextResponse.json({ cik: cik10, ticker: j?.tickers?.[0] || null, name: j?.name || "Company" });
-        }
-      } catch {}
-      return NextResponse.json({ cik: cik10 });
-    }
+    const rows = await loadTickers();
 
-    const data = await loadTickers();
-    const nq = norm(q);
-    const best =
-      data.find((e) => norm(e.ticker) === nq) ||
-      data.find((e) => norm(e.ticker).startsWith(nq)) ||
-      data.find((e) => e.title.toLowerCase().includes(q));
+    // If exact ticker, prioritize it first
+    const exact = rows.filter((r) => r.ticker === q);
 
-    if (!best) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    // Loose contains match (title or ticker)
+    const needle = qRaw.toLowerCase();
+    const loose = rows.filter(
+      (r) =>
+        r.ticker.includes(q) ||
+        r.title.toLowerCase().includes(needle)
+    );
+
+    // unique by CIK
+    const picked: Record<number, TickerRow> = {};
+    [...exact, ...loose].forEach((r) => (picked[r.cik_str] = r));
+    const out = Object.values(picked).slice(0, 20); // cap
 
     return NextResponse.json({
-      cik: padCIK(best.cik_str),
-      ticker: best.ticker,
-      name: best.title,
+      data: out.map((r) => ({
+        cik: String(r.cik_str).padStart(10, "0"),
+        ticker: r.ticker,
+        name: r.title,
+      })),
     });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Lookup error" }, { status: 500 });
+    return NextResponse.json({ error: e?.message || "Lookup failed" }, { status: 500 });
   }
 }
