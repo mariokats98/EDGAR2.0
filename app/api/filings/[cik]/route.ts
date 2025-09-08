@@ -39,18 +39,25 @@ function normalizeForm(s: string) {
   return (s || "").trim().toUpperCase();
 }
 
-function makeDocLinks(cik10: string, accNo: string, primary?: string) {
-  // accNo comes like 0000320193-24-000123 sometimes; we need digits only for path
-  const accDigits = accNo.replace(/-/g, "");
+function makeAccDigits(accNo: string) {
+  return accNo.replace(/-/g, "");
+}
+
+function makeBasePaths(cik10: string, accNo: string) {
+  const accDigits = makeAccDigits(accNo);
   const cikInt = String(parseInt(cik10, 10));
   const base = `https://www.sec.gov/Archives/edgar/data/${cikInt}/${accDigits}`;
+  return { base, accDigits, cikInt };
+}
+
+function makeDocLinks(cik10: string, accNo: string, primary?: string) {
+  const { base, accDigits } = makeBasePaths(cik10, accNo);
   const index = `${base}/${accNo}-index.htm`;
   const primaryDoc = primary ? `${base}/${primary}` : undefined;
   const txt = `${base}/${accDigits}.txt`;
   return { index, primaryDoc, txt, base };
 }
 
-// Pull “recent” plus ALL historical year shards from filings.files
 async function fetchAllFilings(cik10: string) {
   const root = `https://data.sec.gov/submissions/CIK${cik10}.json`;
   const r = await fetch(root, { headers: SEC_HEADERS, cache: "no-store" });
@@ -75,10 +82,11 @@ async function fetchAllFilings(cik10: string) {
     });
   }
 
-  // historical shards under filings.files
+  // historical shards
   const files = j?.filings?.files || [];
   for (const f of files) {
     const name = f?.name as string;
+    if (!name) continue;
     const url = `https://data.sec.gov/submissions/${name}`;
     try {
       const rr = await fetch(url, { headers: SEC_HEADERS, cache: "no-store" });
@@ -98,9 +106,7 @@ async function fetchAllFilings(cik10: string) {
           primaryDocument: String(rec.primaryDocument?.[i] || ""),
         });
       }
-    } catch {
-      // ignore shard errors
-    }
+    } catch { /* ignore */ }
   }
 
   return {
@@ -110,18 +116,141 @@ async function fetchAllFilings(cik10: string) {
   };
 }
 
-// Optional insider name scan for 3/4/5 primary doc (cheap text search)
-async function insiderMatch(primaryUrl: string, insider: string) {
+/* ---------------- Insider matching via XML ---------------- */
+
+type IndexJson = {
+  directory?: {
+    item?: { name: string }[];
+  };
+};
+
+// in-memory caches to keep requests down per invocation
+const INDEX_CACHE = new Map<string, string[]>();   // key: base -> list of file names
+const NAMES_CACHE = new Map<string, Set<string>>(); // key: base -> set of owner names
+
+function normName(s: string) {
+  return s
+    .toLowerCase()
+    .replace(/\(.*?\)/g, " ")        // remove parentheses
+    .replace(/[^a-z0-9\s]/g, " ")    // strip punctuation
+    .replace(/\s+/g, " ")            // collapse whitespace
+    .trim();
+}
+
+function tokens(s: string) {
+  return normName(s).split(" ").filter(Boolean);
+}
+
+function nameMatches(query: string, candidates: Set<string>) {
+  // Strategy: if user gives 2+ tokens, require that candidate contains all (loose).
+  // If user gives 1 token (likely last name), require that token is present.
+  const qTokens = tokens(query);
+  if (qTokens.length === 0) return false;
+  for (const cand of candidates) {
+    const cTokens = tokens(cand);
+    if (qTokens.length === 1) {
+      if (cTokens.includes(qTokens[0])) return true;
+      continue;
+    }
+    // multi-token: all q tokens must be present in candidate
+    let all = true;
+    for (const t of qTokens) {
+      if (!cTokens.includes(t)) { all = false; break; }
+    }
+    if (all) return true;
+  }
+  return false;
+}
+
+function extractOwnerNamesFromXML(xml: string): Set<string> {
+  const out = new Set<string>();
+  // Capture <rptOwnerName>NAME</rptOwnerName>
+  const re = /<\s*rptOwnerName\s*>\s*([^<]+?)\s*<\/\s*rptOwnerName\s*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml)) !== null) {
+    const name = m[1].trim();
+    if (name) out.add(name);
+  }
+  return out;
+}
+
+function extractOwnerNamesFromHTML(html: string): Set<string> {
+  // Fallback: try to grab a line after "Name and Address of Reporting Person"
+  const text = html.replace(/<[^>]+>/g, "\n");
+  const out = new Set<string>();
+  const anchor = /name\s+and\s+address\s+of\s+reporting\s+person/i;
+  const idx = text.search(anchor);
+  if (idx >= 0) {
+    const snippet = text.slice(idx, idx + 600); // small window
+    // Grab uppercase-ish words, allow commas/space
+    const cand = snippet.match(/[A-Z][A-Za-z'\-\.]+\s+[A-Z][A-Za-z'\-\.]+(?:\s+[A-Z][A-Za-z'\-\.]+)?/g);
+    if (cand) {
+      cand.slice(0, 5).forEach((s) => out.add(s.trim()));
+    }
+  }
+  return out;
+}
+
+async function getIndexFiles(base: string): Promise<string[]> {
+  if (INDEX_CACHE.has(base)) return INDEX_CACHE.get(base)!;
+  const idxUrl = `${base}/index.json`;
   try {
-    const r = await fetch(primaryUrl, { headers: { "User-Agent": UA } });
-    if (!r.ok) return false;
-    const raw = await r.text();
-    const text = raw.replace(/<[^>]+>/g, " ").toLowerCase();
-    return text.includes(insider.toLowerCase());
+    const r = await fetch(idxUrl, { headers: SEC_HEADERS, cache: "no-store" });
+    if (!r.ok) throw new Error(String(r.status));
+    const j: IndexJson = await r.json();
+    const files = (j?.directory?.item || []).map((it) => it.name).filter(Boolean);
+    INDEX_CACHE.set(base, files);
+    return files;
   } catch {
-    return false;
+    INDEX_CACHE.set(base, []);
+    return [];
   }
 }
+
+async function getOwnerNamesFromFiling(base: string, primaryDoc?: string): Promise<Set<string>> {
+  if (NAMES_CACHE.has(base)) return NAMES_CACHE.get(base)!;
+
+  const names = new Set<string>();
+  const files = await getIndexFiles(base);
+
+  // Prefer XML ownership docs
+  const xmlCandidates = files.filter((f) =>
+    /\.xml$/i.test(f) && /owner|ownership|primary/i.test(f)
+  );
+  // Also consider any xml if none matched
+  const allXml = xmlCandidates.length ? xmlCandidates : files.filter((f) => /\.xml$/i.test(f));
+
+  // Try XML first
+  for (const f of allXml.slice(0, 5)) {
+    try {
+      const url = `${base}/${f}`;
+      const r = await fetch(url, { headers: { "User-Agent": UA }, cache: "no-store" });
+      if (!r.ok) continue;
+      const xml = await r.text();
+      const found = extractOwnerNamesFromXML(xml);
+      found.forEach((n) => names.add(n));
+      if (names.size > 0) break; // good enough
+    } catch { /* ignore */ }
+  }
+
+  // Fallback: try primary HTML/TXT
+  if (names.size === 0 && primaryDoc) {
+    try {
+      const url = `${base}/${primaryDoc}`;
+      const r = await fetch(url, { headers: { "User-Agent": UA }, cache: "no-store" });
+      if (r.ok) {
+        const html = await r.text();
+        const fromHtml = extractOwnerNamesFromHTML(html);
+        fromHtml.forEach((n) => names.add(n));
+      }
+    } catch { /* ignore */ }
+  }
+
+  NAMES_CACHE.set(base, names);
+  return names;
+}
+
+/* ---------------- Route ---------------- */
 
 export async function GET(req: Request, { params }: { params: { cik: string } }) {
   try {
@@ -133,8 +262,8 @@ export async function GET(req: Request, { params }: { params: { cik: string } })
 
     const start = url.searchParams.get("start") || undefined; // YYYY or YYYY-MM-DD
     const end = url.searchParams.get("end") || undefined;
-    const formsParam = url.searchParams.get("forms") || ""; // e.g. "8-K,10-Q,10-K,13D,13G,6-K,3,4,5"
-    const insider = (url.searchParams.get("insider") || "").trim();
+    const formsParam = url.searchParams.get("forms") || "";
+    const insiderQ = (url.searchParams.get("insider") || "").trim();
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
     const pageSize = Math.min(50, Math.max(10, parseInt(url.searchParams.get("pageSize") || "10", 10)));
 
@@ -162,16 +291,20 @@ export async function GET(req: Request, { params }: { params: { cik: string } })
       return db - da;
     });
 
-    // INSIDER filter: only for 3/4/5; quick scan of primary doc text
-    if (insider) {
+    // INSIDER filter — robust: use XML owner names (forms 3/4/5)
+    if (insiderQ) {
       const keep: Filing[] = [];
       for (const f of filtered) {
         const formU = normalizeForm(f.form);
-        if (!/^3|4|5$/.test(formU)) continue;
-        const links = makeDocLinks(cik, f.accessionNumber, f.primaryDocument);
-        if (!links.primaryDoc) continue;
-        const ok = await insiderMatch(links.primaryDoc, insider);
-        if (ok) keep.push(f);
+        if (!/^(3|4|5)$/.test(formU)) continue;
+
+        const { base } = makeBasePaths(cik, f.accessionNumber);
+        const names = await getOwnerNamesFromFiling(base, f.primaryDocument);
+        if (names.size === 0) continue;
+
+        if (nameMatches(insiderQ, names)) {
+          keep.push(f);
+        }
       }
       filtered = keep;
     }
@@ -188,9 +321,9 @@ export async function GET(req: Request, { params }: { params: { cik: string } })
         accession: f.accessionNumber,
         primary_doc: f.primaryDocument || null,
         links: {
-          index: links.index,          // HTML index
-          primary_doc: links.primaryDoc || null, // original HTML/TXT document
-          full_txt: links.txt,         // complete text file
+          index: links.index,
+          primary_doc: links.primaryDoc || null,
+          full_txt: links.txt,
         },
       };
     });
