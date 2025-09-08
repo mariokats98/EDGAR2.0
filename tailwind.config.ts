@@ -1,23 +1,22 @@
+// tailwind.config.ts
 import type { Config } from "tailwindcss";
 
 const config: Config = {
   content: [
-    "./app/**/*.{js,ts,jsx,tsx}",
-    "./components/**/*.{js,ts,jsx,tsx}"
+    "./app/**/*.{ts,tsx,js,jsx}",
+    "./components/**/*.{ts,tsx,js,jsx}",
+    "./pages/**/*.{ts,tsx,js,jsx}",
   ],
   theme: {
     extend: {
       colors: {
         brand: {
-          DEFAULT: "#7E36D1", // Purple
-          pink: "#FF0085",    // Accent
-          blue: "#2D81F7",    // Blue
-          gray: "#1F2937"     // Neutral dark gray
-        }
-      }
-    }
+          DEFAULT: "#2563eb", // blue-600
+        },
+      },
+    },
   },
-  plugins: []
+  plugins: [],
 };
 
 export default config;
