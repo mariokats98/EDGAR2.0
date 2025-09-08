@@ -1,3 +1,4 @@
+// app/bls/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -241,6 +242,8 @@ function LineChart({
 /* ============ Page component ============ */
 type Tab = "latest" | "trends";
 
+type BlsNews = { title: string; link: string; pubDate: string; category?: string };
+
 export default function BLSPage() {
   const thisYear = new Date().getFullYear().toString();
 
@@ -263,9 +266,18 @@ export default function BLSPage() {
   const [trSeries, setTrSeries] = useState<SeriesOut[]>([]);
   const [trError, setTrError] = useState<string | null>(null);
 
+  // BLS Economic News Releases
+  const [news, setNews] = useState<BlsNews[]>([]);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsQuery, setNewsQuery] = useState("");
+
   useEffect(() => {
     if (tab === "latest" && !latestSeries && !latestLoading) {
       void loadLatest(activeKey, latestMonths);
+    }
+    // also load news once
+    if (news.length === 0 && !newsLoading) {
+      void loadNews();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -335,6 +347,28 @@ export default function BLSPage() {
     }
   }
 
+  /* ---------- BLS News ---------- */
+  async function loadNews() {
+    setNewsLoading(true);
+    try {
+      const r = await fetch(`/api/bls/news?limit=24`, { cache: "no-store" });
+      const j = await r.json();
+      setNews(Array.isArray(j.items) ? j.items : []);
+    } catch {
+      setNews([]);
+    } finally {
+      setNewsLoading(false);
+    }
+  }
+
+  const filteredNews = useMemo(() => {
+    const q = newsQuery.trim().toLowerCase();
+    if (!q) return news;
+    return news.filter((n) =>
+      [n.title, n.category].filter(Boolean).join(" ").toLowerCase().includes(q)
+    );
+  }, [news, newsQuery]);
+
   /* ---------- Cards ---------- */
   function LatestCard() {
     if (latestError) return <div className="text-red-600 text-sm">Error: {latestError}</div>;
@@ -401,6 +435,53 @@ export default function BLSPage() {
     <div className="mx-auto max-w-6xl px-4 py-10">
       <h1 className="text-2xl font-semibold">BLS Economic Data</h1>
       <p className="text-gray-600 text-sm mb-4">Latest numbers at a glance, plus clean historical trends.</p>
+
+      {/* NEW: Economic News Releases */}
+      <section className="rounded-2xl border bg-white p-4 mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-medium">Economic News Releases</h2>
+          <div className="flex items-center gap-2">
+            <input
+              value={newsQuery}
+              onChange={(e) => setNewsQuery(e.target.value)}
+              placeholder="Filter headlines (e.g., CPI, productivity)…"
+              className="border rounded-md px-3 py-1.5 text-sm w-64"
+            />
+            <button
+              onClick={loadNews}
+              className="px-3 py-1.5 rounded-md bg-black text-white text-sm disabled:opacity-60"
+              disabled={newsLoading}
+            >
+              {newsLoading ? "Loading…" : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-3 grid md:grid-cols-2 gap-3">
+          {filteredNews.map((n, i) => (
+            <article key={i} className="border rounded-lg p-3">
+              <a href={n.link} target="_blank" rel="noreferrer" className="font-medium hover:underline">
+                {n.title}
+              </a>
+              <div className="text-xs text-gray-600 mt-1">
+                {n.category && <span className="rounded-full bg-gray-100 px-2 py-0.5 mr-2">{n.category}</span>}
+                {n.pubDate ? new Date(n.pubDate).toLocaleString() : ""}
+              </div>
+              <div className="mt-2">
+                <a href={n.link} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">
+                  Read on bls.gov →
+                </a>
+              </div>
+            </article>
+          ))}
+          {(!newsLoading && filteredNews.length === 0) && (
+            <div className="text-sm text-gray-600">No matching headlines.</div>
+          )}
+          {newsLoading && filteredNews.length === 0 && (
+            <div className="text-sm text-gray-600">Loading BLS headlines…</div>
+          )}
+        </div>
+      </section>
 
       {/* Tabs */}
       <div className="mb-4 flex gap-2">
