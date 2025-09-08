@@ -1,43 +1,50 @@
 // app/api/bea/route.ts
 import { NextResponse } from "next/server";
-
 const BEA_BASE = "https://apps.bea.gov/api/data";
 
-/**
- * Flexible BEA fetch:
- * - /api/bea?dataset=NIPA&param=TableName&value=T10101&freq=Q&year=LAST10
- * - /api/bea?dataset=ITA&param=Indicator&value=BalGds&year=ALL
- * Back-compat:
- * - /api/bea?dataset=NIPA&table=T10101&freq=Q&year=LAST10  (assumes param=TableName)
- */
+const DATASET_ALIASES: Record<string, string> = {
+  nipa: "NIPA",
+  niunderlyingdetail: "NIUnderlyingDetail",
+  fixedassets: "FixedAssets",
+  gdpbyindustry: "GDPByIndustry",
+  underlyinggdpbyindustry: "UnderlyingGDPbyIndustry",
+  inputoutput: "InputOutput",
+  regional: "Regional",
+  ita: "ITA",
+  intlservtrade: "IntlServTrade",
+  intlservsta: "IntlServSTA",
+  iip: "IIP",
+  mne: "MNE",
+};
+function normDataset(s: string) {
+  const k = (s || "").replace(/[^a-z]/gi, "").toLowerCase();
+  return DATASET_ALIASES[k] || s || "NIPA";
+}
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const dataset = url.searchParams.get("dataset") || "NIPA";
+    const dataset = normDataset(url.searchParams.get("dataset") || "NIPA");
 
-    // New flexible way
     let param = url.searchParams.get("param");
     let value = url.searchParams.get("value");
 
-    // Back-compat for older UI (table=… => TableName)
+    // Back-compat: table=… means TableName
     const table = url.searchParams.get("table");
     if (!param && table) {
       param = "TableName";
       value = table;
     }
 
-    const freq = url.searchParams.get("freq") || ""; // some datasets don’t need this
+    const freq = url.searchParams.get("freq") || "";
     const year = url.searchParams.get("year") || "LAST10";
 
     const key = process.env.BEA_API_KEY;
-    if (!key) {
-      return NextResponse.json({ error: "Missing BEA_API_KEY env var." }, { status: 500 });
-    }
+    if (!key) return NextResponse.json({ error: "Missing BEA_API_KEY env var." }, { status: 500 });
     if (!param || !value) {
       return NextResponse.json({ error: "Missing selector: provide param and value (or table)." }, { status: 400 });
     }
 
-    // Build GetData query dynamically
     const qs = new URLSearchParams({
       UserID: key,
       method: "GetData",
@@ -45,9 +52,7 @@ export async function GET(req: Request) {
       ResultFormat: "JSON",
       Year: year,
     });
-    // Only include Frequency if user set one
     if (freq) qs.set("Frequency", freq);
-    // Put the selector the dataset expects (TableName/Indicator/TableID/etc.)
     qs.set(param, value);
 
     const upstream = `${BEA_BASE}/?${qs.toString()}`;
@@ -59,10 +64,12 @@ export async function GET(req: Request) {
         { status: 502 }
       );
     }
-
     const j = safeJson(rawTxt);
-    const data = j?.BEAAPI?.Results?.Data || [];
+    if (j?.BEAAPI?.Error) {
+      return NextResponse.json({ error: j.BEAAPI.Error?.ErrorDetail || "BEA error" }, { status: 502 });
+    }
 
+    const data = j?.BEAAPI?.Results?.Data || [];
     const rows = data.map((d: any) => ({
       time: d?.TimePeriod || d?.Time || "",
       value: toNumber(d?.DataValue ?? d?.DataValue_Footnote ?? d?.DataValueNote),
@@ -71,10 +78,7 @@ export async function GET(req: Request) {
       unit: d?.CL_UNIT || d?.Unit || null,
     }));
 
-    return NextResponse.json({
-      meta: { dataset, param, value, freq, year },
-      rows,
-    });
+    return NextResponse.json({ meta: { dataset, param, value, freq, year }, rows });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
   }
@@ -86,7 +90,6 @@ function toNumber(x: unknown) {
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
-
 function safeJson(s: string) {
   try { return JSON.parse(s); } catch { return {}; }
 }
