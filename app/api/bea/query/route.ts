@@ -8,7 +8,7 @@ const BEA_BASE = "https://apps.bea.gov/api/data";
 type DatasetKey = "NIPA" | "Regional" | "GDPByIndustry" | "InputOutput" | "ITA";
 
 const PARAM_MAP: Record<DatasetKey, Record<string, string>> = {
-  NIPA: { TableName: "TableName", Frequency: "Frequency", Year: "Year", Quarter: "Quarter" },
+  NIPA: { TableName: "TableName", Frequency: "Frequency", Year: "Year", Quarter: "Quarter", LineNumber: "LineNumber" },
   Regional: { TableName: "TableName", Geo: "GeoFIPS", LineCode: "LineCode", Year: "Year" },
   GDPByIndustry: { TableID: "TableID", Industry: "Industry", Frequency: "Frequency", Year: "Year" },
   InputOutput: { TableID: "TableID", Year: "Year", Summary: "Summary" },
@@ -16,8 +16,7 @@ const PARAM_MAP: Record<DatasetKey, Record<string, string>> = {
 };
 
 function beaParam(dataset: string, uiParam: string): string {
-  const ds = (dataset || "") as DatasetKey;
-  const map = PARAM_MAP[ds as DatasetKey];
+  const map = PARAM_MAP[dataset as DatasetKey];
   return (map && map[uiParam]) || uiParam;
 }
 
@@ -51,7 +50,7 @@ function rowToPoint(r: any): { date: string; value: number } | null {
 
   if (/^\d{4}Q[1-4]$/i.test(iso)) {
     const y = iso.slice(0, 4);
-    const q = Number(iso.slice(5));
+    const q = Number(iso.slice(4).replace(/q/i, ""));
     const month = (q - 1) * 3 + 1;
     iso = `${y}-${String(month).padStart(2, "0")}-01`;
   } else if (/^\d{6}$/.test(iso)) {
@@ -111,8 +110,7 @@ export async function POST(req: Request) {
     let rows: any[] = [];
     if (Array.isArray(results?.Data)) rows = results.Data;
     else {
-      const firstArr =
-        results && Object.values(results).find((v: any) => Array.isArray(v));
+      const firstArr = results && Object.values(results).find((v: any) => Array.isArray(v));
       if (Array.isArray(firstArr)) rows = firstArr;
     }
 
@@ -129,9 +127,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ title, units, data: points });
   } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message || "Unexpected error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
   }
 }
