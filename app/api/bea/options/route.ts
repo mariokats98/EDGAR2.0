@@ -5,114 +5,157 @@ export const dynamic = "force-dynamic";
 
 const BEA_BASE = "https://apps.bea.gov/api/data";
 
-function requiredEnv() {
+type DatasetKey = "NIPA" | "Regional" | "GDPByIndustry" | "InputOutput" | "ITA";
+
+/**
+ * UI -> BEA parameter name mapping per dataset
+ * (Add more as you expose more datasets/params)
+ */
+const PARAM_MAP: Record<DatasetKey, Record<string, string>> = {
+  NIPA: {
+    TableName: "TableName",
+    Frequency: "Frequency",
+    Year: "Year",
+    Quarter: "Quarter",
+  },
+  Regional: {
+    // Regional dataset commonly uses GeoFIPS + LineCode + TableName + Year
+    TableName: "TableName",
+    Geo: "GeoFIPS",
+    LineCode: "LineCode",
+    Year: "Year",
+    // (No Frequency/Quarter for most Regional tables)
+  },
+  GDPByIndustry: {
+    TableID: "TableID",
+    Industry: "Industry",
+    Frequency: "Frequency",
+    Year: "Year",
+  },
+  InputOutput: {
+    TableID: "TableID",
+    Year: "Year",
+    Summary: "Summary",
+  },
+  ITA: {
+    Indicator: "Indicator",
+    AreaOrCountry: "AreaOrCountry",
+    Frequency: "Frequency",
+    Year: "Year",
+  },
+};
+
+function beaParam(dataset: string, uiParam: string): string {
+  const ds = (dataset || "") as DatasetKey;
+  const map = PARAM_MAP[ds as DatasetKey];
+  return (map && map[uiParam]) || uiParam;
+}
+
+function requireKey() {
   const key = process.env.BEA_API_KEY;
   if (!key) throw new Error("Missing BEA_API_KEY env var.");
   return key;
 }
 
-// Normalize BEA option objects → {value,label}
-function normalizeOptions(rows: any[], valueKey: string, labelKey?: string) {
-  const seen = new Set<string>();
+function qs(params: Record<string, string | number | undefined>) {
+  const u = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") u.set(k, String(v));
+  }
+  return u.toString();
+}
+
+function normalizeOptions(rows: any[], valueKey = "Key", labelKey?: string) {
   const out: { value: string; label: string }[] = [];
+  const seen = new Set<string>();
   for (const r of rows || []) {
     const value = String(r[valueKey] ?? "").trim();
     if (!value || seen.has(value)) continue;
     seen.add(value);
-    const labelRaw =
-      (labelKey && r[labelKey]) ||
-      r["Desc"] ||
-      r["Description"] ||
-      r["ParameterDescription"] ||
-      r[valueKey];
-    const label = String(labelRaw ?? value).trim();
+    const label =
+      String(
+        (labelKey && r[labelKey]) ||
+          r.Desc ||
+          r.Description ||
+          r.ParameterDescription ||
+          value
+      ).trim();
     out.push({ value, label });
   }
   return out;
 }
 
-function toQS(params: Record<string, string | number | undefined>) {
-  const usp = new URLSearchParams();
-  Object.entries(params).forEach(([k, v]) => {
-    if (v != null && v !== "") usp.set(k, String(v));
-  });
-  return usp.toString();
-}
-
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const dataset = url.searchParams.get("dataset") || "";
-    const param = url.searchParams.get("param") || "";
+    const dataset = (url.searchParams.get("dataset") || "") as DatasetKey;
+    const uiParam = url.searchParams.get("param") || "";
     const depsRaw = url.searchParams.get("deps") || "{}";
     const deps = JSON.parse(depsRaw) as Record<string, string>;
 
-    if (!dataset || !param) {
-      return NextResponse.json({ error: "dataset and param are required" }, { status: 400 });
+    if (!dataset || !uiParam) {
+      return NextResponse.json(
+        { error: "dataset and param are required" },
+        { status: 400 }
+      );
     }
 
-    const UserID = requiredEnv();
+    const UserID = requireKey();
 
-    // Prefer filtered parameter values if we have dependencies
+    // Translate UI param to BEA param
+    const targetParam = beaParam(dataset, uiParam);
+
+    // Build query. If we have dependencies selected, use GetParameterValuesFiltered
     const hasDeps = Object.keys(deps).length > 0;
     const method = hasDeps ? "GetParameterValuesFiltered" : "GetParameterValues";
 
-    const queryParams: Record<string, string> = {
+    const base: Record<string, string> = {
       UserID,
       mode: "json",
       method,
       datasetname: dataset,
-      ParameterName: param,
     };
 
-    // Add dependencies directly (e.g., Year=2020&Frequency=Q)
-    for (const [k, v] of Object.entries(deps)) {
-      if (v) queryParams[k] = v;
+    if (hasDeps) {
+      // TargetParameter is the param we want options for
+      base["TargetParameter"] = targetParam;
+      // Add each dependency mapped to BEA param name
+      for (const [k, v] of Object.entries(deps)) {
+        if (!v) continue;
+        base[beaParam(dataset, k)] = v;
+      }
+    } else {
+      // Unfiltered path uses ParameterName
+      base["ParameterName"] = targetParam;
     }
 
-    const qs = toQS(queryParams);
-    const r = await fetch(`${BEA_BASE}/?${qs}`, { cache: "no-store" });
+    const r = await fetch(`${BEA_BASE}/?${qs(base)}`, { cache: "no-store" });
     if (!r.ok) {
-      return NextResponse.json({ error: `BEA options fetch failed (${r.status})` }, { status: 502 });
+      return NextResponse.json(
+        { error: `BEA options fetch failed (${r.status})` },
+        { status: 502 }
+      );
     }
     const j = await r.json();
 
-    // BEA wraps payloads under .BEAAPI.Results.*
-    let rows: any[] = [];
-    // common envelope variants:
-    // - j.BEAAPI.Results.ParamValue
-    // - j.BEAAPI.Results.ParamValueList.ParamValue
-    // - j.BEAAPI.Results.[Something]
     const results = j?.BEAAPI?.Results;
+    let rows: any[] = [];
     if (Array.isArray(results?.ParamValue)) rows = results.ParamValue;
-    else if (results?.ParamValueList?.ParamValue) rows = results.ParamValueList.ParamValue;
-    else if (Array.isArray(results)) rows = results;
+    else if (results?.ParamValueList?.ParamValue)
+      rows = results.ParamValueList.ParamValue;
     else {
-      // try to find first array within Results
-      const firstArr = results && Object.values(results).find((v: any) => Array.isArray(v));
+      const firstArr =
+        results && Object.values(results).find((v: any) => Array.isArray(v));
       if (Array.isArray(firstArr)) rows = firstArr;
     }
 
-    // Pick a reasonable value key per param/dataset
-    let valueKey = "Key";
-    let labelKey: string | undefined = "Desc";
-
-    // Heuristics for common BEA params:
-    if (/table/i.test(param)) valueKey = "Key";           // TableName or TableID often under 'Key'
-    if (/frequency/i.test(param)) valueKey = "Key";
-    if (/year/i.test(param)) valueKey = "Key";
-    if (/quarter/i.test(param)) valueKey = "Key";
-    if (/geo/i.test(param)) valueKey = "Key";
-    if (/line/i.test(param)) valueKey = "Key";
-    if (/industry/i.test(param)) valueKey = "Key";
-    if (/summary/i.test(param)) valueKey = "Key";
-    if (/indicator/i.test(param)) valueKey = "Key";
-    if (/area|country/i.test(param)) valueKey = "Key";
-
-    const data = normalizeOptions(rows, valueKey, labelKey);
+    // Heuristic defaults are fine for BEA option payloads:
+    const data = normalizeOptions(rows, "Key", "Desc");
     return NextResponse.json({ data });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
+    return NextResponse.json(
+      { error: e?.message || "Unexpected error" },
+      { status: 500 }
+    );
   }
 }
-
