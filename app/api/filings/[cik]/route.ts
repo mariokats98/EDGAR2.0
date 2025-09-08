@@ -1,185 +1,206 @@
 // app/api/filings/[cik]/route.ts
 import { NextResponse } from "next/server";
 
-const UA = process.env.SEC_USER_AGENT || "HerevnaBot/1.0 (admin@herevna.io)";
-const pad = (s: string) => String(s || "").padStart(10, "0");
+const UA = process.env.SEC_USER_AGENT || "Herevna/1.0 (contact@example.com)";
+const SEC_HEADERS = { "User-Agent": UA, "Accept": "application/json" };
 
-type Out = {
-  cik: string;
-  company: string;
+type Filing = {
   form: string;
-  filed_at: string;
-  title: string;
-  index_url: string;
-  primary_doc_url: string | null;
-  owner_names?: string[]; // for Forms 3/4/5 when owner filter is used
+  filingDate: string;
+  accessionNumber: string;
+  primaryDocument?: string;
 };
 
-function parseDate(s?: string) {
-  // expects YYYY-MM-DD
-  if (!s) return null;
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return null;
-  return new Date(+m[1], +m[2] - 1, +m[3]);
+function padCIK(cik: string) {
+  return cik.replace(/\D/g, "").padStart(10, "0");
 }
 
-function dateInRange(s: string, start?: Date | null, end?: Date | null) {
-  const d = parseDate(s);
-  if (!d) return false;
-  if (start && d < start) return false;
-  if (end   && d > end) return false;
+function toDate(s?: string) {
+  if (!s) return null;
+  const d = new Date(s);
+  return isNaN(+d) ? null : d;
+}
+
+function dateInRange(d: string, start?: string, end?: string) {
+  const D = toDate(d);
+  if (!D) return false;
+  if (start) {
+    const S = toDate(start);
+    if (S && D < S) return false;
+  }
+  if (end) {
+    const E = toDate(end);
+    if (E && D > E) return false;
+  }
   return true;
 }
 
-function looksXml(url: string | null) {
-  if (!url) return false;
-  const u = url.toLowerCase();
-  return u.endsWith(".xml");
+function normalizeForm(s: string) {
+  return (s || "").trim().toUpperCase();
 }
 
-/** Extract <rptOwnerName>…</rptOwnerName> for Forms 3/4/5 owner XML */
-async function maybeExtractOwners(primaryUrl: string | null): Promise<string[] | null> {
-  if (!looksXml(primaryUrl)) return null;
+function makeDocLinks(cik10: string, accNo: string, primary?: string) {
+  // accNo comes like 0000320193-24-000123 sometimes; we need digits only for path
+  const accDigits = accNo.replace(/-/g, "");
+  const cikInt = String(parseInt(cik10, 10));
+  const base = `https://www.sec.gov/Archives/edgar/data/${cikInt}/${accDigits}`;
+  const index = `${base}/${accNo}-index.htm`;
+  const primaryDoc = primary ? `${base}/${primary}` : undefined;
+  const txt = `${base}/${accDigits}.txt`;
+  return { index, primaryDoc, txt, base };
+}
+
+// Pull “recent” plus ALL historical year shards from filings.files
+async function fetchAllFilings(cik10: string) {
+  const root = `https://data.sec.gov/submissions/CIK${cik10}.json`;
+  const r = await fetch(root, { headers: SEC_HEADERS, cache: "no-store" });
+  if (!r.ok) throw new Error(`SEC submissions failed: ${r.status}`);
+  const j = await r.json();
+
+  const out: Filing[] = [];
+
+  // recent block
+  const recent = j?.filings?.recent || {};
+  const n = Math.min(
+    recent?.accessionNumber?.length || 0,
+    recent?.filingDate?.length || 0,
+    recent?.form?.length || 0
+  );
+  for (let i = 0; i < n; i++) {
+    out.push({
+      form: String(recent.form[i] || ""),
+      filingDate: String(recent.filingDate[i] || ""),
+      accessionNumber: String(recent.accessionNumber[i] || ""),
+      primaryDocument: String(recent.primaryDocument?.[i] || ""),
+    });
+  }
+
+  // historical shards under filings.files
+  const files = j?.filings?.files || [];
+  for (const f of files) {
+    const name = f?.name as string;
+    const url = `https://data.sec.gov/submissions/${name}`;
+    try {
+      const rr = await fetch(url, { headers: SEC_HEADERS, cache: "no-store" });
+      if (!rr.ok) continue;
+      const jj = await rr.json();
+      const rec = jj?.filings?.recent || {};
+      const m = Math.min(
+        rec?.accessionNumber?.length || 0,
+        rec?.filingDate?.length || 0,
+        rec?.form?.length || 0
+      );
+      for (let i = 0; i < m; i++) {
+        out.push({
+          form: String(rec.form[i] || ""),
+          filingDate: String(rec.filingDate[i] || ""),
+          accessionNumber: String(rec.accessionNumber[i] || ""),
+          primaryDocument: String(rec.primaryDocument?.[i] || ""),
+        });
+      }
+    } catch {
+      // ignore shard errors
+    }
+  }
+
+  return {
+    company: j?.name || j?.entityType || "Company",
+    cik: cik10,
+    filings: out,
+  };
+}
+
+// Optional insider name scan for 3/4/5 primary doc (cheap text search)
+async function insiderMatch(primaryUrl: string, insider: string) {
   try {
-    const r = await fetch(primaryUrl!, { headers: { "User-Agent": UA }, cache: "no-store" });
-    if (!r.ok) return null;
-    const xml = await r.text();
-    const names = Array.from(xml.matchAll(/<rptOwnerName>\s*([^<]+)\s*<\/rptOwnerName>/gi)).map(m => m[1].trim());
-    const uniq = [...new Set(names)].filter(Boolean);
-    return uniq.length ? uniq : null;
+    const r = await fetch(primaryUrl, { headers: { "User-Agent": UA } });
+    if (!r.ok) return false;
+    const raw = await r.text();
+    const text = raw.replace(/<[^>]+>/g, " ").toLowerCase();
+    return text.includes(insider.toLowerCase());
   } catch {
-    return null;
+    return false;
   }
 }
 
 export async function GET(req: Request, { params }: { params: { cik: string } }) {
   try {
-    const cik10 = pad(params.cik);
+    const url = new URL(req.url);
+    const cik10 = padCIK(params.cik || "");
     if (!/^\d{10}$/.test(cik10)) {
       return NextResponse.json({ error: "Invalid CIK" }, { status: 400 });
     }
 
-    const { searchParams } = new URL(req.url);
+    const start = url.searchParams.get("start") || undefined; // YYYY or YYYY-MM-DD
+    const end = url.searchParams.get("end") || undefined;
+    const formsParam = url.searchParams.get("forms") || ""; // e.g. "8-K,10-Q,10-K,13D,13G,6-K,3,4,5"
+    const insider = (url.searchParams.get("insider") || "").trim();
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+    const pageSize = Math.min(50, Math.max(10, parseInt(url.searchParams.get("pageSize") || "10", 10)));
 
-    // Filters
-    const formsParam = (searchParams.get("forms") || "").trim(); // e.g. "8-K,10-Q,10-K,3,4,5,13D,13G,6-K,S-1,424B"
-    const formSet = new Set(
+    const formsSet = new Set(
       formsParam
-        ? formsParam.split(",").map(s => s.trim().toUpperCase()).filter(Boolean)
-        : []
+        .split(",")
+        .map((s) => normalizeForm(s))
+        .filter(Boolean)
     );
 
-    const ownerQuery = (searchParams.get("owner") || "").trim().toLowerCase(); // for 3/4/5
-    const startStr = searchParams.get("start") || ""; // YYYY-MM-DD
-    const endStr   = searchParams.get("end")   || "";
-    const start = parseDate(startStr);
-    const end   = parseDate(endStr);
+    const { company, cik, filings } = await fetchAllFilings(cik10);
 
-    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
-    const pageSize = Math.min(50, Math.max(10, parseInt(searchParams.get("pageSize") || "25", 10)));
+    // Filter by date
+    let filtered = filings.filter((f) => dateInRange(f.filingDate, start, end));
 
-    const profileUrl = `https://data.sec.gov/submissions/CIK${cik10}.json`;
-    const r = await fetch(profileUrl, {
-      headers: { "User-Agent": UA, Accept: "application/json" },
-      cache: "no-store"
+    // Filter by forms (if provided)
+    if (formsSet.size > 0) {
+      filtered = filtered.filter((f) => formsSet.has(normalizeForm(f.form)));
+    }
+
+    // Sort newest → oldest
+    filtered.sort((a, b) => {
+      const da = toDate(a.filingDate)?.getTime() || 0;
+      const db = toDate(b.filingDate)?.getTime() || 0;
+      return db - da;
     });
-    if (!r.ok) return NextResponse.json({ error: `SEC fetch failed (${r.status})` }, { status: 502 });
-    const data = await r.json();
 
-    const company = data?.name || "Company";
-    const recent = data?.filings?.recent ?? {};
-    const totalN = (recent?.accessionNumber || []).length;
-
-    // Build raw list first (limit to a sane max to keep latency down)
-    const MAX_PULL = Math.min(totalN, 200); // grab up to 200 most recent, then filter/paginate
-    const rows: Out[] = [];
-    for (let i = 0; i < MAX_PULL; i++) {
-      const form = String(recent.form[i] || "").toUpperCase();
-      const filed_at = String(recent.filingDate[i] || "");
-      const accDash = String(recent.accessionNumber[i] || "");
-      const acc = accDash.replace(/-/g, "");
-      const primary = recent.primaryDocument[i] || null;
-      const cikNum = parseInt(cik10, 10);
-      const base = `https://www.sec.gov/Archives/edgar/data/${cikNum}/${acc}`;
-      const indexUrl = `${base}/${accDash}-index.htm`;
-      const primaryUrl = primary ? `${base}/${primary}` : null;
-
-      rows.push({
-        cik: cik10,
-        company,
-        form,
-        filed_at,
-        title: `${company} • ${form} • ${filed_at}`,
-        index_url: indexUrl,
-        primary_doc_url: primaryUrl,
-      });
-    }
-
-    // Apply form filter
-    let filtered = rows;
-    if (formSet.size) {
-      filtered = filtered.filter(r => {
-        // Allow prefix match for groups like "424B"
-        for (const f of formSet) {
-          if (r.form === f || r.form.startsWith(f)) return true;
-        }
-        return false;
-      });
-    }
-
-    // Apply date filter
-    if (start || end) {
-      filtered = filtered.filter(r => dateInRange(r.filed_at, start, end));
-    }
-
-    // Apply insider owner filter (only for 3/4/5; we fetch XML only if ownerQuery present)
-    if (ownerQuery) {
-      const isOwnerForm = (f: string) => ["3", "4", "5"].some(p => f === p || f.startsWith(p + "/") || f.startsWith(p + "A"));
-      const candidates = filtered.filter(r => isOwnerForm(r.form));
-
-      // Fetch owner names for candidates in parallel but limit concurrency a bit
-      const BATCH = 8;
-      let idx = 0;
-      const augmented: Out[] = [];
-      async function runBatch() {
-        const slice = candidates.slice(idx, idx + BATCH);
-        await Promise.all(
-          slice.map(async (it) => {
-            const owners = await maybeExtractOwners(it.primary_doc_url);
-            if (owners) (it as any).owner_names = owners;
-          })
-        );
-        idx += BATCH;
-        if (idx < candidates.length) await runBatch();
+    // INSIDER filter: only for 3/4/5; quick scan of primary doc text
+    if (insider) {
+      const keep: Filing[] = [];
+      for (const f of filtered) {
+        const formU = normalizeForm(f.form);
+        if (!/^3|4|5$/.test(formU)) continue;
+        const links = makeDocLinks(cik, f.accessionNumber, f.primaryDocument);
+        if (!links.primaryDoc) continue;
+        const ok = await insiderMatch(links.primaryDoc, insider);
+        if (ok) keep.push(f);
       }
-      await runBatch();
-
-      filtered = filtered.filter(it => {
-        const owners = (it as any).owner_names as string[] | undefined;
-        if (!owners || owners.length === 0) return false;
-        return owners.some(n => n.toLowerCase().includes(ownerQuery));
-      });
+      filtered = keep;
     }
 
-    // Sort desc by date (newest first)
-    filtered.sort((a, b) => (a.filed_at < b.filed_at ? 1 : a.filed_at > b.filed_at ? -1 : 0));
-
-    // Pagination
     const total = filtered.length;
-    const pageCount = Math.max(1, Math.ceil(total / pageSize));
-    const safePage = Math.min(page, pageCount);
-    const startIdx = (safePage - 1) * pageSize;
-    const pageItems = filtered.slice(startIdx, startIdx + pageSize);
+    const startIdx = (page - 1) * pageSize;
+    const pageItems = filtered.slice(startIdx, startIdx + pageSize).map((f) => {
+      const links = makeDocLinks(cik, f.accessionNumber, f.primaryDocument);
+      return {
+        cik,
+        company,
+        form: f.form,
+        filed_at: f.filingDate,
+        accession: f.accessionNumber,
+        primary_doc: f.primaryDocument || null,
+        links: {
+          index: links.index,          // HTML index
+          primary_doc: links.primaryDoc || null, // original HTML/TXT document
+          full_txt: links.txt,         // complete text file
+        },
+      };
+    });
 
     return NextResponse.json({
-      meta: {
-        cik: cik10,
-        company,
-        total,
-        page: safePage,
-        pageSize,
-        pageCount,
-      },
+      company,
+      cik,
+      page,
+      pageSize,
+      total,
       data: pageItems,
     });
   } catch (e: any) {
