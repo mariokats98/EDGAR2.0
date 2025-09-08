@@ -1,205 +1,220 @@
 // app/api/lookup/[symbol]/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import mapData from "../../../data/tickerMap.json"; // <-- ensure this exists and is up-to-date
+import { NextResponse } from 'next/server';
 
-type Entry = {
-  ticker: string;
-  cik: string;
-  name: string;
-};
+export const runtime = 'nodejs'; // Needed for fetch + potential fs/crypto in Node
 
-const SEC_USER_AGENT = process.env.SEC_USER_AGENT || "herevna.io (contact@herevna.io)";
+// --- Config ---
+const SEC_UA =
+  process.env.SEC_USER_AGENT ??
+  'you@example.com Herevna/1.0'; // <-- set a real contact in Vercel env
 
-// Build fast in-memory indexes once
-const ALL: Entry[] = (() => {
-  // Accept both possible shapes: array of objects OR object map
-  // Prefer a unified {ticker, cik, name} array.
-  const out: Entry[] = [];
+// Cache the SEC ticker map in-memory for this server process
+let __tickerMap: Record<string, string> | null = null;
+let __tickerMapFetchedAt = 0;
+const TICKER_MAP_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-  if (Array.isArray(mapData)) {
-    for (const r of mapData as any[]) {
-      if (!r) continue;
-      const t = String(r.ticker || r.symbol || "").toUpperCase();
-      const cik = String(r.cik || r.CIK || "").padStart(10, "0");
-      const name = String(r.name || r.company || r.title || "").trim();
-      if (t || (cik && name)) out.push({ ticker: t, cik, name });
-    }
-  } else if (mapData && typeof mapData === "object") {
-    // shape: { "AAPL": { cik: "000...", name: "Apple Inc." }, ... }  OR  { "AAPL": "000..." }
-    for (const [key, value] of Object.entries(mapData as Record<string, any>)) {
-      const t = key.toUpperCase();
-      if (typeof value === "string") {
-        out.push({ ticker: t, cik: value.padStart(10, "0"), name: "" });
-      } else {
-        const cik = String(value.cik || value.CIK || "").padStart(10, "0");
-        const name = String(value.name || value.company || "").trim();
-        out.push({ ticker: t, cik, name });
-      }
-    }
+// Helpers
+function padCIK10(cik: string | number) {
+  return String(cik).padStart(10, '0');
+}
+function unpadCIK(cik10: string) {
+  return String(parseInt(cik10, 10)); // remove left padding for archive path
+}
+
+async function getTickerMap(): Promise<Record<string, string>> {
+  const now = Date.now();
+  if (__tickerMap && now - __tickerMapFetchedAt < TICKER_MAP_TTL_MS) {
+    return __tickerMap;
   }
-  // Deduplicate on (ticker || name || cik)
-  const seen = new Set<string>();
-  return out.filter((e) => {
-    const k = `${e.ticker}|${e.cik}|${e.name.toLowerCase()}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
+
+  const url = 'https://www.sec.gov/files/company_tickers.json';
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': SEC_UA,
+      Accept: 'application/json',
+      'Accept-Encoding': 'gzip, deflate',
+    },
+    // Allow Next.js to cache at the fetch layer too (edge/CDN) if desired
+    next: { revalidate: 60 * 60 }, // 1 hour
   });
-})();
 
-// Secondary indexes
-const BY_TICKER = new Map<string, Entry>();
-const BY_CIK = new Map<string, Entry>();
-for (const row of ALL) {
-  if (row.ticker) BY_TICKER.set(row.ticker.toUpperCase(), row);
-  if (row.cik) BY_CIK.set(row.cik.replace(/^0+/, ""), row);
-}
-
-// Very simple fuzzy scoring
-function scoreCandidate(q: string, e: Entry) {
-  const qn = q.toLowerCase();
-  let score = 0;
-  if (e.ticker) {
-    const t = e.ticker.toLowerCase();
-    if (t === qn) score += 100;
-    else if (t.startsWith(qn)) score += 60;
-    else if (t.includes(qn)) score += 30;
+  if (!res.ok) {
+    throw new Error(`SEC mapping fetch failed: HTTP ${res.status}`);
   }
-  if (e.name) {
-    const n = e.name.toLowerCase();
-    if (n === qn) score += 90;
-    else if (n.startsWith(qn)) score += 55;
-    else if (n.includes(qn)) score += 25;
+
+  const data = (await res.json()) as Record<
+    string,
+    { cik_str: number; ticker: string; title: string }
+  >;
+
+  // Transform to { [TICKER]: 10-digit CIK }
+  const map = Object.values(data).reduce<Record<string, string>>((acc, x) => {
+    acc[x.ticker.toUpperCase()] = padCIK10(x.cik_str);
+    return acc;
+  }, {});
+
+  __tickerMap = map;
+  __tickerMapFetchedAt = now;
+  return map;
+}
+
+async function getLatestFiling(opts: {
+  cik10: string;
+  formType?: string | null;
+}) {
+  const { cik10, formType } = opts;
+  const url = `https://data.sec.gov/submissions/CIK${cik10}.json`;
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': SEC_UA,
+      Accept: 'application/json',
+      'Accept-Encoding': 'gzip, deflate',
+    },
+    next: { revalidate: 60 }, // 1 minute; tune as you like
+  });
+
+  if (!res.ok) {
+    throw new Error(`Submissions fetch failed: HTTP ${res.status}`);
   }
-  // slight boost if shorter ticker exact match vs. long name partials
-  if (e.ticker && e.ticker.toLowerCase() === qn) score += 10;
-  return score;
+
+  const data = await res.json();
+  const recent = data?.filings?.recent;
+  if (!recent) throw new Error('Missing recent filings in submissions JSON');
+
+  const rows = recent.accessionNumber.map((acc: string, i: number) => ({
+    accessionNumber: acc, // e.g., 0001045810-24-000052
+    accessionNoNoDashes: acc.replace(/-/g, ''), // e.g., 000104581024000052
+    form: recent.form[i] as string,
+    filingDate: recent.filingDate[i] as string | null,
+    reportDate: recent.reportDate[i] as string | null,
+    primaryDocument: recent.primaryDocument[i] as string, // e.g., nvda-20240128.htm
+  }));
+
+  const row = formType
+    ? rows.find((r: any) => r.form.toUpperCase() === formType.toUpperCase())
+    : rows[0];
+
+  if (!row) {
+    const available = Array.from(new Set(rows.map((r: any) => r.form))).slice(
+      0,
+      20
+    );
+    throw new Error(
+      `No recent filings found for requested form "${formType}". Available (sample): ${available.join(
+        ', '
+      )}`
+    );
+  }
+
+  return row;
 }
 
-function normalizeToken(raw: string) {
-  return raw
-    .trim()
-    .replace(/\s+/g, " ")
-    .replace(/[“”"']/g, "")
-    .replace(/[^\w\.\-\s]/g, "")
-    .toUpperCase();
+function buildEdgarUrls(args: {
+  cik10: string;
+  accessionNoNoDashes: string;
+  primaryDocument: string;
+}) {
+  const { cik10, accessionNoNoDashes, primaryDocument } = args;
+  const cikUnpadded = unpadCIK(cik10);
+  const base = `https://www.sec.gov/Archives/edgar/data/${cikUnpadded}/${accessionNoNoDashes}`;
+  return {
+    indexUrl: `${base}/${accessionNoNoDashes}-index.html`,
+    primaryDocUrl: `${base}/${primaryDocument}`,
+    txtFullSubmission: `${base}/${accessionNoNoDashes}.txt`,
+  };
 }
 
+// GET /api/lookup/[symbol]?form=10-K
 export async function GET(
-  req: NextRequest,
+  req: Request,
   { params }: { params: { symbol: string } }
 ) {
   try {
-    const raw = params.symbol || "";
-    const token0 = raw.trim();
-    if (!token0) {
-      return NextResponse.json({ error: "Missing symbol or name" }, { status: 400 });
+    const { searchParams } = new URL(req.url);
+    const form = searchParams.get('form'); // optional (e.g., 10-K, 10-Q, 8-K)
+    const symbol = (params.symbol || '').toUpperCase().trim();
+
+    if (!symbol) {
+      return NextResponse.json(
+        { error: 'Symbol path param is required' },
+        { status: 400 }
+      );
     }
 
-    // Support queries like "NVDA", "NVIDIA", "0000320193"
-    const token = normalizeToken(token0);
+    const map = await getTickerMap();
+    const cik10 = map[symbol];
 
-    // 1) If it looks like a 10-digit CIK
-    const maybeCik = token.replace(/\D/g, "");
-    if (maybeCik.length === 10 || maybeCik.length === 9) {
-      const e = BY_CIK.get(maybeCik.replace(/^0+/, ""));
-      if (e) {
-        return NextResponse.json({
-          ok: true,
-          exact: { ticker: e.ticker, cik: e.cik, name: e.name || e.ticker },
-          candidates: [],
-          source: "cik",
-        });
-      }
+    if (!cik10) {
+      return NextResponse.json(
+        {
+          error: `Ticker not found in SEC mapping: ${symbol}`,
+          hint: 'Ensure the symbol is a US-listed ticker tracked by the SEC mapping.',
+        },
+        { status: 404 }
+      );
     }
 
-    // 2) Exact ticker match
-    if (BY_TICKER.has(token)) {
-      const e = BY_TICKER.get(token)!;
-      return NextResponse.json({
-        ok: true,
-        exact: { ticker: e.ticker, cik: e.cik, name: e.name || e.ticker },
-        candidates: [],
-        source: "ticker_exact",
-      });
-    }
+    // Optionally fetch a recent filing & construct URLs
+    let filing:
+      | {
+          accessionNumber: string;
+          accessionNoNoDashes: string;
+          form: string;
+          filingDate: string | null;
+          reportDate: string | null;
+          primaryDocument: string;
+        }
+      | null = null;
+    let urls:
+      | {
+          indexUrl: string;
+          primaryDocUrl: string;
+          txtFullSubmission: string;
+        }
+      | null = null;
 
-    // 3) Fuzzy search across both ticker and name
-    const scored = ALL
-      .map((e) => ({ e, s: scoreCandidate(token, e) }))
-      .filter((x) => x.s > 0)
-      .sort((a, b) => b.s - a.s)
-      .slice(0, 10)
-      .map(({ e }) => ({ ticker: e.ticker, cik: e.cik, name: e.name || e.ticker }));
-
-    if (scored.length === 1) {
-      return NextResponse.json({
-        ok: true,
-        exact: scored[0],
-        candidates: [],
-        source: "fuzzy_unique",
-      });
-    }
-
-    if (scored.length > 1) {
-      return NextResponse.json({
-        ok: true,
-        exact: null,
-        candidates: scored,
-        source: "fuzzy_multi",
-        message: "Multiple matches — pick one.",
-      });
-    }
-
-    // 4) Last resort: ask SEC's company-tickers endpoint live (just in case map is missing)
     try {
-      const live = await fetch("https://www.sec.gov/files/company_tickers.json", {
-        headers: { "User-Agent": SEC_USER_AGENT, Accept: "application/json" },
-        cache: "no-store",
+      filing = await getLatestFiling({ cik10, formType: form });
+      urls = buildEdgarUrls({
+        cik10,
+        accessionNoNoDashes: filing.accessionNoNoDashes,
+        primaryDocument: filing.primaryDocument,
       });
-      if (live.ok) {
-        const j = (await live.json()) as Record<string, { cik_str: number; ticker: string; title: string }>;
-        const rows: Entry[] = Object.values(j).map((r) => ({
-          ticker: String(r.ticker || "").toUpperCase(),
-          cik: String(r.cik_str || "").padStart(10, "0"),
-          name: String(r.title || "").trim(),
-        }));
-        const scoredLive = rows
-          .map((e) => ({ e, s: scoreCandidate(token, e) }))
-          .filter((x) => x.s > 0)
-          .sort((a, b) => b.s - a.s)
-          .slice(0, 10)
-          .map(({ e }) => ({ ticker: e.ticker, cik: e.cik, name: e.name || e.ticker }));
-
-        if (scoredLive.length === 1) {
-          return NextResponse.json({
-            ok: true,
-            exact: scoredLive[0],
-            candidates: [],
-            source: "sec_live_unique",
-          });
-        }
-        if (scoredLive.length > 1) {
-          return NextResponse.json({
-            ok: true,
-            exact: null,
-            candidates: scoredLive,
-            source: "sec_live_multi",
-            message: "Multiple matches — pick one.",
-          });
-        }
-      }
-    } catch {
-      // ignore
+    } catch (e: any) {
+      // If filing fetch fails, still return the CIK so the client can act on it
+      filing = null;
+      urls = null;
     }
 
     return NextResponse.json(
-      { ok: false, error: `No matches for “${token0}”` },
-      { status: 404 }
+      {
+        symbol,
+        cik_unpadded: unpadCIK(cik10),
+        cik_10digit: cik10,
+        ...(filing
+          ? {
+              latest: {
+                form: filing.form,
+                filingDate: filing.filingDate,
+                reportDate: filing.reportDate,
+                accessionNumber: filing.accessionNumber,
+                primaryDocument: filing.primaryDocument,
+                urls,
+              },
+            }
+          : { latest: null }),
+      },
+      {
+        headers: {
+          // Light CORS for dev; tighten as needed
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'public, max-age=60', // client/proxy cache hint
+        },
+      }
     );
-  } catch (e: any) {
+  } catch (err: any) {
     return NextResponse.json(
-      { ok: false, error: e?.message || "Lookup error" },
+      { error: err.message ?? 'Unexpected error' },
       { status: 500 }
     );
   }
