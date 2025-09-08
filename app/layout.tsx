@@ -5,22 +5,16 @@ import Header from "./components/Header";
 
 export const metadata: Metadata = {
   title: "Herevna.io",
-  description: "Aggregator for SEC EDGAR filings, BLS data, and Market News.",
+  description:
+    "Simplifying Economic, Market & Regulatory Data — EDGAR, BLS, FRED, Screener, and News.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="bg-gray-50 text-gray-900">
+      <body className="min-h-screen bg-gradient-to-b from-white to-slate-50 text-gray-900 antialiased">
         <Header />
-        <main>{children}</main>
-        <footer className="mt-10 border-t bg-white">
-          <div className="mx-auto max-w-6xl px-4 py-6 text-xs text-gray-600 flex flex-wrap items-center gap-3">
-            <span>© {new Date().getFullYear()} Herevna.io</span>
-            <span className="mx-2">•</span>
-            <span>This site republishes SEC EDGAR filings and BLS data.</span>
-          </div>
-        </footer>
+        {children}
       </body>
     </html>
   );
