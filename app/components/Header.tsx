@@ -100,7 +100,8 @@ export default function Header() {
             <MobileLink href="/" label="Home" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/edgar" label="EDGAR" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/bls" label="BLS" onClick={() => setMobileOpen(false)} />
-            <MobileLink href="/fred" label="FRED" onClick={() => setMobileOpen(false)} /> {/** <-- ADDED */}
+            <MobileLink href="/fred" label="FRED" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/bea" label="BEA" onClick={() => setMobileOpen(false)} /> {/** <-- ADDED */}
 
             {/* News accordion (mobile) */}
             <button
