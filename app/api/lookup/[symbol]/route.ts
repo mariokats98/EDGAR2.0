@@ -6,7 +6,7 @@ export const runtime = 'nodejs'; // Needed for fetch + potential fs/crypto in No
 // --- Config ---
 const SEC_UA =
   process.env.SEC_USER_AGENT ??
-  'you@example.com Herevna/1.0'; // <-- set a real contact in Vercel env
+  'mkatsaros98@outlook.com Herevna/1.0'; // <-- set a real contact in Vercel env
 
 // Cache the SEC ticker map in-memory for this server process
 let __tickerMap: Record<string, string> | null = null;
