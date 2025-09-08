@@ -5,12 +5,11 @@ import { useEffect, useState, useRef } from "react";
 
 export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [newsOpen, setNewsOpen] = useState(false); // desktop dropdown
+  const [newsOpen, setNewsOpen] = useState(false);         // desktop dropdown
   const [newsMobileOpen, setNewsMobileOpen] = useState(false); // mobile accordion
-
   const closeTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  // Close mobile menu on route change (in case user navigates via links)
+  // Close mobile menu on route change
   useEffect(() => {
     const handler = () => setMobileOpen(false);
     window.addEventListener("hashchange", handler);
@@ -26,10 +25,7 @@ export default function Header() {
       <div className="mx-auto max-w-6xl px-4">
         <div className="flex h-14 items-center justify-between">
           {/* Brand */}
-          <a
-            href="/"
-            className="shrink-0 font-bold text-lg tracking-tight text-brand"
-          >
+          <a href="/" className="shrink-0 font-bold text-lg tracking-tight text-brand">
             Herevna.io
           </a>
 
@@ -38,8 +34,7 @@ export default function Header() {
             <NavLink href="/" label="Home" />
             <NavLink href="/edgar" label="EDGAR" />
             <NavLink href="/bls" label="BLS" />
-            <NavLink href="/fred" label="FRED" />
-
+            <NavLink href="/fred" label="FRED" />  {/* <-- ADDED */}
             {/* News dropdown (desktop) */}
             <div
               className="relative"
@@ -81,7 +76,6 @@ export default function Header() {
                 </div>
               )}
             </div>
-
             <NavLink href="/screener" label="Screener" />
           </nav>
 
@@ -104,6 +98,7 @@ export default function Header() {
             <MobileLink href="/" label="Home" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/edgar" label="EDGAR" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/bls" label="BLS" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/fred" label="FRED" onClick={() => setMobileOpen(false)} /> {/** <-- ADDED */}
 
             {/* News accordion (mobile) */}
             <button
@@ -221,13 +216,7 @@ function ChevronDown({ open }: { open: boolean }) {
 
 function Burger({ open }: { open: boolean }) {
   return (
-    <svg
-      className="h-6 w-6"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      aria-hidden
-    >
+    <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden>
       {open ? (
         <path strokeWidth="2" strokeLinecap="round" d="M6 6l12 12M18 6L6 18" />
       ) : (
