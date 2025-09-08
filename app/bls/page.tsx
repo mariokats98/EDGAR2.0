@@ -1,4 +1,3 @@
-// app/bls/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -127,7 +126,7 @@ function labelForX(dateStr: string, cadenceMonths: 1 | 3 | 12) {
     const q = Math.floor((m - 1) / 3) + 1;
     return `${y}-Q${q}`;
   }
-  return d.toLocaleString(undefined, { year: "numeric", month: "short" }); // e.g., "Jan 2024"
+  return d.toLocaleString(undefined, { year: "numeric", month: "short" });
 }
 
 function prettyDate(dateStr: string, cadenceMonths: 1 | 3 | 12) {
@@ -155,7 +154,7 @@ function fmtPct(p: number | null) {
   return `${sign}${p.toFixed(2)}%`;
 }
 
-/* ============ Chart (improved) ============ */
+/* ============ Chart (clean) ============ */
 function LineChart({
   data,
   height = 170,
@@ -182,12 +181,10 @@ function LineChart({
   const scaleY = (v: number) =>
     y1 === y0 ? height / 2 : height - pad - ((v - y0) / (y1 - y0)) * (height - pad * 2);
 
-  // Path & area
   let d = `M ${pad},${scaleY(ys[0])}`;
   for (let i = 1; i < s.length; i++) d += ` L ${pad + i * dx},${scaleY(ys[i])}`;
   const area = `${d} L ${width - pad},${height - pad} L ${pad},${height - pad} Z`;
 
-  // X ticks
   const cadence = inferCadenceMonths(s);
   const tickCount = Math.min(xTicksTarget, s.length);
   const step = Math.max(1, Math.round((s.length - 1) / (tickCount - 1)));
@@ -195,38 +192,26 @@ function LineChart({
   for (let i = 0; i < s.length; i += step) tickIdxs.push(i);
   if (tickIdxs[tickIdxs.length - 1] !== s.length - 1) tickIdxs.push(s.length - 1);
 
-  // Y “nice” ticks
   const yTicks = [y0, (y0 + y1) / 2, y1];
 
   return (
     <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="trend chart">
-      {/* horizontal grid */}
       {Array.from({ length: 5 }).map((_, i) => {
         const y = pad + ((height - pad * 2) / 4) * i;
         return <line key={`hy${i}`} x1={pad} y1={y} x2={width - pad} y2={y} stroke="#e5e7eb" />;
       })}
-      {/* vertical grid at tick positions */}
       {tickIdxs.map((idx, i) => {
         const x = pad + idx * dx;
         return <line key={`vx${i}`} x1={x} y1={pad} x2={x} y2={height - pad} stroke="#f0f0f0" />;
       })}
-      {/* axes */}
       <rect x={pad} y={pad} width={width - pad * 2} height={height - pad * 2} fill="none" stroke="#d1d5db" />
-
-      {/* area + line */}
       <path d={area} fill="rgba(31,41,55,0.06)" />
       <path d={d} fill="none" stroke="#0f172a" strokeWidth={2} />
-
-      {/* endpoints */}
       <circle cx={pad} cy={scaleY(ys[0])} r={2.6} fill="#0f172a" />
       <circle cx={width - pad} cy={scaleY(ys[ys.length - 1])} r={2.6} fill="#0f172a" />
-
-      {/* y labels */}
       <text x={pad + 4} y={pad + 10} fontSize="10" fill="#6b7280">{yTicks[2].toFixed(2)}</text>
       <text x={pad + 4} y={height / 2 + 3} fontSize="10" fill="#6b7280">{yTicks[1].toFixed(2)}</text>
       <text x={pad + 4} y={height - pad - 2} fontSize="10" fill="#6b7280">{yTicks[0].toFixed(2)}</text>
-
-      {/* x labels */}
       {tickIdxs.map((idx, i) => {
         const x = pad + idx * dx;
         return (
@@ -242,12 +227,9 @@ function LineChart({
 /* ============ Page component ============ */
 type Tab = "latest" | "trends";
 
-type BlsNews = { title: string; link: string; pubDate: string; category?: string };
-
 export default function BLSPage() {
   const thisYear = new Date().getFullYear().toString();
 
-  // Tabs
   const [tab, setTab] = useState<Tab>("latest");
 
   // Latest
@@ -266,18 +248,9 @@ export default function BLSPage() {
   const [trSeries, setTrSeries] = useState<SeriesOut[]>([]);
   const [trError, setTrError] = useState<string | null>(null);
 
-  // BLS Economic News Releases
-  const [news, setNews] = useState<BlsNews[]>([]);
-  const [newsLoading, setNewsLoading] = useState(false);
-  const [newsQuery, setNewsQuery] = useState("");
-
   useEffect(() => {
     if (tab === "latest" && !latestSeries && !latestLoading) {
       void loadLatest(activeKey, latestMonths);
-    }
-    // also load news once
-    if (news.length === 0 && !newsLoading) {
-      void loadNews();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -288,7 +261,7 @@ export default function BLSPage() {
 
   function normalizeSeries(s?: SeriesOut, keepLastPoints?: number): SeriesOut | null {
     if (!s) return null;
-    const asc = uniqAscending(s.observations); // old → new
+    const asc = uniqAscending(s.observations);
     let obs = asc;
     if (keepLastPoints && keepLastPoints > 0) obs = asc.slice(-keepLastPoints);
     return { ...s, observations: obs, latest: obs[obs.length - 1] ?? null };
@@ -346,28 +319,6 @@ export default function BLSPage() {
       setTrLoading(false);
     }
   }
-
-  /* ---------- BLS News ---------- */
-  async function loadNews() {
-    setNewsLoading(true);
-    try {
-      const r = await fetch(`/api/bls/news?limit=24`, { cache: "no-store" });
-      const j = await r.json();
-      setNews(Array.isArray(j.items) ? j.items : []);
-    } catch {
-      setNews([]);
-    } finally {
-      setNewsLoading(false);
-    }
-  }
-
-  const filteredNews = useMemo(() => {
-    const q = newsQuery.trim().toLowerCase();
-    if (!q) return news;
-    return news.filter((n) =>
-      [n.title, n.category].filter(Boolean).join(" ").toLowerCase().includes(q)
-    );
-  }, [news, newsQuery]);
 
   /* ---------- Cards ---------- */
   function LatestCard() {
@@ -435,53 +386,6 @@ export default function BLSPage() {
     <div className="mx-auto max-w-6xl px-4 py-10">
       <h1 className="text-2xl font-semibold">BLS Economic Data</h1>
       <p className="text-gray-600 text-sm mb-4">Latest numbers at a glance, plus clean historical trends.</p>
-
-      {/* NEW: Economic News Releases */}
-      <section className="rounded-2xl border bg-white p-4 mb-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="font-medium">Economic News Releases</h2>
-          <div className="flex items-center gap-2">
-            <input
-              value={newsQuery}
-              onChange={(e) => setNewsQuery(e.target.value)}
-              placeholder="Filter headlines (e.g., CPI, productivity)…"
-              className="border rounded-md px-3 py-1.5 text-sm w-64"
-            />
-            <button
-              onClick={loadNews}
-              className="px-3 py-1.5 rounded-md bg-black text-white text-sm disabled:opacity-60"
-              disabled={newsLoading}
-            >
-              {newsLoading ? "Loading…" : "Refresh"}
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-3 grid md:grid-cols-2 gap-3">
-          {filteredNews.map((n, i) => (
-            <article key={i} className="border rounded-lg p-3">
-              <a href={n.link} target="_blank" rel="noreferrer" className="font-medium hover:underline">
-                {n.title}
-              </a>
-              <div className="text-xs text-gray-600 mt-1">
-                {n.category && <span className="rounded-full bg-gray-100 px-2 py-0.5 mr-2">{n.category}</span>}
-                {n.pubDate ? new Date(n.pubDate).toLocaleString() : ""}
-              </div>
-              <div className="mt-2">
-                <a href={n.link} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">
-                  Read on bls.gov →
-                </a>
-              </div>
-            </article>
-          ))}
-          {(!newsLoading && filteredNews.length === 0) && (
-            <div className="text-sm text-gray-600">No matching headlines.</div>
-          )}
-          {newsLoading && filteredNews.length === 0 && (
-            <div className="text-sm text-gray-600">Loading BLS headlines…</div>
-          )}
-        </div>
-      </section>
 
       {/* Tabs */}
       <div className="mb-4 flex gap-2">
@@ -600,3 +504,4 @@ export default function BLSPage() {
     </div>
   );
 }
+
