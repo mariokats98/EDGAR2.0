@@ -1,66 +1,44 @@
 // app/api/chat/route.ts
-import { NextResponse, NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-/** Make sure this env is set in Vercel (Project → Settings → Env Vars) */
 const SEC_USER_AGENT = process.env.SEC_USER_AGENT || "herevna.io (contact@herevna.io)";
 
-/** Helper: build absolute URL to call your own API from the server */
 function baseUrl(req: NextRequest) {
   const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "";
-  const proto = (req.headers.get("x-forwarded-proto") || "https");
+  const proto = req.headers.get("x-forwarded-proto") || "https";
   return `${proto}://${host}`;
 }
 
-/** Heuristic: is this an EDGAR question about “latest filings”? */
-function seemsEdgarLatest(q: string) {
+function looksLikeEdgarLatest(q: string) {
   const s = q.toLowerCase();
   return (
     s.includes("edgar") ||
     s.includes("filing") ||
-    s.includes("10-k") ||
-    s.includes("10q") ||
-    s.includes("10-q") ||
-    s.includes("8-k") ||
-    s.includes("s-1") ||
-    s.includes("6-k") ||
-    s.includes("13d") ||
-    s.includes("13g") ||
     s.includes("latest filing") ||
-    s.match(/\b(cik|ticker)\b/)
+    /\b(10-k|10q|10-q|8-k|6-k|s-1|13d|13g)\b/.test(s) ||
+    /\b(cik|ticker)\b/.test(s)
   );
 }
 
-/** Try to extract a likely ticker/company token (very forgiving) */
-function extractQueryToken(q: string) {
-  // Grab last “word” after common prepositions: “for TSLA”, “for Webull”, etc.
-  const m = q.match(/\bfor\s+([A-Za-z0-9\.\- ]{2,40})$/i) ||
-            q.match(/\babout\s+([A-Za-z0-9\.\- ]{2,40})$/i) ||
-            q.match(/\bof\s+([A-Za-z0-9\.\- ]{2,40})$/i);
-  if (m) return m[1].trim();
-  // Otherwise, return the whole thing and let /api/lookup be smart
-  return q.trim();
+function extractTarget(q: string) {
+  // Try to grab last “token” after a common preposition
+  const m =
+    q.match(/\bfor\s+([A-Za-z0-9\.\-&\s]{2,60})$/i) ||
+    q.match(/\babout\s+([A-Za-z0-9\.\-&\s]{2,60})$/i) ||
+    q.match(/\bof\s+([A-Za-z0-9\.\-&\s]{2,60})$/i);
+  return (m ? m[1] : q).trim();
 }
 
-/** Compose a crisp, link-first answer */
-function renderEdgarAnswer(cik: string, company: string, filing: any) {
+function renderAnswer(company: string, filing: any) {
   const lines: string[] = [];
   lines.push(`**Latest EDGAR filing for ${company}**`);
   lines.push(`- **Form**: ${filing.form}`);
   lines.push(`- **Filed**: ${filing.filed_at}`);
   if (filing.title) lines.push(`- **Title**: ${filing.title}`);
-
   const links: string[] = [];
   if (filing.primary_doc_url) links.push(`[Primary document](${filing.primary_doc_url})`);
   if (filing.source_url) links.push(`[Filing index](${filing.source_url})`);
-  // Add direct archive root if available
-  if (!filing.source_url && cik && filing.accession) {
-    const cikNum = String(parseInt(cik, 10));
-    const archive = `https://www.sec.gov/Archives/edgar/data/${cikNum}/${filing.accession.replace(/-/g, "")}`;
-    links.push(`[EDGAR archive](${archive})`);
-  }
-
   if (links.length) lines.push(`- **Downloads**: ${links.join(" • ")}`);
-
   if (Array.isArray(filing.badges) && filing.badges.length) {
     lines.push(`- **Highlights**: ${filing.badges.join(", ")}`);
   }
@@ -78,92 +56,83 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing message" }, { status: 400 });
     }
 
-    // Always give the client something to show immediately (you can use this to display a “Thinking…” bar)
-    // If your client expects streaming, you can keep this simple JSON and just show a spinner until 'final' arrives.
+    // Immediate status for UI
     const thinking = { status: "thinking", message: "Working on it…" };
 
-    // If it looks like an EDGAR “latest filing” question, ground to your own API
-    if (seemsEdgarLatest(userText)) {
-      const q = extractQueryToken(userText);
+    if (looksLikeEdgarLatest(userText)) {
+      const query = extractTarget(userText);
       const origin = baseUrl(req);
 
-      // 1) Resolve to CIK via your lookup route (supports tickers and names)
-      //    We try: /api/lookup/{token}  (you already have this dynamic route)
-      const look = await fetch(`${origin}/api/lookup/${encodeURIComponent(q)}`, {
+      // 1) Resolve ticker/company -> CIK (with fuzzy + candidates)
+      const lookupRes = await fetch(`${origin}/api/lookup/${encodeURIComponent(query)}`, {
         headers: { "User-Agent": SEC_USER_AGENT },
         cache: "no-store",
       });
+      const L = await lookupRes.json();
 
-      if (!look.ok) {
-        // Fall back to suggest API if you have it, else return graceful error
-        // const sug = await fetch(`${origin}/api/suggest?q=${encodeURIComponent(q)}`);
+      if (!lookupRes.ok || !L?.ok) {
         return NextResponse.json({
           ...thinking,
-          final: `I couldn't resolve **${q}** to a CIK. Try a ticker (e.g., AAPL), the company’s full name, or a known CIK.`,
-        }, { status: 200 });
+          final: `I couldn’t find a company for “${query}”. Try a ticker (NVDA), a full name (NVIDIA), or paste a CIK.`,
+        });
       }
 
-      const j = await look.json();
-      const cik = j?.cik || j?.data?.cik; // be tolerant about shape
-      const name = j?.name || j?.data?.name || q;
-
-      if (!cik) {
+      // If multiple candidates, ask user to choose
+      if (!L.exact && Array.isArray(L.candidates) && L.candidates.length) {
+        const list = L.candidates
+          .slice(0, 5)
+          .map((c: any) => `- **${c.ticker || "—"}** — ${c.name || "Unnamed"} (CIK ${c.cik})`)
+          .join("\n");
         return NextResponse.json({
           ...thinking,
-          final: `I couldn't resolve **${q}** to a CIK. Try a ticker (e.g., AAPL), the company’s full name, or a known CIK.`,
-        }, { status: 200 });
+          final:
+            `I found several matches for “${query}”. Which one do you mean?\n\n${list}\n\n` +
+            `Reply with a **ticker** or **CIK** and I’ll pull the latest filing.`,
+        });
       }
 
-      // 2) Fetch recent filings and pick the most recent
-      const filingsRes = await fetch(`${origin}/api/filings/${encodeURIComponent(cik)}?limit=12`, {
+      const exact = L.exact || (Array.isArray(L.candidates) ? L.candidates[0] : null);
+      if (!exact?.cik) {
+        return NextResponse.json({
+          ...thinking,
+          final: `Couldn’t resolve a single match for “${query}”. Try the ticker (e.g., NVDA) if you know it.`,
+        });
+      }
+
+      // 2) Get recent filings
+      const filingsRes = await fetch(`${origin}/api/filings/${encodeURIComponent(exact.cik)}?limit=12`, {
         headers: { "User-Agent": SEC_USER_AGENT },
         cache: "no-store",
       });
-
       if (!filingsRes.ok) {
         const err = await filingsRes.json().catch(() => ({}));
         return NextResponse.json({
           ...thinking,
-          final: `SEC fetch failed for **${name}** (CIK ${cik}). ${err?.error ? `Details: ${err.error}` : ""}`,
-        }, { status: 200 });
+          final: `SEC fetch failed for **${exact.name || exact.ticker}** (CIK ${exact.cik}). ${err?.error ? `Details: ${err.error}` : ""}`,
+        });
       }
-
       const filings = await filingsRes.json();
       const arr = Array.isArray(filings) ? filings : filings?.data || [];
-
       if (!arr.length) {
         return NextResponse.json({
           ...thinking,
-          final: `No filings found for **${name}** (CIK ${cik}).`,
-        }, { status: 200 });
+          final: `No filings found for **${exact.name || exact.ticker}** (CIK ${exact.cik}).`,
+        });
       }
 
-      // Sort desc by filed_at just in case
+      // 3) Pick most recent by date
       arr.sort((a: any, b: any) => String(b.filed_at).localeCompare(String(a.filed_at)));
       const latest = arr[0];
-
-      // 3) Compose clean, link-first reply
-      const final = renderEdgarAnswer(cik, name, latest);
-
-      return NextResponse.json({ ...thinking, final }, { status: 200 });
+      const final = renderAnswer(exact.name || exact.ticker, latest);
+      return NextResponse.json({ ...thinking, final });
     }
 
-    // -------- Non-EDGAR questions fall back to your LLM (DeepSeek) ----------
-    // If you already wired /api/chat to DeepSeek, keep that call here.
-    // IMPORTANT: Keep a system instruction telling the model to NEVER invent EDGAR answers,
-    // and to ask the server (this route) to run the grounded lookup when filings are requested.
-    // Example (pseudo):
-    //
-    // const r = await fetch("https://api.deepseek.com/chat/completions", { ... });
-    // const modelReply = await r.json();
-    // return NextResponse.json({ status: "done", final: modelReply.choices[0].message.content });
-    //
-    // For now, return a neutral response:
+    // Not an EDGAR-latest question: your LLM can handle this part.
+    // (Left neutral on purpose.)
     return NextResponse.json({
       status: "done",
-      final: "Ask me about EDGAR filings (e.g., “latest filing for AAPL” or “latest 6-K for NVDA”).",
+      final: "Ask me about EDGAR filings (e.g., “latest filing for NVDA”).",
     });
-
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
   }
