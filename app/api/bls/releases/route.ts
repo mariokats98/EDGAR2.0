@@ -1,76 +1,116 @@
 // app/api/bls/releases/route.ts
 import { NextResponse } from "next/server";
 
-/**
- * We read BLS "Economic News Releases" RSS.
- * Primary: https://www.bls.gov/feed/news_release.rss
- * Fallback: https://www.bls.gov/feed/bls_latest.rss
- *
- * Query params:
- *   q: optional search (case-insensitive) over title
- *   limit: optional integer (default 30)
- */
+export const revalidate = 0;           // no ISR — always fresh
+export const dynamic = "force-dynamic";
+
+const FEEDS = [
+  "https://www.bls.gov/feed/news_release.rss",
+  "https://www.bls.gov/feed/bls_latest.rss",
+];
+
+function ua() {
+  // You can set BLS_USER_AGENT in Vercel → Environment Variables for your email/domain
+  return process.env.BLS_USER_AGENT || "HerevnaBot/1.0 (contact@herevna.io)";
+}
+
+async function fetchText(url: string) {
+  const r = await fetch(url, {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      "User-Agent": ua(),
+      "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+    },
+  });
+  if (!r.ok) throw new Error(`Fetch ${url} failed (${r.status})`);
+  return r.text();
+}
+
+// Very forgiving RSS parser (no extra deps)
+function parseRss(xml: string) {
+  const out: Array<{
+    title: string;
+    link: string;
+    pubDate: string;
+    categories: string[];
+  }> = [];
+
+  const items = xml.match(/<item[\s\S]*?<\/item>/gi) || [];
+  for (const raw of items) {
+    const text = raw;
+
+    const title =
+      text.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/i)?.[1]?.trim() ??
+      text.match(/<title>([^<]+)<\/title>/i)?.[1]?.trim() ??
+      "";
+
+    const link =
+      text.match(/<link>([^<]+)<\/link>/i)?.[1]?.trim() ??
+      text.match(/<guid[^>]*>([^<]+)<\/guid>/i)?.[1]?.trim() ??
+      "";
+
+    const pubDate = text.match(/<pubDate>([^<]+)<\/pubDate>/i)?.[1]?.trim() ?? "";
+
+    const categories: string[] = [];
+    const catMatches = text.match(/<category>([\s\S]*?)<\/category>/gi) || [];
+    for (const m of catMatches) {
+      const v = m.replace(/<\/?category>/gi, "").replace("<![CDATA[", "").replace("]]>", "").trim();
+      if (v) categories.push(v);
+    }
+
+    if (title && link) out.push({ title, link, pubDate, categories });
+  }
+
+  return out;
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const q = (searchParams.get("q") || "").trim().toLowerCase();
   const limit = Math.max(1, Math.min(100, parseInt(searchParams.get("limit") || "30", 10) || 30));
-
-  // Fetch helpers
-  async function fetchRss(url: string) {
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) throw new Error(`BLS RSS fetch failed (${r.status})`);
-    return r.text();
-  }
-
-  // Parse a minimal RSS (no extra deps)
-  function parseItems(xml: string) {
-    const items: Array<{ title: string; link: string; pubDate: string; categories: string[] }> = [];
-    const blocks = xml.split(/<item>/i).slice(1); // everything after first <item>
-    for (const block of blocks) {
-      const chunk = block.split(/<\/item>/i)[0] || "";
-      const title = (chunk.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/i)?.[1] ??
-                     chunk.match(/<title>([^<]+)<\/title>/i)?.[1] ??
-                     "").trim();
-      const link  = (chunk.match(/<link>([^<]+)<\/link>/i)?.[1] ?? "").trim();
-      const pub   = (chunk.match(/<pubDate>([^<]+)<\/pubDate>/i)?.[1] ?? "").trim();
-
-      const cats: string[] = [];
-      const catMatches = chunk.match(/<category>(.*?)<\/category>/gi) || [];
-      for (const m of catMatches) {
-        const v = m.replace(/<\/?category>/gi, "").trim();
-        if (v) cats.push(v);
-      }
-
-      if (title && link) items.push({ title, link, pubDate: pub, categories: cats });
-    }
-    return items;
-  }
+  const debug = searchParams.get("debug") === "1";
 
   try {
-    let xml: string;
-    try {
-      xml = await fetchRss("https://www.bls.gov/feed/news_release.rss");
-    } catch {
-      // fallback feed
-      xml = await fetchRss("https://www.bls.gov/feed/bls_latest.rss");
-    }
-    let items = parseItems(xml);
+    let xml = "";
+    let used = "";
+    let lastErr: unknown = null;
 
-    // filter by q (title contains)
-    if (q) {
+    for (const url of FEEDS) {
+      try {
+        xml = await fetchText(url);
+        used = url;
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!xml) throw lastErr || new Error("All BLS feeds failed");
+
+    let items = parseRss(xml);
+
+    // filter by query (title contains), but only if q has 2+ chars
+    if (q.length >= 2) {
       const needle = q.toLowerCase();
       items = items.filter((it) => it.title.toLowerCase().includes(needle));
     }
 
-    // sort desc by pubDate if present
+    // sort desc by date (unknown dates go last)
     items.sort((a, b) => {
       const ta = Date.parse(a.pubDate || "") || 0;
       const tb = Date.parse(b.pubDate || "") || 0;
       return tb - ta;
     });
 
-    // cap
     items = items.slice(0, limit);
+
+    if (debug) {
+      return NextResponse.json({
+        feedUsed: used,
+        count: items.length,
+        sample: items.slice(0, 3),
+      });
+    }
 
     return NextResponse.json({ data: items });
   } catch (e: any) {
