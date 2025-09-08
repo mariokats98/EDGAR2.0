@@ -34,7 +34,9 @@ export default function Header() {
             <NavLink href="/" label="Home" />
             <NavLink href="/edgar" label="EDGAR" />
             <NavLink href="/bls" label="BLS" />
-            <NavLink href="/fred" label="FRED" />  {/* <-- ADDED */}
+            <NavLink href="/fred" label="FRED" /> 
+            <NavLink href="/bea" label="BEA" /> {/* <-- ADDED */}
+            
             {/* News dropdown (desktop) */}
             <div
               className="relative"
