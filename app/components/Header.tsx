@@ -1,15 +1,13 @@
-// app/components/Header.tsx
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 
 export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [newsOpen, setNewsOpen] = useState(false);         // desktop dropdown
+  const [newsOpen, setNewsOpen] = useState(false); // desktop dropdown
   const [newsMobileOpen, setNewsMobileOpen] = useState(false); // mobile accordion
-  const closeTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  // Close mobile menu on route change
+  // Close mobile menu on route change (in case user navigates via links)
   useEffect(() => {
     const handler = () => setMobileOpen(false);
     window.addEventListener("hashchange", handler);
@@ -25,7 +23,11 @@ export default function Header() {
       <div className="mx-auto max-w-6xl px-4">
         <div className="flex h-14 items-center justify-between">
           {/* Brand */}
-          <a href="/" className="shrink-0 font-bold text-lg tracking-tight text-brand">
+          <a
+            href="/"
+            className="shrink-0 font-bold text-lg tracking-tight text-brand"
+            aria-label="Herevna home"
+          >
             Herevna.io
           </a>
 
@@ -34,20 +36,12 @@ export default function Header() {
             <NavLink href="/" label="Home" />
             <NavLink href="/edgar" label="EDGAR" />
             <NavLink href="/bls" label="BLS" />
-            <NavLink href="/fred" label="FRED" /> 
-            <NavLink href="/bea" label="BEA" /> 
-            <NavLink href="/ai" label="AI" /> {/* <-- ADDED */}
-            
+
             {/* News dropdown (desktop) */}
             <div
               className="relative"
-              onMouseEnter={() => {
-                if (closeTimeout.current) clearTimeout(closeTimeout.current);
-                setNewsOpen(true);
-              }}
-              onMouseLeave={() => {
-                closeTimeout.current = setTimeout(() => setNewsOpen(false), 150);
-              }}
+              onMouseEnter={() => setNewsOpen(true)}
+              onMouseLeave={() => setNewsOpen(false)}
             >
               <button
                 className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition inline-flex items-center gap-1"
@@ -60,14 +54,7 @@ export default function Header() {
               {newsOpen && (
                 <div
                   role="menu"
-                  className="absolute right-0 mt-2 w-56 rounded-md border bg-white shadow-lg p-1 z-50"
-                  onMouseEnter={() => {
-                    if (closeTimeout.current) clearTimeout(closeTimeout.current);
-                    setNewsOpen(true);
-                  }}
-                  onMouseLeave={() => {
-                    closeTimeout.current = setTimeout(() => setNewsOpen(false), 150);
-                  }}
+                  className="absolute right-0 mt-2 w-56 rounded-md border bg-white shadow-lg p-1"
                 >
                   <MenuItem href="/news" label="All News" />
                   <Divider />
@@ -79,7 +66,27 @@ export default function Header() {
                 </div>
               )}
             </div>
+
             <NavLink href="/screener" label="Screener" />
+
+            {/* --- AI bubble (desktop) --- */}
+            <a
+              href="#ai"
+              aria-label="Open AI Assistant"
+              className="ml-2 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm
+                         bg-white text-gray-900
+                         ring-1 ring-inset ring-blue-500/20
+                         shadow-[0_1px_8px_rgba(37,99,235,0.12)]
+                         hover:shadow-[0_2px_14px_rgba(37,99,235,0.18)]
+                         transition
+                         bg-gradient-to-r from-blue-50 to-indigo-50"
+            >
+              <span className="relative inline-flex h-2 w-2">
+                <span className="absolute inline-flex h-2 w-2 rounded-full bg-blue-600 opacity-80" />
+                <span className="absolute inline-flex h-2 w-2 rounded-full bg-blue-600 animate-ping" />
+              </span>
+              <span className="font-medium">AI</span>
+            </a>
           </nav>
 
           {/* Mobile hamburger */}
@@ -101,8 +108,6 @@ export default function Header() {
             <MobileLink href="/" label="Home" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/edgar" label="EDGAR" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/bls" label="BLS" onClick={() => setMobileOpen(false)} />
-            <MobileLink href="/fred" label="FRED" onClick={() => setMobileOpen(false)} />
-            <MobileLink href="/bea" label="BEA" onClick={() => setMobileOpen(false)} /> {/** <-- ADDED */}
 
             {/* News accordion (mobile) */}
             <button
@@ -125,6 +130,25 @@ export default function Header() {
             )}
 
             <MobileLink href="/screener" label="Screener" onClick={() => setMobileOpen(false)} />
+
+            {/* --- AI bubble (mobile) --- */}
+            <a
+              href="#ai"
+              onClick={() => setMobileOpen(false)}
+              className="mt-2 flex w-full items-center justify-between rounded-full border px-4 py-2
+                         bg-gradient-to-r from-blue-50 to-indigo-50
+                         ring-1 ring-inset ring-blue-500/20
+                         shadow-[0_1px_8px_rgba(37,99,235,0.12)]"
+            >
+              <span className="inline-flex items-center gap-2 text-sm text-gray-900">
+                <span className="relative inline-flex h-2 w-2">
+                  <span className="absolute inline-flex h-2 w-2 rounded-full bg-blue-600 opacity-80" />
+                  <span className="absolute inline-flex h-2 w-2 rounded-full bg-blue-600 animate-ping" />
+                </span>
+                <span className="font-medium">AI Assistant</span>
+              </span>
+              <span aria-hidden className="text-gray-500">↗</span>
+            </a>
           </nav>
         </div>
       )}
@@ -220,7 +244,13 @@ function ChevronDown({ open }: { open: boolean }) {
 
 function Burger({ open }: { open: boolean }) {
   return (
-    <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden>
+    <svg
+      className="h-6 w-6"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      aria-hidden
+    >
       {open ? (
         <path strokeWidth="2" strokeLinecap="round" d="M6 6l12 12M18 6L6 18" />
       ) : (
