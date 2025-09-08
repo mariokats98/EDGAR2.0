@@ -1,5 +1,33 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* ================================
+   Marquee ticker animation (Herevna)
+   ================================ */
 
-body { -webkit-font-smoothing: antialiased; }
+@keyframes herevna-marquee-left {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.marquee {
+  display: flex;
+  gap: 2rem; /* spacing between pills */
+  will-change: transform;
+  animation: herevna-marquee-left 30s linear infinite;
+  white-space: nowrap;
+}
+
+/* Optional speed variants */
+.marquee.fast {
+  animation-duration: 20s;
+}
+.marquee.slow {
+  animation-duration: 45s;
+}
+
+/* Smooth pill appearance */
+.marquee > div {
+  flex-shrink: 0;
+}
