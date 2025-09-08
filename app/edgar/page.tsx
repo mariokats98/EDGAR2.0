@@ -1,342 +1,379 @@
-// app/edgar/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { InsiderInput } from "./InsiderInput";
 
-type Suggest = { cik: string; ticker: string; name: string };
-type FilingRow = {
+/* ---------------- UI helpers ---------------- */
+
+type Filing = {
   cik: string;
   company: string;
   form: string;
-  filed_at: string;
-  accession: string;
-  primary_doc: string | null;
-  links: { index: string; primary_doc: string | null; full_txt: string };
+  filed_at: string; // YYYY-MM-DD
+  title: string;
+  source_url: string;        // directory on EDGAR
+  primary_doc_url?: string;  // direct doc if available
+  items?: string[];
+  badges?: string[];
+  amount_usd?: number | null;
 };
 
-const ALL_FORMS = [
-  "8-K","10-Q","10-K","6-K","S-1","S-3","S-4","424B1","424B2","424B3","424B4",
-  "13D","13G","SC 13D","SC 13G","SD","SD/A",
-  "3","4","5",
-  "20-F","40-F","F-1","F-3","F-4",
-  "DEF 14A","DEFA14A","PX14A6G","PX14A6N",
-  "8-A12B","8-A12G","POS AM","POS EX","RW"
+const PAGE_SIZES = [10, 25, 50];
+
+const FORM_OPTIONS = [
+  // Core 10-K/Q/8-K & proxies
+  "8-K", "10-Q", "10-K", "10-K/A", "10-Q/A",
+  "DEF 14A", "DEFA14A", "DFAN14A", "PX14A6G", "PX14A6N",
+  // Registration / prospectus
+  "S-1", "S-1/A", "424B1", "424B2", "424B3", "424B4", "424B5", "424B7",
+  // Ownership
+  "3", "4", "5",
+  // Large holders
+  "13D", "13D/A", "SC 13D", "SC 13D/A",
+  "13G", "13G/A", "SC 13G", "SC 13G/A",
+  // Foreign issuers
+  "6-K", "6-K/A", "20-F", "20-F/A", "40-F",
+  // Others commonly used
+  "11-K", "SD", "8-A12B", "8-A12G", "S-3", "S-8",
 ];
 
+/* Small helpers */
+function toCIK10(s: string) {
+  const only = (s || "").replace(/\D/g, "");
+  return only ? only.padStart(10, "0") : null;
+}
+function isCIKLike(s: string) {
+  return /^\d{1,10}$/.test((s || "").trim());
+}
+function fmtUSD(n?: number | null) {
+  if (n == null || !isFinite(n)) return "";
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(2)}K`;
+  return `$${n.toFixed(0)}`;
+}
+
+/* ---------------- Page ---------------- */
+
 export default function EdgarPage() {
-  // search
-  const [q, setQ] = useState("");
-  const [suggest, setSuggest] = useState<Suggest[]>([]);
-  const [showSuggest, setShowSuggest] = useState(false);
-  const [resolved, setResolved] = useState<{ cik: string; name: string } | null>(null);
+  // Search input
+  const [query, setQuery] = useState("");
+  // Resolved CIK for this search
+  const [resolvedCik, setResolvedCik] = useState<string | null>(null);
 
-  // filters
+  // Filters
   const [forms, setForms] = useState<string[]>([]);
-  const [insider, setInsider] = useState("");
-  const [start, setStart] = useState("1999-01-01");
-  const [end, setEnd] = useState("");
+  const [start, setStart] = useState(""); // YYYY-MM-DD or blank
+  const [end, setEnd] = useState("");     // YYYY-MM-DD or blank
+  const [insider, setInsider] = useState(""); // from InsiderInput
 
-  // results
-  const [loading, setLoading] = useState(false);
-  const [thinking, setThinking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [rows, setRows] = useState<FilingRow[]>([]);
-  const [total, setTotal] = useState(0);
+  // Paging
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [size, setSize] = useState(10);
 
-  const boxRef = useRef<HTMLDivElement>(null);
+  // Results
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [filings, setFilings] = useState<Filing[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
 
-  // Suggest dropdown
-  useEffect(() => {
-    let alive = true;
-    async function go() {
-      const term = q.trim();
-      if (!term) { setSuggest([]); return; }
-      try {
-        const r = await fetch(`/api/lookup/${encodeURIComponent(term)}`, { cache: "no-store" });
-        const j = await r.json();
-        if (!alive) return;
-        setSuggest(Array.isArray(j.data) ? j.data : []);
-      } catch {
-        if (alive) setSuggest([]);
-      }
+  // Don’t fetch until user explicitly requests
+  const hasResults = filings.length > 0;
+
+  /* ------- Lookup helpers ------- */
+
+  async function lookupCIK(anySymbolOrName: string): Promise<string> {
+    // 1) If user already entered a CIK-like string, accept it
+    if (isCIKLike(anySymbolOrName)) {
+      const cik10 = toCIK10(anySymbolOrName)!;
+      setResolvedCik(cik10);
+      return cik10;
     }
-    const t = setTimeout(go, 150);
-    return () => { alive = false; clearTimeout(t); };
-  }, [q]);
-
-  // Close suggest when clicking outside
-  useEffect(() => {
-    function onDoc(e: MouseEvent) {
-      if (!boxRef.current) return;
-      if (!boxRef.current.contains(e.target as any)) setShowSuggest(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
-
-  function onPick(s: Suggest) {
-    setQ(`${s.ticker || s.name}`);
-    setResolved({ cik: s.cik, name: s.name });
-    setShowSuggest(false);
-    setRows([]); setTotal(0); setPage(1);
-  }
-
-  async function resolveIfNeeded() {
-    // If user typed a 10-digit CIK, use it
-    const onlyDigits = q.replace(/\D/g, "");
-    if (onlyDigits.length === 10) {
-      setResolved({ cik: onlyDigits, name: "" });
-      return { cik: onlyDigits };
-    }
-    // else call lookup and pick first match
-    const r = await fetch(`/api/lookup/${encodeURIComponent(q.trim())}`, { cache: "no-store" });
+    // 2) Otherwise hit your existing lookup API (it should accept tickers or names)
+    const qs = new URLSearchParams({ symbol: anySymbolOrName.trim() });
+    const r = await fetch(`/api/lookup/${encodeURIComponent(anySymbolOrName.trim())}?${qs.toString()}`, { cache: "no-store" });
     const j = await r.json();
-    const first = (j?.data || [])[0];
-    if (!first) throw new Error("Ticker/Company not recognized.");
-    setResolved({ cik: first.cik, name: first.name });
-    return { cik: first.cik };
+    if (!r.ok || !j?.cik) {
+      throw new Error(j?.error || "Ticker/Company not recognized");
+    }
+    const cik = String(j.cik).replace(/\D/g, "").padStart(10, "0");
+    setResolvedCik(cik);
+    return cik;
   }
 
-  async function getFilings(nextPage = 1) {
-    setThinking(true); // show “thinking…” immediately
-    setLoading(true);
-    setError(null);
+  /* ------- Fetch filings ------- */
 
+  async function getFilings(requestedPage?: number) {
+    setError(null);
+    setLoading(true);
     try {
-      const { cik } = resolved || (await resolveIfNeeded());
+      const cik = await lookupCIK(query);
+      // build querystring for filings route
       const qs = new URLSearchParams();
+      if (forms.length) qs.set("forms", forms.join(","));
       if (start) qs.set("start", start);
       if (end) qs.set("end", end);
-      if (forms.length > 0) qs.set("forms", forms.join(","));
-      if (insider.trim()) qs.set("insider", insider.trim());
-      qs.set("page", String(nextPage));
-      qs.set("pageSize", String(pageSize));
+      if (insider) qs.set("q", insider);
+      qs.set("page", String(requestedPage ?? page));
+      qs.set("size", String(size));
 
-      const r = await fetch(`/api/filings/${cik}?` + qs.toString(), { cache: "no-store" });
+      const r = await fetch(`/api/filings/${cik}?${qs.toString()}`, { cache: "no-store" });
       const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || "Fetch failed");
+      if (!r.ok) throw new Error(j?.error || "Failed to fetch filings");
 
-      setRows(j.data || []);
-      setTotal(j.total || 0);
-      setPage(j.page || nextPage);
+      const data: Filing[] = Array.isArray(j?.data) ? j.data : Array.isArray(j) ? j : [];
+      setFilings(data);
+
+      // support optional total from API; otherwise infer “unknown total”
+      if (typeof j?.total === "number") {
+        setTotal(j.total);
+      } else {
+        // If API doesn’t return total, assume “more” when page full.
+        setTotal(data.length < size ? (requestedPage ?? page) * size : null);
+      }
     } catch (e: any) {
       setError(e?.message || "Error");
-      setRows([]); setTotal(0);
+      setFilings([]);
+      setTotal(null);
     } finally {
       setLoading(false);
-      setThinking(false);
     }
   }
 
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  // Reset page when changing page size
+  useEffect(() => {
+    setPage(1);
+  }, [size]);
 
-  const selectedFormsSet = useMemo(() => new Set(forms), [forms]);
+  // Re-run when page changes (but only after first fetch)
+  useEffect(() => {
+    if (resolvedCik) void getFilings(page);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
-  function toggleForm(ft: string) {
-    setForms((prev) =>
-      selectedFormsSet.has(ft)
-        ? prev.filter((f) => f !== ft)
-        : [...prev, ft]
-    );
-  }
+  /* ------- UI computed ------- */
+
+  const pageCount = useMemo(() => {
+    if (!total || total <= 0) return null;
+    return Math.max(1, Math.ceil(total / size));
+  }, [total, size]);
+
+  /* ------- Render ------- */
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-white to-slate-50">
       <div className="mx-auto max-w-6xl px-4 py-8">
         <header className="mb-6">
-          <h1 className="text-2xl font-semibold">EDGAR Filings</h1>
+          <h1 className="text-2xl font-semibold">EDGAR Filing Search</h1>
           <p className="text-gray-600 text-sm mt-1">
-            Search by <strong>ticker/company</strong> or 10-digit <strong>CIK</strong>. Filter by form types, insider name and date range.
+            Enter a <strong>Ticker</strong> (NVDA, BRK.B), <strong>Company</strong> (APPLE), or a <strong>CIK</strong> (10 digits), then refine with form type, date range, or insider name (Forms 3/4/5).
           </p>
         </header>
 
-        {/* Search + suggestions */}
-        <div ref={boxRef} className="relative mb-4">
-          <div className="flex flex-wrap items-center gap-2">
+        {/* Primary search row */}
+        <div className="flex flex-wrap items-end gap-3 mb-4">
+          <label className="grow">
+            <div className="text-sm text-gray-700">Company / Ticker / CIK</div>
             <input
-              value={q}
-              onChange={(e) => { setQ(e.target.value); setShowSuggest(true); }}
-              onFocus={() => setShowSuggest(true)}
-              placeholder="Ticker (NVDA), Company (NVIDIA), or CIK (0001045810)"
-              className="border bg-white rounded-xl px-3 py-2 w-80"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="e.g., NVDA or NVIDIA or 0000320193"
+              className="w-full rounded-md border bg-white px-3 py-2"
             />
-            <button
-              onClick={() => getFilings(1)}
-              className="rounded-xl bg-black text-white px-4 py-2 disabled:opacity-60"
-              disabled={loading}
-              title="Get filings"
+          </label>
+
+          <label className="min-w-[160px]">
+            <div className="text-sm text-gray-700">Form types</div>
+            <select
+              multiple
+              value={forms}
+              onChange={(e) => {
+                const opts = Array.from(e.target.selectedOptions).map((o) => o.value);
+                setForms(opts);
+              }}
+              className="w-full rounded-md border bg-white px-3 py-2 h-[112px]"
             >
-              {loading ? "Getting…" : "Get filings"}
-            </button>
-            {thinking && <span className="text-xs text-gray-500">Thinking…</span>}
-            {resolved && (
-              <span className="text-xs text-gray-600">
-                Resolved CIK: <code>{resolved.cik}</code>
-              </span>
-            )}
-          </div>
-          {showSuggest && suggest.length > 0 && (
-            <div className="absolute z-20 mt-1 w-96 rounded-md border bg-white shadow">
-              {suggest.map((s) => (
-                <button
-                  key={s.cik + s.ticker}
-                  className="w-full text-left px-3 py-2 hover:bg-gray-50"
-                  onClick={() => onPick(s)}
-                >
-                  <div className="text-sm font-medium">{s.name}</div>
-                  <div className="text-xs text-gray-600">{s.ticker} • CIK {s.cik}</div>
-                </button>
+              {FORM_OPTIONS.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
               ))}
+            </select>
+            <div className="text-[11px] text-gray-500 mt-1">
+              Hold Ctrl/Cmd to multi-select. Leave empty for all.
             </div>
-          )}
-          {showSuggest && suggest.length === 0 && q.trim() && (
-            <div className="absolute z-20 mt-1 w-96 rounded-md border bg-white shadow px-3 py-2 text-sm text-gray-600">
-              No matches
+          </label>
+
+          <label>
+            <div className="text-sm text-gray-700">Start date</div>
+            <input
+              type="date"
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
+              className="rounded-md border bg-white px-3 py-2"
+            />
+          </label>
+
+          <label>
+            <div className="text-sm text-gray-700">End date</div>
+            <input
+              type="date"
+              value={end}
+              onChange={(e) => setEnd(e.target.value)}
+              className="rounded-md border bg-white px-3 py-2"
+            />
+          </label>
+
+          <label className="min-w-[160px]">
+            <div className="text-sm text-gray-700">Results per page</div>
+            <select
+              value={size}
+              onChange={(e) => setSize(parseInt(e.target.value))}
+              className="w-full rounded-md border bg-white px-3 py-2"
+            >
+              {PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button
+            onClick={() => {
+              setPage(1);
+              void getFilings(1);
+            }}
+            className="rounded-xl bg-black text-white px-4 py-2 disabled:opacity-60"
+            disabled={loading || !query.trim()}
+            title={!query.trim() ? "Enter a ticker/company/CIK first" : "Fetch filings"}
+          >
+            {loading ? "Getting…" : "Get filings"}
+          </button>
+        </div>
+
+        {/* Insider picker (needs resolvedCik; we still render it, but it only opens when CIK exists) */}
+        <div className="mb-4">
+          <div className="text-sm text-gray-700 mb-1">Insider (Forms 3/4/5)</div>
+          <div className="max-w-xl">
+            <InsiderInput
+              cik={resolvedCik || undefined}
+              value={insider}
+              setValue={setInsider}
+              placeholder="Start typing reporting person name (e.g., Musk, Elon R.)"
+            />
+          </div>
+          <div className="text-[11px] text-gray-500 mt-1">
+            Suggestions appear after you resolve a company and type at least 2 letters.
+          </div>
+          {resolvedCik && (
+            <div className="text-[11px] text-gray-500 mt-1">
+              Resolved CIK: <code>{resolvedCik}</code>
             </div>
           )}
         </div>
 
-        {/* Filters */}
-        <section className="rounded-2xl border bg-white p-4 mb-4">
-          <div className="grid md:grid-cols-3 gap-4">
-            <div>
-              <div className="text-sm text-gray-700 mb-1">Insider (forms 3/4/5)</div>
-              <input
-                value={insider}
-                onChange={(e) => setInsider(e.target.value)}
-                placeholder="e.g., Jensen Huang"
-                className="border rounded-md px-3 py-2 w-full"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <label>
-                <div className="text-sm text-gray-700 mb-1">Start date</div>
-                <input
-                  type="date"
-                  value={start}
-                  onChange={(e) => setStart(e.target.value)}
-                  className="border rounded-md px-3 py-2 w-full"
-                />
-              </label>
-              <label>
-                <div className="text-sm text-gray-700 mb-1">End date</div>
-                <input
-                  type="date"
-                  value={end}
-                  onChange={(e) => setEnd(e.target.value)}
-                  className="border rounded-md px-3 py-2 w-full"
-                />
-              </label>
-            </div>
-            <div>
-              <div className="text-sm text-gray-700 mb-1">Results per page</div>
-              <select
-                value={pageSize}
-                onChange={(e) => { setPageSize(parseInt(e.target.value)); setPage(1); }}
-                className="border rounded-md px-3 py-2 w-full"
-              >
-                <option value={10}>10</option>
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="mt-4">
-            <div className="text-sm text-gray-700 mb-2">Form Types</div>
-            <div className="flex flex-wrap gap-2 max-h-36 overflow-auto border rounded-md p-2">
-              {ALL_FORMS.map((ft) => {
-                const sel = selectedFormsSet.has(ft);
-                return (
-                  <button
-                    key={ft}
-                    onClick={() => toggleForm(ft)}
-                    className={`text-xs rounded-full px-3 py-1 border ${sel ? "bg-black text-white border-black" : "bg-white hover:bg-gray-100"}`}
-                  >
-                    {ft}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </section>
-
         {/* Error */}
-        {error && <div className="text-red-600 text-sm mb-3">Error: {error}</div>}
+        {error && (
+          <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            Error: {error}
+          </div>
+        )}
 
         {/* Results */}
-        <section className="rounded-2xl border bg-white p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-sm text-gray-700">
-              {total > 0 ? `Showing ${rows.length} of ${total}` : "No results yet"}
-            </div>
-            {totalPages > 1 && (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => getFilings(Math.max(1, page - 1))}
-                  disabled={page <= 1 || loading}
-                  className="px-3 py-1 rounded-md border disabled:opacity-60"
-                >
-                  Prev
-                </button>
-                <span className="text-sm">Page {page} / {totalPages}</span>
-                <button
-                  onClick={() => getFilings(Math.min(totalPages, page + 1))}
-                  disabled={page >= totalPages || loading}
-                  className="px-3 py-1 rounded-md border disabled:opacity-60"
-                >
-                  Next
-                </button>
+        <section className="grid md:grid-cols-2 gap-4">
+          {filings.map((f, i) => (
+            <article key={`${f.cik}-${f.filed_at}-${f.form}-${i}`} className="rounded-2xl bg-white p-4 shadow-sm border">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-500">{f.filed_at}</span>
+                <span className="text-xs rounded-full bg-gray-100 px-2 py-1">{f.form}</span>
               </div>
-            )}
-          </div>
+              <h3 className="mt-2 font-medium">{f.title || `${f.company} • ${f.form}`}</h3>
 
-          <div className="grid md:grid-cols-2 gap-4">
-            {rows.map((r, i) => (
-              <article key={r.accession + i} className="rounded-xl border p-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-500">{r.filed_at}</span>
-                  <span className="text-xs rounded-full bg-gray-100 px-2 py-1">{r.form}</span>
+              {/* Badges/items */}
+              {(f.badges?.length || f.items?.length) && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(f.badges || []).map((b, idx) => (
+                    <span key={`b-${idx}`} className="text-[11px] rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5">
+                      {b}
+                    </span>
+                  ))}
+                  {(f.items || []).map((it, idx) => (
+                    <span key={`i-${idx}`} className="text-[11px] rounded-full bg-gray-100 text-gray-800 px-2 py-0.5">
+                      {it}
+                    </span>
+                  ))}
                 </div>
-                <h3 className="mt-2 font-medium">
-                  {r.company} • {r.form}
-                </h3>
-                <div className="mt-2 text-xs text-gray-600 break-all">
-                  Accession: {r.accession}
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2 text-sm">
-                  <a href={r.links.index} target="_blank" rel="noreferrer" className="rounded-md border px-3 py-1 hover:bg-gray-50">
-                    Open Index
-                  </a>
-                  {r.links.primary_doc && (
-                    <a href={r.links.primary_doc} target="_blank" rel="noreferrer" className="rounded-md border px-3 py-1 hover:bg-gray-50">
-                      Primary Doc
-                    </a>
-                  )}
-                  <a href={r.links.full_txt} target="_blank" rel="noreferrer" className="rounded-md border px-3 py-1 hover:bg-gray-50">
-                    Full Text
-                  </a>
-                </div>
-              </article>
-            ))}
-          </div>
+              )}
 
-          {/* Load / Empty messaging */}
-          {!loading && rows.length === 0 && (
-            <div className="text-sm text-gray-600">
-              Enter a company/ticker, set filters, then press “Get filings”.
-            </div>
-          )}
-          {loading && (
-            <div className="text-sm text-gray-600 mt-3">Loading filings…</div>
-          )}
+              {/* Amount extraction for S-1 / 424B */}
+              {f.amount_usd != null && (
+                <div className="mt-2 text-sm text-gray-700">
+                  Size mentioned: <strong>{fmtUSD(f.amount_usd)}</strong>
+                </div>
+              )}
+
+              {/* Links */}
+              <div className="mt-3 flex flex-wrap gap-2 text-sm">
+                {f.primary_doc_url && (
+                  <a
+                    className="rounded-md border px-3 py-1 hover:bg-gray-50"
+                    href={f.primary_doc_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    download
+                  >
+                    Download primary
+                  </a>
+                )}
+                <a
+                  className="rounded-md border px-3 py-1 hover:bg-gray-50"
+                  href={f.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  EDGAR index
+                </a>
+              </div>
+            </article>
+          ))}
         </section>
 
+        {/* Empty state */}
+        {!loading && !hasResults && !error && (
+          <div className="mt-6 text-sm text-gray-600">
+            Enter a ticker/company/CIK, adjust filters if needed, then click <strong>Get filings</strong>.
+          </div>
+        )}
+
+        {/* Pagination */}
+        {hasResults && (
+          <div className="mt-6 flex items-center justify-between">
+            <div className="text-sm text-gray-600">
+              {total ? `Page ${page} of ${pageCount}` : `Showing ${filings.length} results`}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                className="rounded-md border px-3 py-1 text-sm disabled:opacity-50"
+                disabled={page <= 1 || loading}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Prev
+              </button>
+              <button
+                className="rounded-md border px-3 py-1 text-sm disabled:opacity-50"
+                disabled={!!pageCount && page >= (pageCount || 1) || loading}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Footer note */}
-        <footer className="text-center text-xs text-gray-500 mt-6">
-          This site republishes SEC EDGAR filings and BLS data.
+        <footer className="mt-10 text-center text-xs text-gray-500">
+          This site republishes SEC EDGAR filings. Links go to sec.gov. Use filters to refine; ownership (3/4/5) can be narrowed by insider name.
         </footer>
       </div>
     </main>
