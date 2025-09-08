@@ -1,398 +1,338 @@
-// app/bea/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 
-/* -------------------------------
-   Small types
-------------------------------- */
-type Option = { key: string; desc: string };
-type Row = {
-  time: string;
-  value: number | null;
-  line: string;
-  lineDesc: string;
-  unit: string | null;
-};
-type DatasetKey =
-  | "NIPA"
-  | "NIUnderlyingDetail"
-  | "FixedAssets"
-  | "GDPByIndustry"
-  | "UnderlyingGDPbyIndustry"
-  | "InputOutput"
-  | "Regional"
-  | "ITA"
-  | "IntlServTrade"
-  | "IntlServSTA"
-  | "IIP"
-  | "MNE";
-
-/* -------------------------------
-   Nice dataset presets for the UI
-------------------------------- */
-const DATASETS: { key: DatasetKey; label: string; hint?: string }[] = [
-  { key: "NIPA", label: "NIPA (National Income & Product)", hint: "GDP, PCE, income tables" },
-  { key: "GDPByIndustry", label: "GDP by Industry" },
-  { key: "FixedAssets", label: "Fixed Assets" },
-  { key: "Regional", label: "Regional (State/MSA GDP, Income)" },
-  { key: "ITA", label: "International Transactions (ITA)" },
-  { key: "IIP", label: "International Investment Position (IIP)" },
-  { key: "NIUnderlyingDetail", label: "NI Underlying Detail" },
-  { key: "UnderlyingGDPbyIndustry", label: "Underlying GDP by Industry" },
-  { key: "InputOutput", label: "Input–Output" },
-  { key: "IntlServTrade", label: "International Services Trade" },
-  { key: "IntlServSTA", label: "Intl Services via Affiliates (STA)" },
-  { key: "MNE", label: "Multinational Enterprises (MNE)" },
-];
-
-/* -------------------------------
-   Helpers for simple line chart
-------------------------------- */
-function parsePeriod(p: string): Date {
-  // Accepts YYYY, YYYY-Qn, YYYY-MM
-  let m = p.match(/^(\d{4})-Q([1-4])$/i);
-  if (m) return new Date(Number(m[1]), (Number(m[2]) - 1) * 3, 1);
-  m = p.match(/^(\d{4})-(0[1-9]|1[0-2])$/);
-  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, 1);
-  m = p.match(/^(\d{4})$/);
-  if (m) return new Date(Number(m[1]), 0, 1);
-  const d = new Date(p);
-  return isNaN(+d) ? new Date(1970, 0, 1) : d;
-}
-
-function sortAsc<T extends { time: string }>(rows: T[]) {
-  return [...rows].sort((a, b) => +parsePeriod(a.time) - +parsePeriod(b.time));
-}
-
-function inferCadence(rows: Row[]): "A" | "Q" | "M" {
-  // heuristic based on time strings
-  const hasQ = rows.some((r) => /-Q[1-4]$/i.test(r.time));
-  if (hasQ) return "Q";
-  const hasM = rows.some((r) => /-\d{2}$/.test(r.time));
-  if (hasM) return "M";
-  return "A";
-}
-
-function xLabel(d: Date, cadence: "A" | "Q" | "M") {
-  if (cadence === "A") return d.getFullYear().toString();
-  if (cadence === "Q") {
-    const q = Math.floor(d.getMonth() / 3) + 1;
-    return `${d.getFullYear()}-Q${q}`;
-  }
-  return d.toLocaleString(undefined, { year: "2-digit", month: "short" }); // e.g., "Jan 24"
-}
-
-/* Minimal, responsive SVG line chart */
-function LineChart({ series, height = 180 }: { series: { x: Date; y: number }[]; height?: number }) {
-  if (!series || series.length < 2) return null;
-  const width = 640; // used for viewBox; scales to parent width
-  const pad = 16;
-
-  const ys = series.map((p) => p.y);
+/** ------------------------------------------
+ *  Minimal chart (brand-consistent, responsive)
+ *  ------------------------------------------ */
+function LineChart({
+  data,
+  height = 180,
+  pad = 16,
+}: {
+  data: { date: string; value: number }[];
+  height?: number;
+  pad?: number;
+}) {
+  if (!data || data.length < 2) return null;
+  // Ensure oldest → newest
+  const s = [...data].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const width = 640;
+  const ys = s.map((d) => d.value);
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
-  const yPad = Math.max(0.02 * (maxY - minY), 0.0001);
+  const yPad = (maxY - minY || 1) * 0.08;
   const y0 = minY - yPad;
   const y1 = maxY + yPad;
+  const scaleY = (v: number) =>
+    y1 === y0 ? height / 2 : height - pad - ((v - y0) / (y1 - y0)) * (height - pad * 2);
+  const dx = (width - pad * 2) / (s.length - 1);
 
-  const dx = (width - pad * 2) / (series.length - 1);
-  const scaleY = (v: number) => {
-    if (y1 === y0) return height / 2;
-    return height - pad - ((v - y0) / (y1 - y0)) * (height - pad * 2);
+  let d = `M ${pad},${scaleY(ys[0])}`;
+  for (let i = 1; i < s.length; i++) d += ` L ${pad + i * dx},${scaleY(ys[i])}`;
+  const area = `${d} L ${width - pad},${height - pad} L ${pad},${height - pad} Z`;
+
+  // X ticks ~8
+  const tickCount = Math.min(8, s.length);
+  const step = Math.max(1, Math.round((s.length - 1) / (tickCount - 1)));
+  const tickIdxs = Array.from({ length: tickCount }, (_, i) => Math.min(i * step, s.length - 1));
+
+  const label = (iso: string) => {
+    const dte = new Date(iso);
+    // If day is 01, show YYYY-MM, else show YYYY-MM-DD
+    const fmt = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short" });
+    const fmtFull = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "2-digit" });
+    return dte.getDate() === 1 ? fmt.format(dte) : fmtFull.format(dte);
+    // (BEA returns monthly/quarterly/annual series too; this is still readable.)
   };
 
-  // Path
-  let d = `M ${pad},${scaleY(series[0].y)}`;
-  for (let i = 1; i < series.length; i++) {
-    d += ` L ${pad + i * dx},${scaleY(series[i].y)}`;
-  }
-
   return (
-    <svg className="w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="trend">
+    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Trend chart">
       {/* grid */}
       {Array.from({ length: 4 }).map((_, i) => {
         const y = pad + ((height - pad * 2) / 3) * i;
         return <line key={i} x1={pad} y1={y} x2={width - pad} y2={y} stroke="#e5e7eb" />;
       })}
-      {/* axis box */}
+      {/* border box */}
       <rect x={pad} y={pad} width={width - pad * 2} height={height - pad * 2} fill="none" stroke="#d1d5db" />
-      {/* line */}
-      <path d={d} fill="none" stroke="#0f172a" strokeWidth="2" />
-      {/* end dots */}
-      <circle cx={pad} cy={scaleY(series[0].y)} r="2.5" fill="#0f172a" />
-      <circle cx={width - pad} cy={scaleY(series[series.length - 1].y)} r="2.5" fill="#0f172a" />
+      {/* area + line */}
+      <path d={area} fill="rgba(2,6,23,0.05)" />
+      <path d={d} fill="none" stroke="#020617" strokeWidth={2} />
+      {/* ticks */}
+      {tickIdxs.map((idx, i) => {
+        const x = pad + idx * dx;
+        return (
+          <g key={i}>
+            <line x1={x} y1={height - pad} x2={x} y2={height - pad + 4} stroke="#9ca3af" />
+            <text x={x} y={height - 2} fontSize="10" textAnchor="middle" fill="#6b7280">
+              {label(s[idx].date)}
+            </text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
 
-/* -------------------------------
-   Page
-------------------------------- */
+/** ------------------------------------------
+ *  Dataset → parameter schema (UI only)
+ *  We’ll ask the backend for options for each param.
+ *  ------------------------------------------ */
+type DatasetKey = "NIPA" | "Regional" | "GDPByIndustry" | "InputOutput" | "ITA";
+
+const DATASET_LABEL: Record<DatasetKey, string> = {
+  NIPA: "NIPA (National Income & Product Accounts)",
+  Regional: "Regional (State/County/MSA)",
+  GDPByIndustry: "GDP by Industry",
+  InputOutput: "Input-Output (Use/Make)",
+  ITA: "International Transactions (ITA)",
+};
+
+// The order here defines the cascading UX per dataset.
+// The string names must match BEA param names expected by your API routes.
+const SCHEMA: Record<DatasetKey, string[]> = {
+  NIPA: ["TableName", "Frequency", "Year", "Quarter"],
+  Regional: ["TableName", "Geo", "LineCode", "Year"],
+  GDPByIndustry: ["TableID", "Industry", "Frequency", "Year"],
+  InputOutput: ["TableID", "Year", "Summary"],
+  ITA: ["Indicator", "AreaOrCountry", "Frequency", "Year"],
+};
+
+// Friendly labels for inputs
+const LABELS: Record<string, string> = {
+  TableName: "Table",
+  Frequency: "Frequency",
+  Year: "Year",
+  Quarter: "Quarter",
+  Geo: "Geography",
+  LineCode: "Line Code / Series",
+  TableID: "Table",
+  Industry: "Industry",
+  Summary: "Summary Type",
+  Indicator: "Indicator",
+  AreaOrCountry: "Area / Country",
+};
+
+/** ------------------------------------------
+ *  BEA Page with granular cascading dropdowns
+ *  ------------------------------------------ */
 export default function BEAPage() {
-  // selectors
   const [dataset, setDataset] = useState<DatasetKey>("NIPA");
-  const [paramUsed, setParamUsed] = useState<string | null>(null);
-  const [options, setOptions] = useState<Option[]>([]);
-  const [value, setValue] = useState<string>("");
 
-  // controls
-  const thisYear = new Date().getFullYear();
-  const [year, setYear] = useState<string>("LAST10"); // BEA supports LAST10, e.g.
-  const [freq, setFreq] = useState<string>(""); // some datasets use Annual/Quarterly/Monthly, many ignore
+  // param->value map (resets when dataset changes)
+  const [params, setParams] = useState<Record<string, string>>({});
+  // options cache: dataset:param -> list
+  const [options, setOptions] = useState<Record<string, { value: string; label: string }[]>>({});
+  const [loading, setLoading] = useState(false);
+  const [series, setSeries] = useState<{ title?: string; units?: string; data: { date: string; value: number }[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // data state
-  const [rows, setRows] = useState<Row[]>([]);
-  const [loadingList, setLoadingList] = useState(false);
-  const [loadingData, setLoadingData] = useState(false);
-  const [listWarning, setListWarning] = useState<string | null>(null);
-  const [listError, setListError] = useState<string | null>(null);
-  const [dataError, setDataError] = useState<string | null>(null);
-
-  // load selector options when dataset changes
+  // reset params on dataset change
   useEffect(() => {
-    void loadOptions(dataset);
+    const fresh: Record<string, string> = {};
+    for (const p of SCHEMA[dataset]) fresh[p] = "";
+    setParams(fresh);
+    setSeries(null);
+    setError(null);
+  }, [dataset]);
+
+  // helper key for options cache
+  const keyFor = (ds: DatasetKey, param: string) => `${ds}:${param}`;
+
+  // fetch options for a param (conditioned on previous picks)
+  async function loadOptions(param: string) {
+    try {
+      const deps: Record<string, string> = {};
+      for (const p of SCHEMA[dataset]) {
+        if (p === param) break;
+        if (params[p]) deps[p] = params[p];
+      }
+      const qs = new URLSearchParams({
+        dataset,
+        param,
+        // pass dependencies as JSON
+        deps: JSON.stringify(deps),
+      });
+      const r = await fetch(`/api/bea/options?${qs.toString()}`, { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Failed to load options");
+      const list: { value: string; label: string }[] = Array.isArray(j?.data) ? j.data : [];
+      setOptions((prev) => ({ ...prev, [keyFor(dataset, param)]: list }));
+    } catch (e: any) {
+      setOptions((prev) => ({ ...prev, [keyFor(dataset, param)]: [] }));
+      console.error(e);
+    }
+  }
+
+  // When a param changes: set value, clear downstream, load next param’s options
+  function onParamChange(param: string, value: string) {
+    setParams((prev) => {
+      const next: Record<string, string> = { ...prev, [param]: value };
+      // clear anything after this param in the cascade
+      const order = SCHEMA[dataset];
+      const idx = order.indexOf(param);
+      for (let i = idx + 1; i < order.length; i++) next[order[i]] = "";
+      return next;
+    });
+  }
+
+  // Trigger initial options for the first param whenever dataset changes
+  useEffect(() => {
+    const first = SCHEMA[dataset][0];
+    if (first) void loadOptions(first);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataset]);
 
-  async function loadOptions(ds: DatasetKey) {
-    setLoadingList(true);
-    setListWarning(null);
-    setListError(null);
-    setOptions([]);
-    setParamUsed(null);
-    setValue("");
-    try {
-      const r = await fetch(`/api/bea/tables?dataset=${encodeURIComponent(ds)}`, { cache: "no-store" });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || "Failed to load options");
-      setParamUsed(j.paramUsed ?? null);
-      setOptions(Array.isArray(j.options) ? j.options : []);
-      if (j.warning) setListWarning(j.warning as string);
-      // ensure value is valid
-      const first = (j.options as Option[] | undefined)?.[0]?.key ?? "";
-      setValue(first || "");
-    } catch (e: any) {
-      setListError(e?.message || "Failed to load options");
-    } finally {
-      setLoadingList(false);
+  // Whenever a param gets picked, fetch options for the *next* param
+  useEffect(() => {
+    const order = SCHEMA[dataset];
+    // find first param that is empty; load its options if not present
+    for (let i = 0; i < order.length; i++) {
+      const p = order[i];
+      if (!params[p]) {
+        // ensure we have options
+        const cacheKey = keyFor(dataset, p);
+        if (!options[cacheKey]) void loadOptions(p);
+        break;
+      }
+      // when p is filled, make sure next param options exist
+      if (i + 1 < order.length) {
+        const nextP = order[i + 1];
+        const nextKey = keyFor(dataset, nextP);
+        if (!options[nextKey]) void loadOptions(nextP);
+      }
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params, dataset]);
 
-  async function loadData() {
-    if (!paramUsed || !value) return;
-    setLoadingData(true);
-    setDataError(null);
-    setRows([]);
+  // Ready to query?
+  const readyToQuery = useMemo(() => {
+    return SCHEMA[dataset].every((p) => !!params[p]);
+  }, [dataset, params]);
+
+  async function runQuery() {
+    if (!readyToQuery) return;
+    setLoading(true);
+    setError(null);
+    setSeries(null);
     try {
-      const qs = new URLSearchParams({
-        dataset,
-        param: paramUsed,
-        value,
-        year,
+      const r = await fetch(`/api/bea/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ dataset, params }),
       });
-      if (freq) qs.set("freq", freq);
-      const r = await fetch(`/api/bea?${qs.toString()}`, { cache: "no-store" });
       const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || "Failed to fetch data");
-      const arr: Row[] = Array.isArray(j.rows) ? j.rows : [];
-      setRows(arr);
+      if (!r.ok) throw new Error(j?.error || "Query failed");
+      const out = { title: j.title || "BEA Series", units: j.units || "", data: j.data || [] };
+      // sort chronological
+      out.data = [...out.data].sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      setSeries(out);
     } catch (e: any) {
-      setDataError(e?.message || "Error");
+      setError(e?.message || "Error");
     } finally {
-      setLoadingData(false);
+      setLoading(false);
     }
   }
 
-  // chart series (use the first “line” as default)
-  const primarySeries = useMemo(() => {
-    const asc = sortAsc(rows.filter((r) => r.value != null));
-    const byLine = new Map<string, Row[]>();
-    for (const r of asc) {
-      const k = r.line || "all";
-      if (!byLine.has(k)) byLine.set(k, []);
-      byLine.get(k)!.push(r);
-    }
-    const firstKey = [...byLine.keys()][0];
-    const series = (firstKey ? byLine.get(firstKey) : asc) ?? [];
-    return series.map((r) => ({ x: parsePeriod(r.time), y: r.value as number }));
-  }, [rows]);
+  function ParamSelect({ name }: { name: string }) {
+    const k = keyFor(dataset, name);
+    const list = options[k] || [];
+    const value = params[name] || "";
+    const disabled = list.length === 0;
 
-  // derive cadence for labels
-  const cadence = useMemo(() => inferCadence(rows), [rows]);
+    return (
+      <label className="flex-1 min-w-[200px]">
+        <div className="text-sm text-gray-700">{LABELS[name] || name}</div>
+        <select
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onParamChange(name, e.target.value)}
+          className="mt-1 w-full rounded-md border px-3 py-2 disabled:opacity-50"
+        >
+          <option value="">{disabled ? "Loading…" : `Select ${LABELS[name] || name}`}</option>
+          {list.map((o) => (
+            <option key={o.value} value={o.value}>{o.label || o.value}</option>
+          ))}
+        </select>
+      </label>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-white to-slate-50">
-      <section className="mx-auto max-w-6xl px-4 py-10">
-        {/* Header */}
-        <div className="mb-6">
-          <h1 className="text-2xl font-semibold tracking-tight">BEA Data Explorer</h1>
-          <p className="text-sm text-gray-600 mt-1">
-            Browse BEA datasets with an intuitive selector. Pick a dataset, choose a table/indicator, then pull clean trends.
+      <div className="mx-auto max-w-6xl px-4 py-8">
+        <header className="mb-6">
+          <h1 className="text-2xl font-semibold">BEA Data Explorer</h1>
+          <p className="text-gray-600 text-sm mt-1">
+            Pick a BEA dataset and refine with context-aware dropdowns. We’ll fetch a clean time series and draw a readable chart.
           </p>
-        </div>
+        </header>
 
-        {/* Controls */}
-        <div className="rounded-2xl border bg-white p-4">
-          <div className="grid md:grid-cols-2 gap-4">
-            {/* Dataset */}
-            <label className="flex flex-col">
-              <span className="text-sm text-gray-700 mb-1">Dataset</span>
+        {/* Dataset picker */}
+        <section className="rounded-2xl border bg-white p-4 mb-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="min-w-[240px]">
+              <div className="text-sm text-gray-700">Dataset</div>
               <select
                 value={dataset}
                 onChange={(e) => setDataset(e.target.value as DatasetKey)}
-                className="border rounded-md px-3 py-2"
+                className="mt-1 w-full rounded-md border px-3 py-2"
               >
-                {DATASETS.map((d) => (
-                  <option key={d.key} value={d.key}>
-                    {d.label}
-                  </option>
+                {(Object.keys(DATASET_LABEL) as DatasetKey[]).map((k) => (
+                  <option key={k} value={k}>{DATASET_LABEL[k]}</option>
                 ))}
               </select>
-              {DATASETS.find((d) => d.key === dataset)?.hint && (
-                <span className="text-[11px] text-gray-500 mt-1">
-                  {DATASETS.find((d) => d.key === dataset)!.hint}
-                </span>
-              )}
             </label>
 
-            {/* Selector (paramUsed) */}
-            <label className="flex flex-col">
-              <span className="text-sm text-gray-700 mb-1">
-                {loadingList ? "Loading options…" : paramUsed ? `${paramUsed} options` : "Selector"}
-              </span>
-              <select
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                className="border rounded-md px-3 py-2"
-                disabled={!paramUsed || loadingList || options.length === 0}
-              >
-                {options.length === 0 ? (
-                  <option value="">— No options —</option>
-                ) : (
-                  options.map((o) => (
-                    <option key={o.key} value={o.key}>
-                      {o.key} — {o.desc}
-                    </option>
-                  ))
-                )}
-              </select>
-              {listWarning && <span className="text-[11px] text-amber-700 mt-1">{listWarning}</span>}
-              {listError && <span className="text-[12px] text-red-600 mt-1">Error: {listError}</span>}
-            </label>
+            {/* Render the cascading params for the chosen dataset */}
+            {SCHEMA[dataset].map((p) => (
+              <ParamSelect key={p} name={p} />
+            ))}
+
+            <button
+              onClick={runQuery}
+              className="rounded-md bg-black text-white px-4 py-2 disabled:opacity-50"
+              disabled={!readyToQuery || loading}
+            >
+              {loading ? "Loading…" : "Get Data"}
+            </button>
           </div>
-
-          {/* Secondary controls */}
-          <div className="mt-3 grid md:grid-cols-3 gap-4">
-            <label className="flex flex-col">
-              <span className="text-sm text-gray-700 mb-1">Years</span>
-              <input
-                value={year}
-                onChange={(e) => setYear(e.target.value)}
-                className="border rounded-md px-3 py-2"
-                placeholder="LAST10 or 1999-2024 or 2020"
-              />
-              <span className="text-[11px] text-gray-500 mt-1">
-                Try <code>LAST10</code>, <code>2010-2024</code>, or a single year.
-              </span>
-            </label>
-
-            <label className="flex flex-col">
-              <span className="text-sm text-gray-700 mb-1">Frequency (optional)</span>
-              <select value={freq} onChange={(e) => setFreq(e.target.value)} className="border rounded-md px-3 py-2">
-                <option value="">(auto / not required)</option>
-                <option value="A">Annual</option>
-                <option value="Q">Quarterly</option>
-                <option value="M">Monthly</option>
-              </select>
-            </label>
-
-            <div className="flex items-end gap-2">
-              <button
-                onClick={loadData}
-                className="rounded-full bg-black text-white px-4 py-2 text-sm disabled:opacity-60"
-                disabled={loadingData || !paramUsed || !value}
-              >
-                {loadingData ? "Loading…" : "Get data"}
-              </button>
-              <button
-                onClick={() => loadOptions(dataset)}
-                className="rounded-full border px-4 py-2 text-sm"
-                disabled={loadingList}
-              >
-                {loadingList ? "Refreshing…" : "Refresh list"}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Errors */}
-        {dataError && <div className="text-red-600 text-sm mt-4">Error: {dataError}</div>}
+        </section>
 
         {/* Results */}
-        <div className="mt-6 grid lg:grid-cols-[1.2fr_1fr] gap-6">
-          {/* Chart card */}
-          <div className="rounded-2xl border bg-white p-4">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-medium">Trend (first line / series)</div>
-              <div className="text-xs text-gray-500">
-                {rows.length > 0 ? `${rows[0].unit ?? ""}` : ""}
+        <section className="rounded-2xl border bg-white p-5">
+          {error && <div className="text-red-600 text-sm mb-3">Error: {error}</div>}
+
+          {!error && !series && (
+            <div className="text-sm text-gray-600">
+              Choose a dataset and fill the dropdowns to enable <span className="font-medium">Get Data</span>.
+            </div>
+          )}
+
+          {series && (
+            <>
+              <div className="flex items-baseline justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold">{series.title}</div>
+                  <div className="text-xs text-gray-600">Units: {series.units || "—"}</div>
+                </div>
+                <div className="text-xs text-gray-500">
+                  Observations: {series.data.length.toLocaleString()}
+                </div>
               </div>
-            </div>
-            <div className="mt-3">
-              {primarySeries.length >= 2 ? (
-                <>
-                  <LineChart series={primarySeries} />
-                  {/* x-axis labels (light) */}
-                  <div className="mt-2 grid grid-cols-5 text-[11px] text-gray-500">
-                    {primarySeries.length > 0 &&
-                      [0, 0.25, 0.5, 0.75, 1].map((t, i) => {
-                        const idx = Math.max(0, Math.min(primarySeries.length - 1, Math.round((primarySeries.length - 1) * t)));
-                        return <div key={i}>{xLabel(primarySeries[idx].x, cadence)}</div>;
-                      })}
-                  </div>
-                </>
-              ) : (
-                <div className="text-sm text-gray-600">Run a query to see the trend.</div>
-              )}
-            </div>
-          </div>
+              <div className="mt-4">
+                <LineChart data={series.data} />
+              </div>
+            </>
+          )}
+        </section>
 
-          {/* Data table */}
-          <div className="rounded-2xl border bg-white p-4 overflow-auto">
-            <div className="text-sm font-medium mb-2">Table</div>
-            {rows.length === 0 ? (
-              <div className="text-sm text-gray-600">No rows yet. Choose a selector and click “Get data”.</div>
-            ) : (
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-600">
-                    <th className="py-2 pr-3">Period</th>
-                    <th className="py-2 pr-3">Line</th>
-                    <th className="py-2 pr-3">Description</th>
-                    <th className="py-2 pr-3">Value</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortAsc(rows).map((r, i) => (
-                    <tr key={`${r.time}-${r.line}-${i}`} className="border-t">
-                      <td className="py-2 pr-3">{r.time}</td>
-                      <td className="py-2 pr-3 text-gray-500">{r.line}</td>
-                      <td className="py-2 pr-3">{r.lineDesc || "—"}</td>
-                      <td className="py-2 pr-3">{r.value == null ? "—" : r.value.toLocaleString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-
-        {/* Footnote */}
-        <div className="mt-8 text-xs text-gray-500">
-          Source: U.S. Bureau of Economic Analysis (BEA). Data fetched live via the BEA API.
-        </div>
-      </section>
+        {/* Footer note */}
+        <footer className="mt-8 text-center text-xs text-gray-500">
+          Data: U.S. Bureau of Economic Analysis (BEA). This site republishes official public data.
+        </footer>
+      </div>
     </main>
   );
 }
