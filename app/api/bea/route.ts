@@ -1,58 +1,78 @@
+// app/api/bea/route.ts
 import { NextResponse } from "next/server";
 
 const BEA_BASE = "https://apps.bea.gov/api/data";
 
 /**
- * /api/bea?dataset=NIPA&table=T10101&freq=Q&year=2015,2016,2017 or year=ALL or year=LAST10
- * Optional: line=1 to suggest a default series to highlight (e.g., GDP headline).
+ * Flexible BEA fetch:
+ * - /api/bea?dataset=NIPA&param=TableName&value=T10101&freq=Q&year=LAST10
+ * - /api/bea?dataset=ITA&param=Indicator&value=BalGds&year=ALL
+ * Back-compat:
+ * - /api/bea?dataset=NIPA&table=T10101&freq=Q&year=LAST10  (assumes param=TableName)
  */
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const dataset = url.searchParams.get("dataset") || "NIPA";
-    const table = url.searchParams.get("table") || "T10101"; // GDP (current $) – good default for NIPA
-    const freq = url.searchParams.get("freq") || "Q"; // Q or A (NIPA supports Q/A; some tables support M)
-    const year = url.searchParams.get("year") || "LAST10"; // ALL | LAST10 | comma list
+
+    // New flexible way
+    let param = url.searchParams.get("param");
+    let value = url.searchParams.get("value");
+
+    // Back-compat for older UI (table=… => TableName)
+    const table = url.searchParams.get("table");
+    if (!param && table) {
+      param = "TableName";
+      value = table;
+    }
+
+    const freq = url.searchParams.get("freq") || ""; // some datasets don’t need this
+    const year = url.searchParams.get("year") || "LAST10";
+
     const key = process.env.BEA_API_KEY;
     if (!key) {
       return NextResponse.json({ error: "Missing BEA_API_KEY env var." }, { status: 500 });
     }
+    if (!param || !value) {
+      return NextResponse.json({ error: "Missing selector: provide param and value (or table)." }, { status: 400 });
+    }
 
-    // BEA GetData call
+    // Build GetData query dynamically
     const qs = new URLSearchParams({
       UserID: key,
       method: "GetData",
       datasetname: dataset,
-      TableName: table,
-      Frequency: freq,
-      Year: year,
       ResultFormat: "JSON",
+      Year: year,
     });
+    // Only include Frequency if user set one
+    if (freq) qs.set("Frequency", freq);
+    // Put the selector the dataset expects (TableName/Indicator/TableID/etc.)
+    qs.set(param, value);
 
     const upstream = `${BEA_BASE}/?${qs.toString()}`;
     const r = await fetch(upstream, { cache: "no-store" });
+    const rawTxt = await r.text();
     if (!r.ok) {
-      const text = await r.text();
-      return NextResponse.json({ error: `BEA data fetch failed (${r.status})`, details: text.slice(0, 500) }, { status: 502 });
+      return NextResponse.json(
+        { error: `BEA data fetch failed (${r.status})`, details: rawTxt.slice(0, 800) },
+        { status: 502 }
+      );
     }
 
-    const j = await r.json();
+    const j = safeJson(rawTxt);
     const data = j?.BEAAPI?.Results?.Data || [];
 
-    // Normalize: keep fields we need and coerce numbers when possible
-    // Common fields: TimePeriod, DataValue, LineNumber, LineDescription, SeriesCode
     const rows = data.map((d: any) => ({
-      time: d?.TimePeriod,
-      value: toNumber(d?.DataValue),
-      line: d?.LineNumber,
-      lineDesc: d?.LineDescription,
-      series: d?.SeriesCode || null,
-      noteRef: d?.NoteRef || null,
+      time: d?.TimePeriod || d?.Time || "",
+      value: toNumber(d?.DataValue ?? d?.DataValue_Footnote ?? d?.DataValueNote),
+      line: String(d?.LineNumber ?? d?.SeriesCode ?? d?.Line ?? ""),
+      lineDesc: String(d?.LineDescription ?? d?.SeriesDescription ?? d?.Description ?? "").trim(),
       unit: d?.CL_UNIT || d?.Unit || null,
     }));
 
     return NextResponse.json({
-      meta: { dataset, table, freq, year },
+      meta: { dataset, param, value, freq, year },
       rows,
     });
   } catch (e: any) {
@@ -67,3 +87,6 @@ function toNumber(x: unknown) {
   return Number.isFinite(n) ? n : null;
 }
 
+function safeJson(s: string) {
+  try { return JSON.parse(s); } catch { return {}; }
+}
