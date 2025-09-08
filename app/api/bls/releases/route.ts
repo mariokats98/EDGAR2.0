@@ -1,14 +1,18 @@
+// app/api/bls/releases/route.ts
 import { NextResponse } from "next/server";
 
+export const runtime = "nodejs";       // <-- ensure Node runtime (UA allowed)
 export const revalidate = 0;
 export const dynamic = "force-dynamic";
 
 type Headline = { title: string; link: string; pubDate?: string; source: string };
 
-const PAGES = [
-  // Master list of “Economic News Releases”
+// 1) Primary, robust RSS feed (GovDelivery for BLS)
+const RSS_PRIMARY = "https://content.govdelivery.com/accounts/USDOLBLS/bulletins.rss";
+
+// 2) HTML fallbacks on bls.gov
+const HTML_CANDIDATES = [
   "https://www.bls.gov/bls/newsrels.htm",
-  // Hub + many category pages linked from here
   "https://www.bls.gov/news.release/",
 ];
 
@@ -29,8 +33,9 @@ async function fetchText(url: string) {
       signal: ctrl.signal,
       headers: {
         "User-Agent": UA(),
-        "Accept": "text/html,*/*;q=0.8",
+        "Accept": "application/rss+xml, application/xml;q=0.9, text/html;q=0.8, */*;q=0.7",
         "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
       },
     });
     if (!r.ok) throw new Error(`Fetch ${url} -> ${r.status}`);
@@ -40,37 +45,48 @@ async function fetchText(url: string) {
   }
 }
 
+/* ---------- parsers ---------- */
+
+function parseRss(xml: string): Headline[] {
+  const items = xml.match(/<item[\s\S]*?<\/item>/gi) || [];
+  const out: Headline[] = [];
+  for (const it of items) {
+    const title =
+      it.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/i)?.[1]?.trim() ??
+      it.match(/<title>([^<]+)<\/title>/i)?.[1]?.trim() ??
+      "";
+    const link =
+      it.match(/<link>([^<]+)<\/link>/i)?.[1]?.trim() ??
+      it.match(/<guid[^>]*>([^<]+)<\/guid>/i)?.[1]?.trim() ??
+      "";
+    const pubDate = it.match(/<pubDate>([^<]+)<\/pubDate>/i)?.[1]?.trim() ?? "";
+    if (title && link) out.push({ title, link, pubDate, source: "rss" });
+  }
+  return out;
+}
+
 function parseHtmlForReleases(html: string, pageUrl: string): Headline[] {
-  // Capture links pointing into /news.release/… (category pages + individual releases)
   const anchors =
     html.match(
       /<a[^>]+href="(\/news\.release\/[^"#]+|https?:\/\/www\.bls\.gov\/news\.release\/[^"#]+)"[^>]*>[\s\S]*?<\/a>/gi
     ) || [];
   const seen = new Set<string>();
   const out: Headline[] = [];
-
   for (const a of anchors) {
-    const href =
-      a.match(/href="([^"]+)"/i)?.[1] ||
-      a.match(/HREF="([^"]+)"/)?.[1];
+    const href = a.match(/href="([^"]+)"/i)?.[1] || a.match(/HREF="([^"]+)"/)?.[1];
     if (!href) continue;
-
     const title = a.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
     if (!title) continue;
-
-    // Normalize to absolute
-    const link = href.startsWith("http")
-      ? href
-      : `https://www.bls.gov${href}`;
-
+    const link = href.startsWith("http") ? href : `https://www.bls.gov${href}`;
     const key = `${title}::${link}`;
     if (seen.has(key)) continue;
     seen.add(key);
-
     out.push({ title, link, source: pageUrl });
   }
   return out;
 }
+
+/* ---------- handler ---------- */
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -79,42 +95,56 @@ export async function GET(req: Request) {
   const debug = searchParams.get("debug") === "1";
 
   try {
-    // Pull from both pages and merge
-    const pages = await Promise.allSettled(PAGES.map(async (u) => ({ u, html: await fetchText(u) })));
-
+    let used = "";
     let items: Headline[] = [];
-    const used: string[] = [];
 
-    for (const p of pages) {
-      if (p.status === "fulfilled") {
-        const { u, html } = p.value;
-        const parsed = parseHtmlForReleases(html, u);
-        if (parsed.length) {
-          items.push(...parsed);
-          used.push(u);
+    // A) GovDelivery RSS (most reliable)
+    try {
+      const xml = await fetchText(RSS_PRIMARY);
+      const parsed = parseRss(xml);
+      if (parsed.length) {
+        items = parsed;
+        used = `rss:${RSS_PRIMARY}`;
+      }
+    } catch {
+      // ignore; try fallbacks
+    }
+
+    // B) Fallback to HTML pages if RSS empty
+    if (!items.length) {
+      for (const u of HTML_CANDIDATES) {
+        try {
+          const html = await fetchText(u);
+          const parsed = parseHtmlForReleases(html, u);
+          if (parsed.length) {
+            items = parsed;
+            used = `html:${u}`;
+            break;
+          }
+        } catch {
+          // continue
         }
       }
     }
 
-    // De-dup and keep latest-ish ordering (BLS pages are already newest-first)
-    const dedup = new Map<string, Headline>();
-    for (const h of items) {
-      const k = `${h.title}::${h.link}`;
-      if (!dedup.has(k)) dedup.set(k, h);
+    if (!items.length) {
+      return NextResponse.json(
+        { error: "No headlines returned from BLS sources.", data: [] },
+        { status: 502 }
+      );
     }
-    items = Array.from(dedup.values());
 
-    // Optional filter (only if q has 2+ chars so we don’t accidentally hide everything)
+    // Sort by pubDate when present; otherwise keep order
+    items.sort((a, b) => {
+      const ta = Date.parse(a.pubDate || "") || 0;
+      const tb = Date.parse(b.pubDate || "") || 0;
+      return tb - ta;
+    });
+
+    // Filter only if query has 2+ chars
     if (q.length >= 2) {
       items = items.filter((h) => h.title.toLowerCase().includes(q));
     }
-
-    // Basic prioritization: keep direct release pages (…/news.release/xxx.htm) near top
-    items.sort((a, b) => {
-      const ad = /\/news\.release\/[^/]+\.htm$/i.test(a.link) ? 0 : 1;
-      const bd = /\/news\.release\/[^/]+\.htm$/i.test(b.link) ? 0 : 1;
-      return ad - bd;
-    });
 
     items = items.slice(0, limit);
 
@@ -126,12 +156,11 @@ export async function GET(req: Request) {
       });
     }
 
-    if (!items.length) {
-      return NextResponse.json({ error: "No headlines found on BLS pages.", data: [] }, { status: 502 });
-    }
-
     return NextResponse.json({ data: items });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected error", data: [] }, { status: 500 });
+    return NextResponse.json(
+      { error: e?.message || "Unexpected error", data: [] },
+      { status: 500 }
+    );
   }
 }
