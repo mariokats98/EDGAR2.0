@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "lint": "next lint",
+    "build:tickers": "node -e \"console.log('Skipping build:tickers (not used)')\""
   },
   "dependencies": {
     "autoprefixer": "^10.4.19",
