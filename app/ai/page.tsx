@@ -1,110 +1,105 @@
 // app/ai/page.tsx
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
-type Msg = { role: "user" | "assistant" | "system"; content: string };
-type ToolLink = { label: string; url: string };
+type Msg = { role: "user" | "assistant"; content: string };
 
 export default function AIPage() {
-  const [messages, setMessages] = useState<Msg[]>([
-    { role: "assistant", content: "Hi! Ask me about EDGAR filings, BLS, or FRED. I can fetch data and give you clean download links." }
+  const [msgs, setMsgs] = useState<Msg[]>([
+    { role: "assistant", content: "Hi! Ask me about EDGAR filings, CPI, FOMC, GDP, etc." },
   ]);
   const [input, setInput] = useState("");
-  const [thinking, setThinking] = useState(false);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const [loading, setLoading] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, thinking]);
-
-  async function send() {
+  async function ask() {
     const q = input.trim();
-    if (!q) return;
+    if (!q || loading) return;
+
+    setMsgs((m) => [...m, { role: "user", content: q }]);
     setInput("");
-    setMessages(m => [...m, { role: "user", content: q }]);
-    setThinking(true);
+    setLoading(true);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const timeout = setTimeout(() => controller.abort("timeout"), 25_000); // 25s cap
+
     try {
       const r = await fetch("/api/ai/chat", {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [...messages, { role: "user", content: q }] }),
+        body: JSON.stringify({
+          messages: [
+            ...msgs.map((m) => ({ role: m.role, content: m.content })),
+            { role: "user", content: q },
+          ],
+        }),
       });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || "Request failed");
 
-      // If server returned tool results with links, display them nicely before the assistant text
-      const linkBlocks: string[] = [];
-      if (Array.isArray(j.links) && j.links.length) {
-        linkBlocks.push(
-          j.links.map((l: ToolLink) => `• [${l.label}](${l.url})`).join("\n")
-        );
+      clearTimeout(timeout);
+
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) {
+        const errText = j?.error || `Request failed (${r.status})`;
+        setMsgs((m) => [...m, { role: "assistant", content: `⚠️ ${errText}` }]);
+      } else {
+        setMsgs((m) => [...m, { role: "assistant", content: j.text }]);
       }
-      const content = [linkBlocks.join("\n"), j.text || ""].filter(Boolean).join("\n\n");
-
-      setMessages(m => [...m, { role: "assistant", content }]);
     } catch (e: any) {
-      setMessages(m => [...m, { role: "assistant", content: `Sorry — ${e?.message || "I couldn't generate a reply."}` }]);
+      const reason = e?.name === "AbortError" ? "Timed out. Try again." : "Network error.";
+      setMsgs((m) => [...m, { role: "assistant", content: `⚠️ ${reason}` }]);
     } finally {
-      setThinking(false);
-    }
-  }
-
-  function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void send();
+      setLoading(false);
+      abortRef.current = null;
     }
   }
 
   return (
-    <main className="min-h-[calc(100vh-56px)] bg-gradient-to-b from-white to-slate-50">
-      <div className="mx-auto max-w-3xl px-4 py-6">
-        <h1 className="text-xl font-semibold mb-4">✨ AI assistant</h1>
+    <main className="mx-auto max-w-3xl px-4 py-6">
+      <h1 className="text-xl font-semibold mb-3">Herevna AI</h1>
 
-        <div className="rounded-2xl border bg-white p-4">
-          <div className="space-y-3">
-            {messages.map((m, i) => (
-              <div key={i} className={m.role === "user" ? "text-right" : ""}>
-                <div
-                  className={`inline-block rounded-2xl px-3 py-2 ${
-                    m.role === "user" ? "bg-black text-white" : "bg-gray-100 text-gray-900"
-                  } whitespace-pre-wrap`}
-                >
-                  {m.content}
-                </div>
+      <div className="rounded-xl border bg-white">
+        <div className="p-4 space-y-4 max-h-[60vh] overflow-auto">
+          {msgs.map((m, i) => (
+            <div key={i} className={m.role === "user" ? "text-right" : "text-left"}>
+              <div
+                className={
+                  m.role === "user"
+                    ? "inline-block rounded-2xl bg-black text-white px-3 py-2"
+                    : "inline-block rounded-2xl bg-gray-100 px-3 py-2"
+                }
+              >
+                {m.content}
               </div>
-            ))}
-            {thinking && (
-              <div className="inline-flex items-center gap-2 text-gray-600 text-sm">
-                <span className="inline-block h-2 w-2 rounded-full bg-gray-400 animate-pulse" />
-                thinking…
+            </div>
+          ))}
+          {loading && (
+            <div className="text-left">
+              <div className="inline-block rounded-2xl bg-gray-100 px-3 py-2">
+                Thinking…
               </div>
-            )}
-            <div ref={bottomRef} />
-          </div>
-
-          <div className="mt-4 flex gap-2">
-            <textarea
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={onKey}
-              placeholder="Ask for latest EDGAR filing for NVDA, CPI trend since 2015, etc."
-              className="flex-1 rounded-xl border px-3 py-2 min-h-[44px]"
-            />
-            <button
-              onClick={send}
-              className="rounded-xl bg-black text-white px-4 py-2 disabled:opacity-60"
-              disabled={thinking}
-            >
-              Send
-            </button>
-          </div>
+            </div>
+          )}
         </div>
 
-        <p className="mt-3 text-xs text-gray-500">
-          I’ll fetch data and include **downloadable links** wherever possible (filings, PDFs, CSVs).
-        </p>
+        <div className="border-t p-3 flex gap-2">
+          <input
+            className="flex-1 border rounded-lg px-3 py-2"
+            placeholder="Ask for a recent 10-K, latest CPI, or FOMC statement…"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && ask()}
+          />
+          <button
+            onClick={ask}
+            disabled={loading}
+            className="rounded-lg bg-black text-white px-4 py-2 disabled:opacity-60"
+          >
+            Send
+          </button>
+        </div>
       </div>
     </main>
   );
