@@ -1,172 +1,269 @@
+// app/api/filings/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-/** Types returned to the UI */
-type FilingRow = {
-  form: string;
-  filingDate: string;
-  reportDate?: string;
-  accessionNumber: string;
-  primaryDocument: string;
-  title?: string;
-  links: { view: string; download: string };
-};
+/**
+ * SEC Search API (powers deep history + filters):
+ *   POST https://efts.sec.gov/LATEST/search-index
+ * Docs are light; this mirrors what the web UI does.
+ *
+ * We also resolve non-numeric identifiers (tickers/company names)
+ * to a CIK via the official SEC ticker list:
+ *   https://www.sec.gov/files/company_tickers.json
+ */
 
-type Meta = {
-  cik: string;
-  name: string;
-  page: number;
-  pageSize: number;
-  total: number;
-};
-
-const UA =
+const SEC_UA =
   process.env.SEC_USER_AGENT ||
-  "herevna.io contact@herevna.io (EDGAR2.0)";
+  "Herevna.io admin@herevna.io (EDGAR filings)";
 
-/** Soft date validator: allows YYYY, YYYY-MM, YYYY-MM-DD. Returns normalized YYYY-MM-DD or null. */
-function normalizeDate(d: string | null | undefined): string | null {
-  if (!d) return null;
-  const s = d.trim();
-  if (!s) return null;
-  // YYYY
-  if (/^\d{4}$/.test(s)) return `${s}-01-01`;
-  // YYYY-MM
-  if (/^\d{4}-(0[1-9]|1[0-2])$/.test(s)) return `${s}-01`;
-  // YYYY-MM-DD
-  if (/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s)) return s;
-  // Anything else -> ignore instead of throwing
+const SEARCH_URL = "https://efts.sec.gov/LATEST/search-index";
+const TICKER_LIST_URL = "https://www.sec.gov/files/company_tickers.json";
+
+// Helpful default forms (expandable)
+const DEFAULT_FORMS = [
+  "10-K",
+  "10-Q",
+  "8-K",
+  "S-1",
+  "S-3",
+  "S-4",
+  "20-F",
+  "40-F",
+  "6-K",
+  "11-K",
+  "13F-HR",
+  "13D",
+  "SC 13D",
+  "SC 13D/A",
+  "13G",
+  "SC 13G",
+  "SC 13G/A",
+  "3",
+  "4",
+  "5",
+  "DEF 14A",
+  "DEFA14A",
+  "PX14A6G",
+  "424B2",
+  "424B3",
+  "424B4",
+  "424B5",
+  "424B7",
+  "424B8",
+] as const;
+
+type SearchBody = {
+  keys?: string;           // free-text keys (ticker, company, CIK)
+  ciks?: string[];         // array of 10-digit CIKs (string)
+  formTypes?: string[];    // list of forms to include
+  startdt?: string;        // YYYY-MM-DD
+  enddt?: string;          // YYYY-MM-DD
+  from?: number;           // offset (pagination)
+  size?: number;           // page size 1..200
+  category?: string;       // optional; UI uses "custom"
+};
+
+type Hit = {
+  // This shape is simplified; the API returns more fields
+  cik: number;
+  adsh: string;            // accession with dashes (e.g. 0001193125-24-095399)
+  filed: string;           // YYYY-MM-DD
+  form: string;            // e.g., "10-K"
+  primaryDoc?: string;     // often present; sometimes "primaryDocument" in other feeds
+  display_names?: string;  // company name
+};
+
+type SearchResponse = {
+  hits: {
+    hits: { _source: Hit }[];
+    total?: number;
+  };
+};
+
+/** Pad numeric CIK to 10 chars (string) */
+function padCIK(n: string | number) {
+  const s = String(n).replace(/\D/g, "");
+  return s.padStart(10, "0");
+}
+
+/** Remove leading zeros from CIK for archive paths */
+function cikNoZeros(cik10: string) {
+  return String(parseInt(cik10, 10));
+}
+
+/** Strip dashes from accession for archive dir */
+function accessionNoDash(adsh: string) {
+  return adsh.replace(/-/g, "");
+}
+
+/** Build canonical SEC document links (index + dir + primary if known) */
+function buildDocLinks(cik10: string, adsh: string, primaryDoc?: string) {
+  const cikPath = cikNoZeros(cik10);
+  const adshNoDash = accessionNoDash(adsh);
+  const baseDir = `https://www.sec.gov/Archives/edgar/data/${cikPath}/${adshNoDash}`;
+  // Index page for the filing:
+  const indexHtml = `${baseDir}/${adsh}-index.htm`;
+  // Primary document (if the API provided a filename); falls back to just the dir
+  const primary =
+    primaryDoc && /^[\w.\-]+$/.test(primaryDoc) ? `${baseDir}/${primaryDoc}` : baseDir;
+  return { indexHtml, dir: baseDir, primary };
+}
+
+/** Fetch the official SEC ticker list and resolve to CIK */
+async function resolveToCIK(idOrQuery: string): Promise<{ cik10: string; name?: string } | null> {
+  // If it's already a CIK-like string, accept it.
+  if (/^\d{1,10}$/.test(idOrQuery.trim())) {
+    return { cik10: padCIK(idOrQuery.trim()) };
+  }
+
+  // Try the SEC ticker JSON (small enough to fetch and cache at edge)
+  const res = await fetch(TICKER_LIST_URL, {
+    headers: { "User-Agent": SEC_UA, "Accept": "application/json" },
+    next: { revalidate: 60 * 60 }, // revalidate hourly
+  });
+  if (!res.ok) return null;
+
+  // Format: { "0": { cik_str: 320193, ticker: "AAPL", title: "Apple Inc." }, ... }
+  const listing: Record<string, { cik_str: number; ticker: string; title: string }> =
+    await res.json();
+
+  const q = idOrQuery.trim().toUpperCase();
+
+  // 1) Exact/near-exact ticker
+  for (const k of Object.keys(listing)) {
+    const row = listing[k];
+    if (row.ticker.toUpperCase() === q) {
+      return { cik10: padCIK(row.cik_str), name: row.title };
+    }
+  }
+
+  // 2) Company name contains query (simple contains to be forgiving)
+  for (const k of Object.keys(listing)) {
+    const row = listing[k];
+    if (row.title.toUpperCase().includes(q)) {
+      return { cik10: padCIK(row.cik_str), name: row.title };
+    }
+  }
+
   return null;
 }
 
-/** Compare ISO date strings safely */
-function isOnOrAfter(a: string, b: string) {
-  return a.localeCompare(b) >= 0;
-}
-function isOnOrBefore(a: string, b: string) {
-  return a.localeCompare(b) <= 0;
-}
-
-/** Build SEC archive links */
-function buildLinks(cik10: string, accessionWithDashes: string, primaryDoc: string) {
-  const accNoNoDashes = accessionWithDashes.replace(/-/g, "");
-  const view = `https://www.sec.gov/Archives/edgar/data/${Number(cik10)}/${accNoNoDashes}/${accNoNoDashes}-index.html`;
-  const download = `https://www.sec.gov/Archives/edgar/data/${Number(cik10)}/${accNoNoDashes}/${primaryDoc}`;
-  return { view, download };
+function parseFormsParam(raw?: string | null): string[] | undefined {
+  if (!raw) return undefined;
+  const parts = raw.split(",").map(s => s.trim()).filter(Boolean);
+  if (!parts.length) return undefined;
+  // Normalize some common aliases
+  return parts.map(f => f.toUpperCase());
 }
 
-/** Fetch the company submissions file (recent filings) */
-async function fetchSubmissions(cik10: string) {
-  const url = `https://data.sec.gov/submissions/CIK${cik10}.json`;
-  const r = await fetch(url, {
-    headers: {
-      "User-Agent": UA,
-      Accept: "application/json",
-    },
-    // never cache on the edge; we want fresh-ish
-    cache: "no-store",
-  });
-  if (!r.ok) {
-    throw new Error(`SEC submissions fetch failed (${r.status})`);
-  }
-  return r.json();
-}
-
-/** GET /api/filings/[cik]?form=10-K,8-K&start=YYYY|YYYY-MM|YYYY-MM-DD&end=...&owner=...&page=1&pageSize=25 */
-export async function GET(req: NextRequest, { params }: { params: { cik: string } }) {
+/** GET /api/filings/[id]?start=YYYY-MM-DD&end=YYYY-MM-DD&forms=10-K,8-K&perPage=50&page=1&q=free+text
+ *  id can be: CIK (numeric), ticker (NVDA), or a company name fragment.
+ */
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   try {
     const { searchParams } = new URL(req.url);
 
-    // --- normalize CIK ---
-    let cikRaw = (params?.cik || "").trim();
-    // If user passed a ticker or name here by mistake, we bail early with a friendly error.
-    if (!/^\d{1,10}$/.test(cikRaw)) {
-      return NextResponse.json({ error: "CIK must be 1–10 digits." }, { status: 400 });
-    }
-    const cik10 = cikRaw.padStart(10, "0");
-
-    // --- filters ---
-    const formsParam = (searchParams.get("form") || "").trim();
-    const forms = formsParam
-      ? formsParam.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean)
-      : [];
-    const start = normalizeDate(searchParams.get("start"));
-    const end = normalizeDate(searchParams.get("end"));
-    const owner = (searchParams.get("owner") || "").trim(); // NOTE: for 3/4/5, we’d need per-filing fetch to match owners; we soft-ignore here.
-
-    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
-    const pageSize = Math.min(200, Math.max(1, parseInt(searchParams.get("pageSize") || "25", 10) || 25));
-
-    // --- fetch recent filings from SEC submissions file ---
-    const json = await fetchSubmissions(cik10);
-
-    const entityName: string =
-      json?.entityType && json?.name
-        ? String(json.name)
-        : String(json?.name || "Unknown");
-
-    // recent arrays are parallel: accessionNumber[], filingDate[], form[], primaryDocument[], reportDate[], primaryDocDescription[]
-    const recent = json?.filings?.recent;
-    const N: number = Array.isArray(recent?.accessionNumber) ? recent.accessionNumber.length : 0;
-
-    const rows: FilingRow[] = [];
-    for (let i = 0; i < N; i++) {
-      const form = String(recent.form?.[i] || "");
-      const filingDate = String(recent.filingDate?.[i] || "");
-      const reportDate = recent.reportDate?.[i] ? String(recent.reportDate[i]) : undefined;
-      const accessionNumber = String(recent.accessionNumber?.[i] || "");
-      const primaryDocument = String(recent.primaryDocument?.[i] || "");
-      const primaryDocDescription = recent.primaryDocDescription?.[i]
-        ? String(recent.primaryDocDescription[i])
-        : undefined;
-
-      // form filter
-      if (forms.length && !forms.includes(form.toUpperCase())) continue;
-
-      // date filters (compare ISO)
-      if (start && filingDate && !isOnOrAfter(filingDate, start)) continue;
-      if (end && filingDate && !isOnOrBefore(filingDate, end)) continue;
-
-      // (Optional) rudimentary owner filter: only allow through for 3/4/5.
-      // A true owner-name filter requires fetching each doc and parsing; we skip that here to keep responses fast.
-      if (owner && !["3", "4", "5", "FORM 3", "FORM 4", "FORM 5"].includes(form.toUpperCase())) {
-        continue;
-      }
-
-      rows.push({
-        form,
-        filingDate,
-        reportDate,
-        accessionNumber,
-        primaryDocument,
-        title: primaryDocDescription,
-        links: buildLinks(cik10, accessionNumber, primaryDocument),
-      });
+    const rawId = decodeURIComponent(params.id || "").trim();
+    if (!rawId) {
+      return NextResponse.json(
+        { error: "Missing identifier. Provide CIK, ticker, or company name." },
+        { status: 400 }
+      );
     }
 
-    // --- (Optional) extend with historical batches here ---
-    // If you had logic building `historicRows`, make sure it is strongly typed:
-    // const historicRows: FilingRow[] = [];
-    // const lists: FilingRow[][] = await Promise.all(tasksReturningFilingRowArrays);
-    // for (const list of lists) if (Array.isArray(list)) historicRows.push(...list);
-    // rows.push(...historicRows);
+    const start = searchParams.get("start") || "2000-01-01";
+    const end = searchParams.get("end") || new Date().toISOString().slice(0, 10);
+    const forms = parseFormsParam(searchParams.get("forms")) || [...DEFAULT_FORMS];
+    const perPage = Math.min(Math.max(parseInt(searchParams.get("perPage") || "50"), 1), 200);
+    const page = Math.max(parseInt(searchParams.get("page") || "1"), 1);
+    const freeText = searchParams.get("q")?.trim() || "";
 
-    // sort newest → oldest
-    rows.sort((a, b) => b.filingDate.localeCompare(a.filingDate));
+    // Resolve identifier to a CIK when possible, but keep a fallback:
+    const resolved = await resolveToCIK(rawId);
+    const cik10 = resolved?.cik10; // may be undefined if nothing matched
 
-    const total = rows.length;
-    const startIdx = (page - 1) * pageSize;
-    const pageRows = rows.slice(startIdx, startIdx + pageSize);
-
-    const meta: Meta = {
-      cik: cik10,
-      name: entityName,
-      page,
-      pageSize,
-      total,
+    // Build query body for SEC search-index
+    const body: SearchBody = {
+      category: "custom",
+      formTypes: forms,
+      startdt: start,
+      enddt: end,
+      size: perPage,
+      from: (page - 1) * perPage,
     };
 
-    return NextResponse.json({ data: pageRows, meta }, { status: 200 });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Server error" }, { status: 500 });
+    // Prefer exact CIK if we have it; otherwise send keys as user input
+    if (cik10) {
+      body.ciks = [cik10];
+      // also add keys for a bit more recall matching (SEC seems to like keys)
+      body.keys = cik10;
+    } else {
+      // Use the raw id (ticker / company name) and any free text
+      body.keys = [rawId, freeText].filter(Boolean).join(" ");
+    }
+
+    const resp = await fetch(SEARCH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": SEC_UA,
+        // (Optional but harmless)
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Origin": "https://www.sec.gov",
+        "Referer": "https://www.sec.gov/edgar/search/",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return NextResponse.json(
+        { error: `SEC search failed (${resp.status})`, details: text.slice(0, 300) },
+        { status: 502 }
+      );
+    }
+
+    const json = (await resp.json()) as SearchResponse;
+
+    const hits = json?.hits?.hits || [];
+    const total = json?.hits?.total ?? hits.length;
+
+    const rows = hits.map((h) => {
+      const s = h._source as Hit;
+      const cik10Local = padCIK(s.cik);
+      const links = buildDocLinks(cik10Local, s.adsh, (s as any).primaryDoc);
+      return {
+        cik: cik10Local,
+        company: s.display_names || undefined,
+        form: s.form,
+        filed: s.filed,
+        accessionNumber: s.adsh,
+        links,              // { indexHtml, dir, primary }
+        download: links.indexHtml, // convenience alias for UI "Download / View"
+      };
+    });
+
+    return NextResponse.json({
+      ok: true,
+      query: {
+        id: rawId,
+        resolvedCIK: cik10 || null,
+        start,
+        end,
+        forms,
+        perPage,
+        page,
+        freeText: freeText || null,
+      },
+      total,
+      count: rows.length,
+      data: rows,
+    });
+
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err?.message || "Unexpected error" },
+      { status: 500 }
+    );
   }
 }
