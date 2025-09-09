@@ -1,348 +1,164 @@
 // app/api/filings/[cik]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-const SEC_UA =
-  process.env.SEC_USER_AGENT ||
-  "herevna/filings (contact@herevna.io)";
+const SEC_UA = process.env.SEC_USER_AGENT || "herevna/1.0 (contact@herevna.io)";
+const HEADERS = { "User-Agent": SEC_UA, Accept: "application/json; charset=utf-8" } as const;
 
-type QueryOut = {
-  id: string;
-  resolvedCIK: string | null;
-  start: string;
-  end: string;
-  forms: string[];
-  perPage: number;
-  page: number;
-  freeText: string | null;
-};
-
-type RowOut = {
+type Row = {
   cik: string;
-  companyName?: string;
+  company?: string;
   form: string;
-  filingDate: string;
-  reportDate?: string;
+  filed: string;
   accessionNumber: string;
-  primaryDocument: string;
-  primaryDocDescription?: string;
-  indexUrl: string;
-  primaryUrl: string;
-  downloadUrl: string;
+  links: { indexHtml: string; dir: string; primary: string };
+  download: string;
 };
 
-/* -------------------- helpers -------------------- */
-
-function padCIK(cik: string) {
-  const d = cik.replace(/\D/g, "");
-  return d.padStart(10, "0");
-}
-
-function isCIKLike(s: string) {
-  return /^\d{1,10}$/.test(s.trim());
-}
-
-function normalizeName(s: string) {
-  return s.replace(/[^\w\s\-&.]/g, "").toLowerCase();
-}
-
-function normalizeTicker(s: string) {
-  // handle BRK.B / BRK-B etc.
-  return s.toUpperCase().replace(/[^\w.]/g, "");
-}
-
-function buildUrls(cik10: string, accNo: string, primary: string) {
-  const cikNoLead = String(parseInt(cik10, 10)); // strip leading zeros
-  const accNoNoDash = accNo.replace(/-/g, "");
-  const base = `https://www.sec.gov/Archives/edgar/data/${cikNoLead}/${accNoNoDash}`;
-  return {
-    indexUrl: `${base}/${accNoNoDash}-index.html`,
-    primaryUrl: `${base}/${primary}`,
-    downloadUrl: `${base}/${accNoNoDash}.zip`,
-  };
-}
-
-function toISO(d: string) {
-  // expect YYYY-MM-DD already; fallback tolerant parse
-  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
-  const x = new Date(d);
-  if (isNaN(+x)) return "1900-01-01";
-  return x.toISOString().slice(0, 10);
-}
-
-function inDateRange(iso: string, start: string, end: string) {
-  return iso >= start && iso <= end;
-}
-
-function containsFreeText(fields: string[], q?: string | null) {
-  if (!q) return true;
-  const needle = q.toLowerCase();
-  return fields.some((s) => (s || "").toLowerCase().includes(needle));
-}
-
-const SEC_JSON_HEADERS = {
-  "User-Agent": SEC_UA,
-  "Accept": "application/json; charset=utf-8",
-  "X-Requested-With": "XMLHttpRequest",
-} as const;
-
-/* ------- cache SEC company_tickers.json in memory ------- */
-
-type TickerRecord = {
-  cik_str: number;
-  ticker: string;
-  title: string;
-};
-
-let TICKER_CACHE: {
-  at: number;
-  items: TickerRecord[];
-} | null = null;
-
-async function loadTickerIndex(): Promise<TickerRecord[]> {
-  const now = Date.now();
-  if (TICKER_CACHE && now - TICKER_CACHE.at < 6 * 60 * 60 * 1000) {
-    return TICKER_CACHE.items;
-  }
-  const url = "https://www.sec.gov/files/company_tickers.json";
-  const r = await fetch(url, { headers: SEC_JSON_HEADERS, cache: "no-store" });
-  if (!r.ok) throw new Error(`SEC ticker index fetch failed (${r.status})`);
-  const j = (await r.json()) as Record<string, { cik_str: number; ticker: string; title: string }>;
-  const items = Object.values(j);
-  TICKER_CACHE = { at: now, items };
-  return items;
-}
-
-async function resolveIdentifierToCIK(id: string): Promise<{ cik10: string; name?: string } | null> {
-  const raw = id.trim();
-  if (!raw) return null;
-
-  // numeric CIK
-  if (isCIKLike(raw)) {
-    return { cik10: padCIK(raw) };
-  }
-
-  const idx = await loadTickerIndex();
-
-  // ticker exact (case-insensitive), normalize dots (e.g., BRK.B)
-  const tickerNorm = normalizeTicker(raw);
-  let m = idx.find((x) => normalizeTicker(x.ticker) === tickerNorm);
-  if (m) return { cik10: padCIK(String(m.cik_str)), name: m.title };
-
-  // company name contains
-  const nameNorm = normalizeName(raw);
-  m = idx.find((x) => normalizeName(x.title).includes(nameNorm));
-  if (m) return { cik10: padCIK(String(m.cik_str)), name: m.title };
-
+function toCIK10(input: string): string | null {
+  const s = input.trim();
+  if (/^\d{1,10}$/.test(s)) return s.padStart(10, "0");
   return null;
 }
 
-/* ------------- fetch submissions for a CIK ------------- */
+async function resolveToCIK10(input: string): Promise<{ cik10: string; display?: string } | null> {
+  // If already a (short) CIK
+  const c10 = toCIK10(input);
+  if (c10) return { cik10: c10, display: `CIK ${c10}` };
 
-type RecentBlock = {
-  accessNumber: string[];
-  filingDate: string[];
-  reportDate: (string | null)[];
-  acceptanceDateTime: string[];
-  act: (string | null)[];
-  form: string[];
-  fileNumber: (string | null)[];
-  filmNumber: (string | null)[];
-  items: (string | null)[];
-  size: number[];
-  isXBRL: (number | null)[];
-  isInlineXBRL: (number | null)[];
-  primaryDocument: string[];
-  primaryDocDescription: (string | null)[];
-};
+  // Try SEC's official ticker file for ticker/company name
+  try {
+    const r = await fetch("https://www.sec.gov/files/company_tickers.json", { headers: HEADERS, cache: "no-store" });
+    if (!r.ok) return null;
+    const data = (await r.json()) as Record<string, { cik_str: number; ticker: string; title: string }>;
+    const list = Object.values(data);
+    const q = input.trim().toLowerCase();
 
-type Submissions = {
-  cik: string; // no leading zeros
-  name: string;
-  filings: {
-    recent: RecentBlock;
-    files?: { name: string; filingCount: number; filingFrom: string; filingTo: string }[];
-  };
-};
+    let hit = list.find((x) => x.ticker.toLowerCase() === q); // exact ticker
+    if (!hit) hit = list.find((x) => x.title.toLowerCase().includes(q)); // company name contains
+    if (!hit) return null;
 
-async function fetchSubmissions(cik10: string): Promise<Submissions> {
+    return { cik10: String(hit.cik_str).padStart(10, "0"), display: `${hit.ticker} — ${hit.title}` };
+  } catch {
+    return null;
+  }
+}
+
+async function getRecentFilings(cik10: string) {
   const url = `https://data.sec.gov/submissions/CIK${cik10}.json`;
-  const r = await fetch(url, { headers: SEC_JSON_HEADERS, cache: "no-store" });
+  const r = await fetch(url, { headers: HEADERS, cache: "no-store" });
   if (!r.ok) throw new Error(`SEC submissions fetch failed (${r.status})`);
-  return (await r.json()) as Submissions;
-}
+  const j = await r.json();
 
-async function fetchHistoricFile(cik10: string, name: string): Promise<Submissions> {
-  // name looks like 'CIK0000320193-2014.json'
-  const url = `https://data.sec.gov/submissions/${name}`;
-  const r = await fetch(url, { headers: SEC_JSON_HEADERS, cache: "no-store" });
-  if (!r.ok) throw new Error(`SEC historic fetch failed (${r.status}) for ${name}`);
-  return (await r.json()) as Submissions;
-}
+  const { filings, name } = j;
+  const rec = filings?.recent;
+  if (!rec) return [] as Row[];
 
-/* ------------- flatten + filter filings ------------- */
-
-function flattenRecent(s: Submissions): RowOut[] {
-  const r = s.filings.recent;
-  const n = r.accessNumber.length;
-  const out: RowOut[] = [];
+  const rows: Row[] = [];
+  const n = rec.accessionNumber?.length || 0;
   for (let i = 0; i < n; i++) {
-    const accessionNumber = r.accessNumber[i];
-    const filingDate = toISO(r.filingDate[i]);
-    const reportDate = r.reportDate[i] ? toISO(r.reportDate[i] as string) : undefined;
-    const form = r.form[i];
-    const primaryDocument = r.primaryDocument[i];
-    const primaryDocDescription = r.primaryDocDescription?.[i] || undefined;
+    const acc = rec.accessionNumber[i];           // "0000320193-24-000123"
+    const form = rec.form[i];
+    const filed = rec.filingDate[i];              // "YYYY-MM-DD"
+    const primaryDoc = rec.primaryDocument[i] || "";
+    const accNoPlain = acc.replace(/-/g, "");
+    const dir = `https://www.sec.gov/Archives/edgar/data/${parseInt(cik10, 10)}/${accNoPlain}`;
+    const indexHtml = `${dir}/index.htm`;
+    const primary = primaryDoc ? `${dir}/${primaryDoc}` : indexHtml;
 
-    const urls = buildUrls(padCIK(s.cik), accessionNumber, primaryDocument);
-
-    out.push({
-      cik: padCIK(s.cik),
-      companyName: s.name,
+    rows.push({
+      cik: cik10,
+      company: name,
       form,
-      filingDate,
-      reportDate,
-      accessionNumber,
-      primaryDocument,
-      primaryDocDescription,
-      ...urls,
+      filed,
+      accessionNumber: acc,
+      links: { indexHtml, dir, primary },
+      download: primary,
     });
   }
-  return out;
+  return rows;
 }
 
 function filterRows(
-  rows: RowOut[],
-  start: string,
-  end: string,
-  forms: string[],
+  rows: Row[],
+  forms: string[] | null,
+  start: string | null,
+  end: string | null,
   q: string | null
 ) {
-  const setForms =
-    forms && forms.length
-      ? new Set(forms.map((f) => f.toUpperCase()))
-      : null;
+  const inRange = (d: string) => {
+    if (start && d < start) return false;
+    if (end && d > end) return false;
+    return true;
+  };
+  const fset = forms && forms.length ? new Set(forms.map((s) => s.toUpperCase())) : null;
+  const qq = q?.toLowerCase() || "";
 
   return rows.filter((r) => {
-    if (!inDateRange(r.filingDate, start, end)) return false;
-    if (setForms && !setForms.has(r.form.toUpperCase())) return false;
-    if (
-      !containsFreeText(
-        [r.primaryDocDescription || "", r.form, r.accessionNumber, r.companyName || ""],
-        q
-      )
-    ) {
-      return false;
+    if (!inRange(r.filed)) return false;
+    if (fset && !fset.has(r.form.toUpperCase())) return false;
+    if (qq) {
+      const hay = `${r.accessionNumber} ${r.form} ${r.links.primary} ${r.links.indexHtml}`.toLowerCase();
+      if (!hay.includes(qq)) return false;
     }
     return true;
   });
 }
 
-/* -------------------- handler -------------------- */
-
 export async function GET(req: NextRequest, ctx: { params: { cik: string } }) {
   try {
     const idRaw = decodeURIComponent(ctx.params.cik || "").trim();
-
-    // query params
-    const { searchParams } = new URL(req.url);
-    const start = toISO(searchParams.get("start") || "1994-01-01");
-    const end = toISO(searchParams.get("end") || new Date().toISOString().slice(0, 10));
-    const forms = (searchParams.get("forms") || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const perPage = Math.min(200, Math.max(1, parseInt(searchParams.get("perPage") || "50", 10)));
-    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
-    const freeText = (searchParams.get("q") || "").trim() || null;
-
     if (!idRaw) {
-      return NextResponse.json(
-        { ok: false, error: "Missing identifier. Provide CIK, ticker, or company name." },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "Missing identifier. Provide CIK, ticker, or company name." }, { status: 400 });
     }
 
-    // resolve to CIK
-    const resolved = await resolveIdentifierToCIK(idRaw);
-    if (!resolved) {
+    const url = new URL(req.url);
+    const start = url.searchParams.get("start");
+    const end = url.searchParams.get("end");
+    const formsParam = url.searchParams.get("forms");
+    const perPage = Math.max(1, Math.min(200, parseInt(url.searchParams.get("perPage") || "50")));
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
+    const freeText = url.searchParams.get("q");
+
+    // Resolve whatever came in (CIK/ticker/name) to a 10-digit CIK
+    const resolved = await resolveToCIK10(idRaw);
+    if (!resolved?.cik10) {
       return NextResponse.json(
         { ok: false, error: "Ticker/Company not recognized. Pick from suggestions or enter a numeric CIK." },
-        { status: 404 }
+        { status: 400 }
       );
     }
     const cik10 = resolved.cik10;
 
-    // pull recent
-    const sub = await fetchSubmissions(cik10);
-    let rows = flattenRecent(sub);
+    const recent = await getRecentFilings(cik10);
 
-    // If date range predates the earliest in 'recent', augment with historic files
-    const needHistoric =
-      start < (rows.at(-1)?.filingDate || "9999-12-31") || // crude check if we need more history
-      (sub.filings.files && sub.filings.files.length > 0 && start < "2019-01-01");
+    const forms = formsParam
+      ? formsParam.split(",").map((s) => s.trim()).filter(Boolean)
+      : null;
 
-    if (needHistoric && sub.filings.files?.length) {
-      // Fetch only the historic files whose [filingTo] intersects our date range
-      const tasks = sub.filings.files
-        .filter((f) => {
-          const from = toISO(f.filingFrom);
-          const to = toISO(f.filingTo);
-          // overlap test
-          return !(to < start || from > end);
-        })
-        .map((f) => fetchHistoricFile(cik10, f.name).then(flattenRecent).catch(() => [] as RowOut[]));
+    const filtered = filterRows(recent, forms, start, end, freeText);
 
-      const lists = await Promise.all(tasks);
-      for (const list of lists) rows.push(...list);
-    }
+    // paginate
+    const total = filtered.length;
+    const offset = (page - 1) * perPage;
+    const data = filtered.slice(offset, offset + perPage);
 
-    // de-dup (same accession may appear twice)
-    const seen = new Set<string>();
-    rows = rows.filter((r) => {
-      const key = `${r.accessionNumber}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    // filter by forms/date/q
-    rows = filterRows(rows, start, end, forms, freeText);
-
-    // sort desc by filing date then accession
-    rows.sort((a, b) => (a.filingDate < b.filingDate ? 1 : a.filingDate > b.filingDate ? -1 : a.accessionNumber < b.accessionNumber ? 1 : -1));
-
-    const total = rows.length;
-
-    // pagination
-    const startIdx = (page - 1) * perPage;
-    const pageRows = rows.slice(startIdx, startIdx + perPage);
-
-    const payload = {
+    return NextResponse.json({
       ok: true,
       total,
-      count: pageRows.length,
-      data: pageRows,
+      count: data.length,
+      data,
       query: {
         id: idRaw,
         resolvedCIK: cik10,
-        start,
-        end,
-        forms,
+        start: start || "",
+        end: end || "",
+        forms: forms || [],
         perPage,
         page,
-        freeText,
-      } as QueryOut,
-    };
-
-    return NextResponse.json(payload, {
-      headers: {
-        "Cache-Control": "no-store",
+        freeText: freeText || "",
       },
-    });
-  } catch (err: any) {
-    return NextResponse.json(
-      { ok: false, error: err?.message || "Server error" },
-      { status: 500 }
-    );
+    }, { headers: { "Cache-Control": "no-store" } });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "Unexpected error" }, { status: 500 });
   }
 }
