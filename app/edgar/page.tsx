@@ -3,14 +3,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-/** ============ Types ============ */
+/** ------------ Types ------------ */
 type Row = {
   cik: string;
   company?: string;
   form: string;
   filed: string;
   accessionNumber: string;
-  open: string; // single absolute URL to primary doc or index
+  open: string; // absolute URL to the filing (primary doc or index)
 };
 
 type ApiResult = {
@@ -30,9 +30,9 @@ type ApiResult = {
   };
 };
 
-type SuggestItem = { label: string; value: string }; // label = "NVIDIA Corp (NVDA)", value can be "NVDA" or CIK
+type SuggestItem = { label: string; value: string };
 
-/** ============ Helpers ============ */
+/** ------------ Helpers ------------ */
 function normalizeCIKLike(input: string): string | null {
   if (!input) return null;
   let s = input.trim();
@@ -43,7 +43,7 @@ function normalizeCIKLike(input: string): string | null {
   return s.padStart(10, "0");
 }
 
-/** ============ Constants ============ */
+/** ------------ Constants ------------ */
 const FORM_OPTIONS = [
   "10-K","10-Q","8-K","S-1","S-3","S-4","20-F","40-F","6-K","11-K",
   "13F-HR","SC 13D","SC 13D/A","SC 13G","SC 13G/A",
@@ -51,34 +51,36 @@ const FORM_OPTIONS = [
   "424B2","424B3","424B4","424B5","424B7","424B8",
 ];
 
+/** ----------------------------------------------------------------------------
+ * Page
+ * ---------------------------------------------------------------------------*/
 export default function EdgarPage() {
-  // ----- search state -----
+  // Search state
   const [identifier, setIdentifier] = useState<string>(""); // ticker / company / CIK
   const [forms, setForms] = useState<string[]>(["10-K","10-Q","8-K"]);
   const [start, setStart] = useState<string>("2000-01-01");
-  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0,10));
+  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
   const [perPage, setPerPage] = useState<number>(50);
   const [page, setPage] = useState<number>(1);
-  const [q, setQ] = useState<string>(""); // free-text (optional)
+  const [q, setQ] = useState<string>("");
 
-  // suggestions
+  // Suggestions
   const [suggesting, setSuggesting] = useState(false);
   const [suggestions, setSuggestions] = useState<SuggestItem[] | null>(null);
   const [showSuggest, setShowSuggest] = useState(false);
 
-  // ----- results state -----
+  // Results
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState<number>(0);
 
-  // Keep forms string stable
   const formsParam = useMemo(() => forms.join(","), [forms]);
 
-  // debounce suggestion fetch
+  /** Fetch suggestions (debounced) */
   useEffect(() => {
-    const v = identifier.trim();
-    if (!v) {
+    const term = identifier.trim();
+    if (!term) {
       setSuggestions(null);
       setShowSuggest(false);
       return;
@@ -86,9 +88,9 @@ export default function EdgarPage() {
     setSuggesting(true);
     const t = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/suggest?q=${encodeURIComponent(v)}`, { cache: "no-store" });
-        if (!r.ok) throw new Error("suggest failed");
-        const j = (await r.json()) as { ok: boolean; items?: SuggestItem[] };
+        const r = await fetch(`/api/suggest?q=${encodeURIComponent(term)}`, { cache: "no-store" });
+        if (!r.ok) throw new Error();
+        const j = (await r.json()) as { ok?: boolean; items?: SuggestItem[] };
         setSuggestions(j?.items && j.items.length ? j.items.slice(0, 8) : []);
         setShowSuggest(true);
       } catch {
@@ -101,45 +103,42 @@ export default function EdgarPage() {
     return () => clearTimeout(t);
   }, [identifier]);
 
+  /** Resolve whatever the user typed into a 10-digit CIK */
   async function resolveToCIK(input: string): Promise<string> {
-    // 1) If it already looks like a CIK → normalize and return.
-    const cikMaybe = normalizeCIKLike(input);
-    if (cikMaybe) return cikMaybe;
+    const maybe = normalizeCIKLike(input);
+    if (maybe) return maybe;
 
-    // 2) Try the lookup endpoint (ticker or name).
-    //    The route should accept either /api/lookup/[symbol]?q=... or /api/lookup/NVDA
+    // Try lookup by symbol or company text
+    const path = `/api/lookup/${encodeURIComponent(input.trim())}`;
     try {
-      const u = `/api/lookup/${encodeURIComponent(input.trim())}`;
-      const r = await fetch(u, { cache: "no-store" });
+      const r = await fetch(path, { cache: "no-store" });
       if (r.ok) {
         const j = await r.json();
-        // Accept common shapes:
-        // { ok:true, cik:"0000320193", name:"Apple Inc." }
-        // or { cik:"0000320193" }
-        const cik =
-          j?.resolvedCIK || j?.cik || (typeof j === "string" ? j : null);
-        const norm = cik ? normalizeCIKLike(String(cik)) : null;
+        const raw = j?.resolvedCIK || j?.cik || (typeof j === "string" ? j : null);
+        const norm = raw ? normalizeCIKLike(String(raw)) : null;
         if (norm) return norm;
       }
-    } catch (_) {
-      // swallow & try final fallback
+    } catch {
+      // ignore; try fallback
     }
 
-    // 3) Final fallback: if user typed a raw ticker (letters), try uppercase through same route with ?q=
-    // (kept in case your lookup expects ?q)
+    // Fallback: try again with a query param (covers alt lookup handlers)
     try {
-      const r = await fetch(`/api/lookup/${encodeURIComponent(input.trim())}?q=${encodeURIComponent(input.trim())}`, { cache: "no-store" });
+      const r = await fetch(`${path}?q=${encodeURIComponent(input.trim())}`, { cache: "no-store" });
       if (r.ok) {
         const j = await r.json();
-        const cik = j?.resolvedCIK || j?.cik || null;
-        const norm = cik ? normalizeCIKLike(String(cik)) : null;
+        const raw = j?.resolvedCIK || j?.cik || null;
+        const norm = raw ? normalizeCIKLike(String(raw)) : null;
         if (norm) return norm;
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
 
     throw new Error("Ticker/Company not recognized. Pick from suggestions or enter a numeric CIK.");
   }
 
+  /** Fetch filings */
   async function fetchFilings() {
     const raw = identifier.trim();
     if (!raw) {
@@ -166,9 +165,12 @@ export default function EdgarPage() {
       const url = `/api/filings/${encodeURIComponent(cik10)}?${params.toString()}`;
       const r = await fetch(url, { cache: "no-store" });
 
-      // Gracefully handle non-JSON or error bodies
       let j: any = null;
-      try { j = await r.json(); } catch { /* ignore parse issues */ }
+      try {
+        j = await r.json();
+      } catch {
+        throw new Error(`Failed to fetch filings (${r.status})`);
+      }
 
       if (!r.ok || !j || j.ok === false) {
         throw new Error(j?.error || `Failed to fetch filings (${r.status})`);
@@ -184,12 +186,13 @@ export default function EdgarPage() {
     }
   }
 
-  // reset page when inputs change (except page itself)
+  /** Reset to page 1 when inputs (other than page) change */
   useEffect(() => {
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identifier, formsParam, start, end, perPage, q]);
 
+  /** ------------------------ Render ------------------------ */
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
       <h1 className="text-2xl font-semibold">EDGAR Filings</h1>
@@ -211,16 +214,13 @@ export default function EdgarPage() {
               placeholder="e.g., NVDA, AAPL, JPMorgan, 0001045810"
               className="w-full border rounded-md px-3 py-2"
             />
-            {/* Suggest dropdown */}
             {showSuggest && (
               <div className="absolute z-10 mt-1 w-full rounded-md border bg-white shadow">
-                {suggesting && (
-                  <div className="px-3 py-2 text-sm text-gray-500">Loading…</div>
-                )}
+                {suggesting && <div className="px-3 py-2 text-sm text-gray-500">Loading…</div>}
                 {!suggesting && suggestions && suggestions.length > 0 && (
                   <ul>
                     {suggestions.map((s) => (
-                      <li key={s.value}>
+                      <li key={`${s.value}-${s.label}`}>
                         <button
                           type="button"
                           className="w-full text-left px-3 py-2 hover:bg-gray-50"
@@ -366,7 +366,7 @@ export default function EdgarPage() {
             <button
               className="px-3 py-1.5 rounded-md border bg-white text-sm disabled:opacity-50"
               disabled={loading || rows.length < perPage}
-              onClick={() => setPage((p) => p + 1))}
+              onClick={() => setPage((p) => p + 1)}
             >
               Next →
             </button>
