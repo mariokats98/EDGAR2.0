@@ -3,165 +3,121 @@ import { NextResponse } from "next/server";
 
 const UA =
   process.env.SEC_USER_AGENT ||
-  "Herevna/1.0 (contact@herevna.io)"; // ensure this is set in Vercel
+  "Herevna/1.0 (contact@herevna.io)";
 
-type LookupHit = { cik: string; name: string; ticker?: string; from?: string };
-type QueryNorm =
-  | { kind: "cik"; value: string }
-  | { kind: "text"; value: string };
+// SEC master list of public companies (id, ticker, title, cik_str)
+const SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json";
 
-// in-memory cache of SEC ticker list
-let TICKER_CACHE:
-  | null
-  | {
-      byTicker: Map<string, { cik: string; name: string; ticker: string }>;
-      byName: Map<string, { cik: string; name: string; ticker: string }[]>;
-    } = null;
+// in-memory cache across serverless invocations (when possible)
+let CACHE: {
+  loadedAt: number;
+  rows: Array<{ cik: string; ticker: string; name: string }>;
+} | null = null;
 
-async function loadTickerCache() {
-  if (TICKER_CACHE) return TICKER_CACHE;
-
-  const url = "https://www.sec.gov/files/company_tickers.json";
-  const r = await fetch(url, {
+async function loadSecList(): Promise<
+  Array<{ cik: string; ticker: string; name: string }>
+> {
+  // reuse cache for 24h
+  if (CACHE && Date.now() - CACHE.loadedAt < 24 * 60 * 60 * 1000) {
+    return CACHE.rows;
+  }
+  const r = await fetch(SEC_TICKERS_URL, {
     headers: { "User-Agent": UA, Accept: "application/json" },
+    // always get the latest from SEC
     cache: "no-store",
   });
-  if (!r.ok) throw new Error(`SEC tickers fetch failed (${r.status})`);
-  const j = (await r.json()) as Record<
-    string,
-    { cik_str: number | string; ticker: string; title: string }
-  >;
+  if (!r.ok) throw new Error(`SEC tickers fetch failed: ${r.status}`);
+  const j = await r.json();
 
-  const byTicker = new Map<string, { cik: string; name: string; ticker: string }>();
-  const byName = new Map<string, { cik: string; name: string; ticker: string }[]>();
+  // shape is { "0": {cik_str, ticker, title}, ... }
+  const rows: Array<{ cik: string; ticker: string; name: string }> = Object.values(
+    j as any
+  ).map((x: any) => ({
+    cik: String(x.cik_str).padStart(10, "0"),
+    ticker: String(x.ticker || "").toUpperCase(),
+    name: String(x.title || ""),
+  }));
 
-  for (const k of Object.keys(j)) {
-    const row = j[k];
-    if (!row) continue;
-    const cik = String(row.cik_str).padStart(10, "0");
-    const ticker = String(row.ticker || "").toUpperCase();
-    const name = String(row.title || "").trim();
-    if (!ticker || !cik) continue;
-
-    const rec = { cik, name, ticker };
-
-    byTicker.set(ticker, rec);
-
-    // support dot/dash class variants
-    if (ticker.includes(".")) byTicker.set(ticker.replace(/\./g, "-"), rec);
-    if (ticker.includes("-")) byTicker.set(ticker.replace(/-/g, "."), rec);
-
-    const nKey = name.toUpperCase();
-    const arr = byName.get(nKey) || [];
-    arr.push(rec);
-    byName.set(nKey, arr);
-  }
-
-  TICKER_CACHE = { byTicker, byName };
-  return TICKER_CACHE;
+  CACHE = { loadedAt: Date.now(), rows };
+  return rows;
 }
 
-function normalizeQuery(raw: string): QueryNorm {
-  const q = raw.trim();
-  if (/^\d{1,10}$/.test(q)) {
-    // Looks like a CIK
-    return { kind: "cik", value: q.padStart(10, "0") };
-  }
-  // Otherwise treat as text (ticker/company)
-  return { kind: "text", value: q.toUpperCase() };
+function normalizeTicker(input: string) {
+  // Allow both “BRK.B” and “BRK-B”; SEC list uses dots for classes
+  const up = input.toUpperCase().trim();
+  return up.replace(/-/g, "."); // normalize hyphen → dot
 }
 
-async function searchCompanyIndex(q: string): Promise<LookupHit | null> {
-  const params = new URLSearchParams({
-    keys: `"${q}"`,
-    category: "company",
-    size: "10",
-    sort: "date-desc",
-  });
-  const url = `https://efts.sec.gov/LATEST/search-index?${params.toString()}`;
-  const r = await fetch(url, {
-    headers: { "User-Agent": UA, Accept: "application/json" },
-    cache: "no-store",
-  });
-  if (!r.ok) return null;
+type Match =
+  | { ok: true; cik: string; ticker: string; name: string }
+  | { ok: false; reason: string };
 
-  const j = await r.json().catch(() => null as any);
-  const hits = j?.hits?.hits || [];
-  for (const h of hits) {
-    const src = h?._source || {};
-    const cikRaw =
-      (src.cik || src.cikNumber || src.cik_num || "").toString().replace(/\D/g, "");
-    const name =
-      (src.display_names?.[0] ||
-        src.display_name ||
-        src.entity ||
-        src.name ||
-        "") + "";
-    const ticker = (src.tickers?.[0] || src.ticker || "") + "";
-    if (cikRaw && name) {
-      return {
-        cik: cikRaw.padStart(10, "0"),
-        name: name.trim(),
-        ticker: ticker ? ticker.toUpperCase() : undefined,
-        from: "sec-index",
-      };
-    }
+function bestMatch(
+  q: string,
+  rows: Array<{ cik: string; ticker: string; name: string }>
+): Match {
+  const raw = q.trim();
+  if (!raw) return { ok: false, reason: "Empty query" };
+
+  // 1) CIK numeric (1–10 digits)
+  if (/^\d{1,10}$/.test(raw)) {
+    const cik10 = raw.padStart(10, "0");
+    const found = rows.find((r) => r.cik === cik10);
+    if (found) return { ok: true, ...found };
+    // It might be a valid CIK even if not in company_tickers.json (rare)
+    return { ok: true, cik: cik10, ticker: "", name: "" };
   }
-  return null;
+
+  // 2) Try ticker exact (allow class symbols)
+  const t = normalizeTicker(raw);
+  const byTicker = rows.find((r) => r.ticker === t);
+  if (byTicker) return { ok: true, ...byTicker };
+
+  // 3) Try company name exact (case-insensitive)
+  const byNameExact = rows.find((r) => r.name.toLowerCase() === raw.toLowerCase());
+  if (byNameExact) return { ok: true, ...byNameExact };
+
+  // 4) Fuzzy: startsWith on ticker or name
+  const startsTicker = rows.find((r) => r.ticker.startsWith(t));
+  if (startsTicker) return { ok: true, ...startsTicker };
+
+  const startsName = rows.find((r) => r.name.toLowerCase().startsWith(raw.toLowerCase()));
+  if (startsName) return { ok: true, ...startsName };
+
+  // 5) Fuzzy: includes on name (e.g., “Nvidia”, “Webull”, “Exxon Mobil”)
+  const includesName = rows.find((r) =>
+    r.name.toLowerCase().includes(raw.toLowerCase())
+  );
+  if (includesName) return { ok: true, ...includesName };
+
+  return { ok: false, reason: "Ticker/Company not recognized" };
 }
 
 export async function GET(
   req: Request,
-  ctx: { params: { symbol: string } }
+  { params }: { params: { symbol: string } }
 ) {
   try {
-    const raw = ctx.params.symbol || "";
-    const norm = normalizeQuery(raw);
-
-    // 1) Direct CIK
-    if (norm.kind === "cik") {
-      return NextResponse.json<LookupHit>({
-        cik: norm.value,
-        name: "Company",
-        from: "cik",
-      });
+    const symbol = decodeURIComponent(params.symbol || "").trim();
+    if (!symbol) {
+      return NextResponse.json(
+        { error: "Missing symbol" },
+        { status: 400 }
+      );
     }
 
-    // 2) Try live ticker cache
-    const cache = await loadTickerCache();
+    const rows = await loadSecList();
+    const match = bestMatch(symbol, rows);
 
-    // exact ticker (with dot/dash variants)
-    const tUpper = norm.value;
-    const variants = new Set<string>([
-      tUpper,
-      tUpper.replace(/\./g, "-"),
-      tUpper.replace(/-/g, "."),
-    ]);
-    for (const v of variants) {
-      const hit = cache.byTicker.get(v);
-      if (hit) {
-        return NextResponse.json<LookupHit>({ ...hit, from: "ticker" });
-      }
+    if (!match.ok) {
+      return NextResponse.json({ error: match.reason }, { status: 404 });
     }
 
-    // exact company name
-    const byNameArr = cache.byName.get(tUpper);
-    if (byNameArr && byNameArr.length) {
-      const hit = byNameArr[0];
-      return NextResponse.json<LookupHit>({ ...hit, from: "name-exact" });
-    }
-
-    // 3) Fuzzy company search via SEC index
-    const fuzzy = await searchCompanyIndex(raw);
-    if (fuzzy) return NextResponse.json<LookupHit>(fuzzy);
-
-    return NextResponse.json(
-      { error: "Ticker/Company not recognized." },
-      { status: 404 }
-    );
+    const { cik, ticker, name } = match;
+    return NextResponse.json({ cik, ticker, name });
   } catch (e: any) {
     return NextResponse.json(
-      { error: e?.message || "Unexpected error." },
+      { error: e?.message || "Lookup error" },
       { status: 500 }
     );
   }
