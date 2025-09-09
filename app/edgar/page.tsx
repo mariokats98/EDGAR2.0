@@ -4,19 +4,15 @@
 import { useEffect, useMemo, useState } from "react";
 import InsiderInput from "./InsiderInput";
 
+/** ---------- Types from the API ---------- */
 type Row = {
-  cik: string;                    // 10-digit, zero-padded
-  companyName?: string;           // from API, fallback to cik displayed
+  cik: string;
+  company?: string;
   form: string;
-  filingDate: string;             // YYYY-MM-DD
-  reportDate?: string;
-  accessionNumber: string;        // 0000000000-YY-XXXXX
-  primaryDocument: string;
-  primaryDocDescription?: string;
-  // Normalized working links coming from the API
-  indexUrl: string;               // https://www.sec.gov/ixviewer/doc?action=…
-  primaryUrl: string;             // https://www.sec.gov/Archives/edgar/data/…/…/primary.doc
-  downloadUrl: string;            // zip or primary fallback
+  filed: string;
+  accessionNumber: string;
+  links: { indexHtml: string; dir: string; primary: string };
+  download: string;
 };
 
 type ApiResult = {
@@ -25,107 +21,116 @@ type ApiResult = {
   count: number;
   data: Row[];
   query: {
-    id: string;                   // whatever the user typed
-    resolvedCIK: string | null;   // 10-digit CIK if resolved
-    start: string;                // ISO date
-    end: string;                  // ISO date
-    forms: string[];              // list
+    id: string;
+    resolvedCIK: string | null;
+    start: string;
+    end: string;
+    forms: string[];
     perPage: number;
     page: number;
     freeText: string | null;
   };
 };
 
+/** ---------- Available form filters ---------- */
 const FORM_OPTIONS = [
-  "10-K","10-Q","8-K","S-1","S-3","S-4","20-F","40-F","6-K","11-K",
-  "13F-HR","SC 13D","SC 13D/A","SC 13G","SC 13G/A",
-  "3","4","5","DEF 14A","DEFA14A","PX14A6G","424B2","424B3","424B4","424B5","424B7","424B8",
+  "10-K", "10-Q", "8-K",
+  "S-1", "S-3", "S-4",
+  "20-F", "40-F", "6-K", "11-K",
+  "13F-HR",
+  "SC 13D", "SC 13D/A", "SC 13G", "SC 13G/A",
+  "3", "4", "5",
+  "DEF 14A", "DEFA14A", "PX14A6G",
+  "424B2", "424B3", "424B4", "424B5", "424B7", "424B8",
 ];
 
 export default function EdgarPage() {
-  // ----- search state -----
-  const [identifier, setIdentifier] = useState<string>(""); // ticker / company / CIK
-  const [forms, setForms] = useState<string[]>(["10-K","10-Q","8-K"]);
+  /** ---------- Search state ---------- */
+  const [identifier, setIdentifier] = useState<string>(""); // ticker/company/CIK (or CIK from suggestion)
+  const [forms, setForms] = useState<string[]>(["10-K", "10-Q", "8-K"]);
   const [start, setStart] = useState<string>("2000-01-01");
-  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0,10));
+  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
   const [perPage, setPerPage] = useState<number>(50);
   const [page, setPage] = useState<number>(1);
-  const [q, setQ] = useState<string>(""); // free-text (optional)
+  const [q, setQ] = useState<string>(""); // optional free-text
 
-  // ----- results state -----
+  /** ---------- Results state ---------- */
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState<number>(0);
-  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, perPage)));
 
-  // Keep forms string stable
+  // Keep forms string stable to avoid re-fetch thrash
   const formsParam = useMemo(() => forms.join(","), [forms]);
 
-  async function fetchFilings() {
+  async function fetchFilings(nextPage?: number) {
     const id = identifier.trim();
     if (!id) {
       setError("Enter a ticker, company name, or CIK.");
       return;
     }
+
     setLoading(true);
     setError(null);
-    setRows([]);
+
+    const usePage = nextPage ?? page;
     try {
       const params = new URLSearchParams({
         start,
         end,
         forms: formsParam,
         perPage: String(perPage),
-        page: String(page),
+        page: String(usePage),
       });
       if (q.trim()) params.set("q", q.trim());
 
-      const url = `/api/filings/${encodeURIComponent(id)}?${params.toString()}`;
-      const r = await fetch(url, { cache: "no-store" });
-      const j = (await r.json()) as Partial<ApiResult> & { error?: string; details?: string };
+      // This path ALWAYS accepts ticker/company/CIK; server resolves to CIK
+      const idForPath = encodeURIComponent(id);
+      const url = `/api/filings/${idForPath}?${params.toString()}`;
 
-      if (!r.ok || !j || j.ok === false) {
-        // Show server message if present
-        throw new Error(j?.error || j?.details || "Failed to fetch filings");
+      const r = await fetch(url, { cache: "no-store" });
+      const j = (await r.json()) as Partial<ApiResult> & { error?: string };
+
+      if (!r.ok || j.ok === false) {
+        throw new Error(j?.error || "Failed to fetch filings");
       }
 
-      setRows((j.data as Row[]) || []);
+      setRows(j.data || []);
       setTotal(j.total || 0);
+      if (typeof nextPage === "number") setPage(nextPage);
     } catch (e: any) {
+      setRows([]);
+      setTotal(0);
       setError(e?.message || "Unexpected error");
     } finally {
       setLoading(false);
     }
   }
 
-  // reset page when inputs change (except page itself)
+  // Reset to page 1 whenever inputs change (except page itself)
   useEffect(() => {
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identifier, formsParam, start, end, perPage, q]);
 
-  // auto re-fetch when page changes (but not on first mount with empty id)
-  useEffect(() => {
-    if (identifier.trim()) void fetchFilings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page]);
-
+  /** ---------- Render ---------- */
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
       <h1 className="text-2xl font-semibold">EDGAR Filings</h1>
-      <p className="text-gray-600 text-sm mb-4">Search by ticker, company name, or CIK. Click a result to open the SEC filing.</p>
+      <p className="text-gray-600 text-sm mb-4">
+        Search by ticker, company name, or CIK. Click a result to open the SEC filing.
+      </p>
 
       {/* Controls */}
       <section className="rounded-2xl border bg-white p-4">
-        <div className="grid gap-3 md:grid-cols-[minmax(260px,1fr)_1fr_1fr_1fr]">
+        <div className="grid gap-3 md:grid-cols-[minmax(260px,1fr)_1fr_1fr_auto]">
           <div>
             <div className="text-sm text-gray-700 mb-1">Company / Ticker / CIK</div>
             <InsiderInput
               placeholder="e.g., NVDA, AAPL, JPMorgan, 0000320193"
-              onPick={(val) => { setIdentifier(val); setPage(1); }}
-              onType={(val) => setIdentifier(val)}
               value={identifier}
+              onType={(val) => setIdentifier(val)}            // typing keeps raw text
+              onPick={(val) => setIdentifier(val)}            // pick passes CIK (or raw) from suggestion
             />
           </div>
 
@@ -149,6 +154,24 @@ export default function EdgarPage() {
             />
           </div>
 
+          <div className="flex items-end">
+            <button
+              onClick={() => fetchFilings(1)}
+              className="w-full md:w-auto px-4 py-2 rounded-md bg-black text-white text-sm disabled:opacity-60"
+              disabled={loading}
+            >
+              {loading ? "Searching…" : "Get filings"}
+            </button>
+          </div>
+        </div>
+
+        {/* Forms / per page / free text */}
+        <div className="mt-3 grid gap-3 md:grid-cols-[2fr_1fr_1fr]">
+          <div>
+            <div className="text-sm text-gray-700 mb-1">Form Types</div>
+            <FormPicker value={forms} onChange={setForms} />
+          </div>
+
           <div>
             <div className="text-sm text-gray-700 mb-1">Per Page</div>
             <select
@@ -162,14 +185,6 @@ export default function EdgarPage() {
               <option value={200}>200</option>
             </select>
           </div>
-        </div>
-
-        {/* Forms & free text */}
-        <div className="mt-3 grid gap-3 md:grid-cols-[2fr_1fr_auto]">
-          <div>
-            <div className="text-sm text-gray-700 mb-1">Form Types</div>
-            <FormPicker value={forms} onChange={setForms} />
-          </div>
 
           <div>
             <div className="text-sm text-gray-700 mb-1">Free text (optional)</div>
@@ -180,16 +195,6 @@ export default function EdgarPage() {
               placeholder="e.g., merger, guidance, dividend"
               className="w-full border rounded-md px-3 py-2"
             />
-          </div>
-
-          <div className="flex items-end">
-            <button
-              onClick={fetchFilings}
-              className="w-full md:w-auto px-4 py-2 rounded-md bg-black text-white text-sm disabled:opacity-60"
-              disabled={loading}
-            >
-              {loading ? "Searching…" : "Get filings"}
-            </button>
           </div>
         </div>
       </section>
@@ -212,19 +217,15 @@ export default function EdgarPage() {
             <article key={r.accessionNumber} className="rounded-xl border bg-white p-4">
               <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                 <div>
-                  <div className="text-sm text-gray-600">{r.companyName || r.cik}</div>
+                  <div className="text-sm text-gray-600">{r.company || `CIK ${r.cik}`}</div>
                   <div className="font-medium">
-                    {r.form} • {r.filingDate}
-                    {r.reportDate ? <span className="text-gray-500 text-sm"> (report: {r.reportDate})</span> : null}
+                    {r.form} • {r.filed}
                   </div>
                   <div className="text-xs text-gray-500">Accession: {r.accessionNumber}</div>
-                  {r.primaryDocDescription ? (
-                    <div className="text-xs text-gray-600 mt-1">{r.primaryDocDescription}</div>
-                  ) : null}
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex gap-2">
                   <a
-                    href={r.indexUrl}
+                    href={r.links.indexHtml}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center rounded-full border px-3 py-1.5 text-sm hover:bg-gray-50"
@@ -232,20 +233,12 @@ export default function EdgarPage() {
                     View index
                   </a>
                   <a
-                    href={r.primaryUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center rounded-full border px-3 py-1.5 text-sm hover:bg-gray-50"
-                  >
-                    Open primary
-                  </a>
-                  <a
-                    href={r.downloadUrl}
+                    href={r.links.primary}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center rounded-full bg-black text-white px-3 py-1.5 text-sm hover:opacity-90"
                   >
-                    Download
+                    Open / Download
                   </a>
                 </div>
               </div>
@@ -253,25 +246,27 @@ export default function EdgarPage() {
           ))}
 
           {!loading && rows.length === 0 && !error && (
-            <div className="text-sm text-gray-600">No results yet. Try a ticker (e.g., NVDA) or company name.</div>
+            <div className="text-sm text-gray-600">
+              No results yet. Try a ticker (e.g., <span className="font-mono">NVDA</span>) or company name.
+            </div>
           )}
         </div>
 
         {/* Pagination */}
-        {totalPages > 1 && (
+        {total > 0 && (
           <div className="mt-4 flex items-center gap-2">
             <button
               className="px-3 py-1.5 rounded-md border bg-white text-sm disabled:opacity-50"
               disabled={page <= 1 || loading}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              onClick={() => fetchFilings(Math.max(1, page - 1))}
             >
               ← Prev
             </button>
-            <div className="text-sm">Page {page} of {totalPages}</div>
+            <div className="text-sm">Page {page}</div>
             <button
               className="px-3 py-1.5 rounded-md border bg-white text-sm disabled:opacity-50"
-              disabled={loading || page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={loading || rows.length < perPage}
+              onClick={() => fetchFilings(page + 1)}
             >
               Next →
             </button>
@@ -282,7 +277,7 @@ export default function EdgarPage() {
   );
 }
 
-/** chips multi-select for forms */
+/** ---------- Chips multi-select for forms ---------- */
 function FormPicker({
   value,
   onChange,
