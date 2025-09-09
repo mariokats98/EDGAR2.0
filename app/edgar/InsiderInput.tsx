@@ -1,121 +1,90 @@
-// app/edgar/InsiderInput.tsx
 "use client";
 
 import { useEffect, useRef, useState } from "react";
 
-type Suggestion = {
-  name: string;   // e.g., "Elon Musk"
-  hint?: string;  // optional: company/ticker or count
-};
+type SuggestHit = { cik: string; name: string; ticker?: string };
 
 export default function InsiderInput({
-  onSelect,
-  placeholder = "Type an insider’s name…",
+  value,
+  onChange,
+  onPick,
+  placeholder,
+  api = "/api/suggest",
 }: {
-  onSelect: (name: string) => void;
+  value: string;
+  onChange: (v: string) => void;
+  onPick: (hit: SuggestHit) => void;
   placeholder?: string;
+  api?: string;
 }) {
-  const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
+  const [hits, setHits] = useState<SuggestHit[]>([]);
   const [loading, setLoading] = useState(false);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
 
-  // close on outside click
+  // click-outside to close
   useEffect(() => {
-    function onDocClick(e: MouseEvent) {
-      if (!wrapRef.current) return;
-      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+    function onDoc(e: MouseEvent) {
+      if (!boxRef.current) return;
+      if (!boxRef.current.contains(e.target as Node)) setOpen(false);
     }
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
   }, []);
 
-  // debounced fetch
+  // fetch suggestions
   useEffect(() => {
-    if (!q.trim()) {
-      setSuggestions([]);
-      setError(null);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-
-    abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
+    const q = value.trim();
+    if (!q) { setHits([]); setOpen(false); return; }
 
     const id = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/insider?q=${encodeURIComponent(q.trim())}`, {
-          signal: ac.signal,
-          cache: "no-store",
-        });
+        setLoading(true);
+        const r = await fetch(`${api}?q=${encodeURIComponent(q)}`, { cache: "no-store" });
         const j = await r.json();
-        if (!r.ok) throw new Error(j?.error || "Failed");
-        const list: Suggestion[] = Array.isArray(j?.suggestions) ? j.suggestions : [];
-        setSuggestions(list);
+        const data: SuggestHit[] = (j?.data || []).slice(0, 8);
+        setHits(data);
         setOpen(true);
-      } catch (e: any) {
-        if (e?.name !== "AbortError") setError(e?.message || "Error");
+      } catch {
+        setHits([]);
+        setOpen(false);
       } finally {
         setLoading(false);
       }
-    }, 200);
+    }, 150);
 
-    return () => {
-      clearTimeout(id);
-      ac.abort();
-    };
-  }, [q]);
+    return () => clearTimeout(id);
+  }, [value, api]);
 
   return (
-    <div className="relative" ref={wrapRef}>
+    <div ref={boxRef} className="relative w-full">
       <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        onFocus={() => suggestions.length && setOpen(true)}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="border rounded-md px-3 py-2 w-full"
-        aria-autocomplete="list"
-        aria-expanded={open}
-        aria-controls="insider-suggest"
+        className="w-full rounded-md border px-3 py-2"
+        onFocus={() => value.trim() && setOpen(true)}
       />
-
-      {/* dropdown */}
       {open && (
-        <div
-          id="insider-suggest"
-          className="absolute z-20 mt-1 w-full rounded-md border bg-white shadow-lg max-h-64 overflow-auto"
-          // keep open while mouse moves into the panel
-          onMouseDown={(e) => {
-            // prevent input from losing focus immediately
-            e.preventDefault();
-          }}
-        >
+        <div className="absolute z-20 mt-1 w-full rounded-md border bg-white shadow">
           {loading && (
-            <div className="px-3 py-2 text-sm text-gray-600">Searching…</div>
+            <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
           )}
-          {error && (
-            <div className="px-3 py-2 text-sm text-red-600">Error: {error}</div>
-          )}
-          {!loading && !error && suggestions.length === 0 && q.trim() && (
+          {!loading && hits.length === 0 && (
             <div className="px-3 py-2 text-sm text-gray-500">No matches</div>
           )}
-          {suggestions.map((s, i) => (
+          {!loading && hits.map((h) => (
             <button
-              key={`${s.name}-${i}`}
-              className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
-              onClick={() => {
-                onSelect(s.name);
-                setQ(s.name);
-                setOpen(false);
-              }}
+              key={h.cik}
+              className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-50"
+              onClick={() => { onPick(h); setOpen(false); }}
             >
-              <div className="font-medium">{s.name}</div>
-              {s.hint && <div className="text-xs text-gray-500">{s.hint}</div>}
+              <div className="flex items-center justify-between gap-3">
+                <span className="truncate">{h.name}</span>
+                {h.ticker && <span className="text-xs text-gray-500">{h.ticker}</span>}
+              </div>
+              <div className="text-[11px] text-gray-500">CIK {h.cik}</div>
             </button>
           ))}
         </div>
