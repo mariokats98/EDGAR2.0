@@ -20,27 +20,55 @@ function toCIK10(input: string): string | null {
   return null;
 }
 
+async function resolveViaCompanyTickers(input: string) {
+  const r = await fetch("https://www.sec.gov/files/company_tickers.json", { headers: HEADERS, cache: "no-store" });
+  if (!r.ok) return null;
+  const data = (await r.json()) as Record<string, { cik_str: number; ticker: string; title: string }>;
+  const list = Object.values(data);
+  const q = input.trim().toLowerCase();
+
+  // Exact ticker first
+  let hit = list.find((x) => x.ticker.toLowerCase() === q);
+  // Company name contains second
+  if (!hit) hit = list.find((x) => x.title.toLowerCase().includes(q));
+  return hit ? { cik10: String(hit.cik_str).padStart(10, "0"), display: `${hit.ticker} — ${hit.title}` } : null;
+}
+
+/**
+ * SEC suggest endpoint returns an array of strings like:
+ *   "NVIDIA CORP (NVDA) CIK0001045810"
+ */
+async function resolveViaSecSuggest(input: string) {
+  const u = new URL("https://www.sec.gov/edgar/search/suggest");
+  u.searchParams.set("keys", input.trim());
+  const r = await fetch(u.toString(), { headers: HEADERS, cache: "no-store" });
+  if (!r.ok) return null;
+  const arr = (await r.json()) as string[]; // simple array of suggestions
+
+  for (const s of arr) {
+    const m = s.match(/CIK0*([0-9]{1,10})/i);
+    if (m) {
+      const cik10 = m[1].padStart(10, "0");
+      return { cik10, display: s };
+    }
+  }
+  return null;
+}
+
 async function resolveToCIK10(input: string): Promise<{ cik10: string; display?: string } | null> {
-  // If already a (short) CIK
+  // Numeric CIK short-circuit
   const c10 = toCIK10(input);
   if (c10) return { cik10: c10, display: `CIK ${c10}` };
 
-  // Try SEC's official ticker file for ticker/company name
-  try {
-    const r = await fetch("https://www.sec.gov/files/company_tickers.json", { headers: HEADERS, cache: "no-store" });
-    if (!r.ok) return null;
-    const data = (await r.json()) as Record<string, { cik_str: number; ticker: string; title: string }>;
-    const list = Object.values(data);
-    const q = input.trim().toLowerCase();
+  // Try official company_tickers.json (fast, complete for listed issuers)
+  const tick = await resolveViaCompanyTickers(input);
+  if (tick) return tick;
 
-    let hit = list.find((x) => x.ticker.toLowerCase() === q); // exact ticker
-    if (!hit) hit = list.find((x) => x.title.toLowerCase().includes(q)); // company name contains
-    if (!hit) return null;
+  // Fallback to live suggest (catches tricky names, some funds/ETFs)
+  const sug = await resolveViaSecSuggest(input);
+  if (sug) return sug;
 
-    return { cik10: String(hit.cik_str).padStart(10, "0"), display: `${hit.ticker} — ${hit.title}` };
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 async function getRecentFilings(cik10: string) {
@@ -119,7 +147,7 @@ export async function GET(req: NextRequest, ctx: { params: { cik: string } }) {
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
     const freeText = url.searchParams.get("q");
 
-    // Resolve whatever came in (CIK/ticker/name) to a 10-digit CIK
+    // Resolve anything to a 10-digit CIK (ticker, company, or cik)
     const resolved = await resolveToCIK10(idRaw);
     if (!resolved?.cik10) {
       return NextResponse.json(
