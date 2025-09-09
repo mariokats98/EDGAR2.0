@@ -1,78 +1,45 @@
 // app/api/suggest/route.ts
 import { NextResponse } from "next/server";
 
-const UA =
-  process.env.SEC_USER_AGENT ||
-  "Herevna/1.0 (contact@herevna.io)";
+const SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json";
+const UA = process.env.SEC_USER_AGENT || "Herevna/1.0 (contact@herevna.io)";
 
-let TICKER_CACHE: null | Array<{ cik: string; ticker: string; name: string }> = null;
+type Row = { cik: string; ticker: string; name: string };
 
-async function loadList() {
-  if (TICKER_CACHE) return TICKER_CACHE;
-  const url = "https://www.sec.gov/files/company_tickers.json";
-  const r = await fetch(url, {
+let CACHE: { loadedAt: number; rows: Row[] } | null = null;
+
+async function loadSecList(): Promise<Row[]> {
+  if (CACHE && Date.now() - CACHE.loadedAt < 24 * 60 * 60 * 1000) return CACHE.rows;
+
+  const r = await fetch(SEC_TICKERS_URL, {
     headers: { "User-Agent": UA, Accept: "application/json" },
     cache: "no-store",
   });
-  if (!r.ok) throw new Error(`SEC tickers fetch failed (${r.status})`);
+  if (!r.ok) throw new Error(`SEC tickers download failed: ${r.status}`);
   const j = await r.json();
-  const out: Array<{ cik: string; ticker: string; name: string }> = [];
-  for (const k of Object.keys(j)) {
-    const row = j[k];
-    if (!row) continue;
-    out.push({
-      cik: String(row.cik_str).padStart(10, "0"),
-      ticker: String(row.ticker || "").toUpperCase(),
-      name: String(row.title || "").trim(),
-    });
-  }
-  TICKER_CACHE = out;
-  return out;
+  const rows: Row[] = Object.values(j as any).map((x: any) => ({
+    cik: String(x.cik_str).padStart(10, "0"),
+    ticker: String(x.ticker || "").toUpperCase(),
+    name: String(x.title || ""),
+  }));
+  CACHE = { loadedAt: Date.now(), rows };
+  return rows;
 }
 
 export async function GET(req: Request) {
-  try {
-    const { searchParams } = new URL(req.url);
-    const q = (searchParams.get("q") || "").trim().toUpperCase();
-    if (!q || q.length < 1) return NextResponse.json({ suggestions: [] });
+  const { searchParams } = new URL(req.url);
+  const qRaw = (searchParams.get("q") || "").trim();
+  if (!qRaw) return NextResponse.json([]);
 
-    const list = await loadList();
+  const q = qRaw.toUpperCase();
+  const rows = await loadSecList();
 
-    // Simple prefix match on ticker or company name
-    const starts = list.filter(
-      (r) =>
-        r.ticker.startsWith(q) ||
-        r.name.toUpperCase().startsWith(q)
-    );
+  // For tickers: startsWith; for names: includes
+  const out = rows
+    .filter(
+      (r) => r.ticker.startsWith(q) || r.name.toUpperCase().includes(q)
+    )
+    .slice(0, 10);
 
-    // If too few, add contains matches (but avoid duplicates)
-    let results = starts.slice(0, 30);
-    if (results.length < 10) {
-      const seen = new Set(results.map((r) => r.cik));
-      for (const r of list) {
-        if (seen.has(r.cik)) continue;
-        if (
-          r.ticker.includes(q) ||
-          r.name.toUpperCase().includes(q)
-        ) {
-          results.push(r);
-          seen.add(r.cik);
-          if (results.length >= 30) break;
-        }
-      }
-    }
-
-    const suggestions = results.map((r) => ({
-      label: `${r.ticker} • ${r.name}`,
-      value: r.ticker,
-      cik: r.cik,
-    }));
-
-    return NextResponse.json({ suggestions });
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message || "Unexpected error", suggestions: [] },
-      { status: 500 }
-    );
-  }
+  return NextResponse.json(out);
 }
