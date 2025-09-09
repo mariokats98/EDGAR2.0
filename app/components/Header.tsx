@@ -68,7 +68,7 @@ export default function Header() {
               onClick={() => setMobileOpen(false)}
               className="mt-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-indigo-600 to-fuchsia-600 text-white px-4 py-2 text-sm shadow"
             >
-              ✨ AI assistant
+              ✨ Herevna AI
             </a>
           </nav>
         </div>
