@@ -2,17 +2,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import InsiderInput from "./InsiderInput";
 
-/** ---------- Types from the API ---------- */
+/** ============ Types ============ */
 type Row = {
   cik: string;
   company?: string;
   form: string;
   filed: string;
   accessionNumber: string;
-  links: { indexHtml: string; dir: string; primary: string };
-  download: string;
+  open: string; // single absolute URL to primary doc or index
 };
 
 type ApiResult = {
@@ -32,88 +30,166 @@ type ApiResult = {
   };
 };
 
-/** ---------- Available form filters ---------- */
+type SuggestItem = { label: string; value: string }; // label = "NVIDIA Corp (NVDA)", value can be "NVDA" or CIK
+
+/** ============ Helpers ============ */
+function normalizeCIKLike(input: string): string | null {
+  if (!input) return null;
+  let s = input.trim();
+  if (/^CIK/i.test(s)) s = s.replace(/^CIK/i, "");
+  s = s.replace(/\D/g, "");
+  if (!s) return null;
+  if (s.length > 10) s = s.slice(-10);
+  return s.padStart(10, "0");
+}
+
+/** ============ Constants ============ */
 const FORM_OPTIONS = [
-  "10-K", "10-Q", "8-K",
-  "S-1", "S-3", "S-4",
-  "20-F", "40-F", "6-K", "11-K",
-  "13F-HR",
-  "SC 13D", "SC 13D/A", "SC 13G", "SC 13G/A",
-  "3", "4", "5",
-  "DEF 14A", "DEFA14A", "PX14A6G",
-  "424B2", "424B3", "424B4", "424B5", "424B7", "424B8",
+  "10-K","10-Q","8-K","S-1","S-3","S-4","20-F","40-F","6-K","11-K",
+  "13F-HR","SC 13D","SC 13D/A","SC 13G","SC 13G/A",
+  "3","4","5","DEF 14A","DEFA14A","PX14A6G",
+  "424B2","424B3","424B4","424B5","424B7","424B8",
 ];
 
 export default function EdgarPage() {
-  /** ---------- Search state ---------- */
-  const [identifier, setIdentifier] = useState<string>(""); // ticker/company/CIK (or CIK from suggestion)
-  const [forms, setForms] = useState<string[]>(["10-K", "10-Q", "8-K"]);
+  // ----- search state -----
+  const [identifier, setIdentifier] = useState<string>(""); // ticker / company / CIK
+  const [forms, setForms] = useState<string[]>(["10-K","10-Q","8-K"]);
   const [start, setStart] = useState<string>("2000-01-01");
-  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0,10));
   const [perPage, setPerPage] = useState<number>(50);
   const [page, setPage] = useState<number>(1);
-  const [q, setQ] = useState<string>(""); // optional free-text
+  const [q, setQ] = useState<string>(""); // free-text (optional)
 
-  /** ---------- Results state ---------- */
+  // suggestions
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestions, setSuggestions] = useState<SuggestItem[] | null>(null);
+  const [showSuggest, setShowSuggest] = useState(false);
+
+  // ----- results state -----
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState<number>(0);
 
-  // Keep forms string stable to avoid re-fetch thrash
+  // Keep forms string stable
   const formsParam = useMemo(() => forms.join(","), [forms]);
 
-  async function fetchFilings(nextPage?: number) {
-    const id = identifier.trim();
-    if (!id) {
+  // debounce suggestion fetch
+  useEffect(() => {
+    const v = identifier.trim();
+    if (!v) {
+      setSuggestions(null);
+      setShowSuggest(false);
+      return;
+    }
+    setSuggesting(true);
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/suggest?q=${encodeURIComponent(v)}`, { cache: "no-store" });
+        if (!r.ok) throw new Error("suggest failed");
+        const j = (await r.json()) as { ok: boolean; items?: SuggestItem[] };
+        setSuggestions(j?.items && j.items.length ? j.items.slice(0, 8) : []);
+        setShowSuggest(true);
+      } catch {
+        setSuggestions([]);
+        setShowSuggest(true);
+      } finally {
+        setSuggesting(false);
+      }
+    }, 200);
+    return () => clearTimeout(t);
+  }, [identifier]);
+
+  async function resolveToCIK(input: string): Promise<string> {
+    // 1) If it already looks like a CIK → normalize and return.
+    const cikMaybe = normalizeCIKLike(input);
+    if (cikMaybe) return cikMaybe;
+
+    // 2) Try the lookup endpoint (ticker or name).
+    //    The route should accept either /api/lookup/[symbol]?q=... or /api/lookup/NVDA
+    try {
+      const u = `/api/lookup/${encodeURIComponent(input.trim())}`;
+      const r = await fetch(u, { cache: "no-store" });
+      if (r.ok) {
+        const j = await r.json();
+        // Accept common shapes:
+        // { ok:true, cik:"0000320193", name:"Apple Inc." }
+        // or { cik:"0000320193" }
+        const cik =
+          j?.resolvedCIK || j?.cik || (typeof j === "string" ? j : null);
+        const norm = cik ? normalizeCIKLike(String(cik)) : null;
+        if (norm) return norm;
+      }
+    } catch (_) {
+      // swallow & try final fallback
+    }
+
+    // 3) Final fallback: if user typed a raw ticker (letters), try uppercase through same route with ?q=
+    // (kept in case your lookup expects ?q)
+    try {
+      const r = await fetch(`/api/lookup/${encodeURIComponent(input.trim())}?q=${encodeURIComponent(input.trim())}`, { cache: "no-store" });
+      if (r.ok) {
+        const j = await r.json();
+        const cik = j?.resolvedCIK || j?.cik || null;
+        const norm = cik ? normalizeCIKLike(String(cik)) : null;
+        if (norm) return norm;
+      }
+    } catch {}
+
+    throw new Error("Ticker/Company not recognized. Pick from suggestions or enter a numeric CIK.");
+  }
+
+  async function fetchFilings() {
+    const raw = identifier.trim();
+    if (!raw) {
       setError("Enter a ticker, company name, or CIK.");
       return;
     }
 
     setLoading(true);
     setError(null);
+    setRows([]);
 
-    const usePage = nextPage ?? page;
     try {
+      const cik10 = await resolveToCIK(raw);
+
       const params = new URLSearchParams({
         start,
         end,
         forms: formsParam,
         perPage: String(perPage),
-        page: String(usePage),
+        page: String(page),
       });
       if (q.trim()) params.set("q", q.trim());
 
-      // This path ALWAYS accepts ticker/company/CIK; server resolves to CIK
-      const idForPath = encodeURIComponent(id);
-      const url = `/api/filings/${idForPath}?${params.toString()}`;
-
+      const url = `/api/filings/${encodeURIComponent(cik10)}?${params.toString()}`;
       const r = await fetch(url, { cache: "no-store" });
-      const j = (await r.json()) as Partial<ApiResult> & { error?: string };
 
-      if (!r.ok || j.ok === false) {
-        throw new Error(j?.error || "Failed to fetch filings");
+      // Gracefully handle non-JSON or error bodies
+      let j: any = null;
+      try { j = await r.json(); } catch { /* ignore parse issues */ }
+
+      if (!r.ok || !j || j.ok === false) {
+        throw new Error(j?.error || `Failed to fetch filings (${r.status})`);
       }
 
-      setRows(j.data || []);
-      setTotal(j.total || 0);
-      if (typeof nextPage === "number") setPage(nextPage);
+      const data: Row[] = Array.isArray(j.data) ? j.data : [];
+      setRows(data);
+      setTotal(j.total || data.length || 0);
     } catch (e: any) {
-      setRows([]);
-      setTotal(0);
       setError(e?.message || "Unexpected error");
     } finally {
       setLoading(false);
     }
   }
 
-  // Reset to page 1 whenever inputs change (except page itself)
+  // reset page when inputs change (except page itself)
   useEffect(() => {
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identifier, formsParam, start, end, perPage, q]);
 
-  /** ---------- Render ---------- */
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
       <h1 className="text-2xl font-semibold">EDGAR Filings</h1>
@@ -123,15 +199,47 @@ export default function EdgarPage() {
 
       {/* Controls */}
       <section className="rounded-2xl border bg-white p-4">
-        <div className="grid gap-3 md:grid-cols-[minmax(260px,1fr)_1fr_1fr_auto]">
-          <div>
+        <div className="grid gap-3 md:grid-cols-[minmax(260px,1.25fr)_1fr_1fr_1fr]">
+          {/* Identifier + suggestions */}
+          <div className="relative">
             <div className="text-sm text-gray-700 mb-1">Company / Ticker / CIK</div>
-            <InsiderInput
-              placeholder="e.g., NVDA, AAPL, JPMorgan, 0000320193"
+            <input
               value={identifier}
-              onType={(val) => setIdentifier(val)}            // typing keeps raw text
-              onPick={(val) => setIdentifier(val)}            // pick passes CIK (or raw) from suggestion
+              onChange={(e) => setIdentifier(e.target.value)}
+              onFocus={() => identifier && setShowSuggest(true)}
+              onBlur={() => setTimeout(() => setShowSuggest(false), 150)}
+              placeholder="e.g., NVDA, AAPL, JPMorgan, 0001045810"
+              className="w-full border rounded-md px-3 py-2"
             />
+            {/* Suggest dropdown */}
+            {showSuggest && (
+              <div className="absolute z-10 mt-1 w-full rounded-md border bg-white shadow">
+                {suggesting && (
+                  <div className="px-3 py-2 text-sm text-gray-500">Loading…</div>
+                )}
+                {!suggesting && suggestions && suggestions.length > 0 && (
+                  <ul>
+                    {suggestions.map((s) => (
+                      <li key={s.value}>
+                        <button
+                          type="button"
+                          className="w-full text-left px-3 py-2 hover:bg-gray-50"
+                          onMouseDown={() => {
+                            setIdentifier(s.value);
+                            setShowSuggest(false);
+                          }}
+                        >
+                          {s.label}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {!suggesting && suggestions && suggestions.length === 0 && (
+                  <div className="px-3 py-2 text-sm text-gray-500">No suggestions</div>
+                )}
+              </div>
+            )}
           </div>
 
           <div>
@@ -154,24 +262,6 @@ export default function EdgarPage() {
             />
           </div>
 
-          <div className="flex items-end">
-            <button
-              onClick={() => fetchFilings(1)}
-              className="w-full md:w-auto px-4 py-2 rounded-md bg-black text-white text-sm disabled:opacity-60"
-              disabled={loading}
-            >
-              {loading ? "Searching…" : "Get filings"}
-            </button>
-          </div>
-        </div>
-
-        {/* Forms / per page / free text */}
-        <div className="mt-3 grid gap-3 md:grid-cols-[2fr_1fr_1fr]">
-          <div>
-            <div className="text-sm text-gray-700 mb-1">Form Types</div>
-            <FormPicker value={forms} onChange={setForms} />
-          </div>
-
           <div>
             <div className="text-sm text-gray-700 mb-1">Per Page</div>
             <select
@@ -185,6 +275,14 @@ export default function EdgarPage() {
               <option value={200}>200</option>
             </select>
           </div>
+        </div>
+
+        {/* Forms & free text */}
+        <div className="mt-3 grid gap-3 md:grid-cols-[2fr_1fr_auto]">
+          <div>
+            <div className="text-sm text-gray-700 mb-1">Form Types</div>
+            <FormPicker value={forms} onChange={setForms} />
+          </div>
 
           <div>
             <div className="text-sm text-gray-700 mb-1">Free text (optional)</div>
@@ -195,6 +293,16 @@ export default function EdgarPage() {
               placeholder="e.g., merger, guidance, dividend"
               className="w-full border rounded-md px-3 py-2"
             />
+          </div>
+
+          <div className="flex items-end">
+            <button
+              onClick={fetchFilings}
+              className="w-full md:w-auto px-4 py-2 rounded-md bg-black text-white text-sm disabled:opacity-60"
+              disabled={loading}
+            >
+              {loading ? "Searching…" : "Get filings"}
+            </button>
           </div>
         </div>
       </section>
@@ -217,7 +325,7 @@ export default function EdgarPage() {
             <article key={r.accessionNumber} className="rounded-xl border bg-white p-4">
               <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                 <div>
-                  <div className="text-sm text-gray-600">{r.company || `CIK ${r.cik}`}</div>
+                  <div className="text-sm text-gray-600">{r.company || r.cik}</div>
                   <div className="font-medium">
                     {r.form} • {r.filed}
                   </div>
@@ -225,15 +333,7 @@ export default function EdgarPage() {
                 </div>
                 <div className="flex gap-2">
                   <a
-                    href={r.links.indexHtml}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center rounded-full border px-3 py-1.5 text-sm hover:bg-gray-50"
-                  >
-                    View index
-                  </a>
-                  <a
-                    href={r.links.primary}
+                    href={r.open}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center rounded-full bg-black text-white px-3 py-1.5 text-sm hover:opacity-90"
@@ -247,18 +347,18 @@ export default function EdgarPage() {
 
           {!loading && rows.length === 0 && !error && (
             <div className="text-sm text-gray-600">
-              No results yet. Try a ticker (e.g., <span className="font-mono">NVDA</span>) or company name.
+              No results yet. Try a ticker (e.g., NVDA) or company name.
             </div>
           )}
         </div>
 
         {/* Pagination */}
-        {total > 0 && (
+        {total > rows.length && (
           <div className="mt-4 flex items-center gap-2">
             <button
               className="px-3 py-1.5 rounded-md border bg-white text-sm disabled:opacity-50"
               disabled={page <= 1 || loading}
-              onClick={() => fetchFilings(Math.max(1, page - 1))}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
             >
               ← Prev
             </button>
@@ -266,7 +366,7 @@ export default function EdgarPage() {
             <button
               className="px-3 py-1.5 rounded-md border bg-white text-sm disabled:opacity-50"
               disabled={loading || rows.length < perPage}
-              onClick={() => fetchFilings(page + 1)}
+              onClick={() => setPage((p) => p + 1))}
             >
               Next →
             </button>
@@ -277,7 +377,7 @@ export default function EdgarPage() {
   );
 }
 
-/** ---------- Chips multi-select for forms ---------- */
+/** chips multi-select for forms */
 function FormPicker({
   value,
   onChange,
