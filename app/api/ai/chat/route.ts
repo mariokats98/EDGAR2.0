@@ -1,71 +1,79 @@
+// app/api/ai/chat/route.ts
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// ---------- small helpers ----------
+// ---------- types ----------
 type Msg = { role: "system" | "user" | "assistant"; content: string };
 type ChatReq = { messages: Msg[] };
 
+// ---------- helpers ----------
 function ok(payload: any, init?: ResponseInit) {
   return NextResponse.json({ ok: true, ...payload }, init);
 }
-function bad(message: string, status = 400) {
-  return NextResponse.json({ ok: false, error: message }, { status });
+function bad(message: string, status = 400, detail?: any) {
+  return NextResponse.json({ ok: false, error: message, detail }, { status });
 }
-function siteBase() {
-  // Prefer absolute URL when available (Vercel prod); else relative works server-side too
-  return process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") || "";
+
+/** Build a safe absolute base URL for internal fetches. */
+function deriveBase(req: Request) {
+  // Prefer public env if set (useful in local dev too)
+  const envBase = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "");
+  if (envBase) return envBase;
+
+  // Otherwise derive from proxy headers
+  const proto = (req.headers.get("x-forwarded-proto") ?? "https").split(",")[0].trim();
+  const host = (req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "").split(",")[0].trim();
+  return host ? `${proto}://${host}` : "";
 }
-async function fetchJSON(url: string) {
-  // Always no-store so we don't cache stale data
-  const r = await fetch(url, { cache: "no-store" });
-  const isJson = r.headers.get("content-type")?.includes("application/json");
-  const body = isJson ? await r.json().catch(() => null) : null;
+
+/** JSON fetch with better errors and no-store. */
+async function fetchJSON(url: string, init?: RequestInit) {
+  const r = await fetch(url, {
+    cache: "no-store",
+    headers: { "content-type": "application/json" },
+    ...init,
+  });
+  const ct = r.headers.get("content-type") || "";
+  const maybeJson = ct.includes("application/json");
+  const body = maybeJson ? await r.json().catch(() => null) : null;
 
   if (!r.ok) {
-    const detail = body ? ` ${JSON.stringify(body).slice(0, 400)}` : "";
+    const detail = body ? ` ${JSON.stringify(body).slice(0, 500)}` : "";
     throw new Error(`Fetch failed ${r.status} for ${url}.${detail}`);
   }
   return body;
 }
+
 function toMonthLabel(s?: string) {
-  // Accept "YYYY-MM" or "YYYY-MM-DD"
   if (!s) return "";
   const [y, m] = s.split("-");
-  const month = [
-    "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-  ][parseInt(m, 10)] || m;
+  const month = ["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][parseInt(m,10)] || m;
   return `${month} ${y}`;
 }
 
 // ---------- intent detection ----------
 const FORM_WORDS = [
-  "10-k","10-q","8-k","s-1","s-3","s-4","20-f","40-f","6-k",
-  "11-k","13f-hr","sc 13d","sc 13d/a","sc 13g","sc 13g/a","def 14a","defa14a","px14a6g","3","4","5"
+  "10-k","10-q","8-k","s-1","s-3","s-4","20-f","40-f","6-k","11-k",
+  "13f-hr","sc 13d","sc 13d/a","sc 13g","sc 13g/a","def 14a","defa14a","px14a6g","3","4","5"
 ];
 function looksLikeTicker(word: string) {
-  // Rough ticker heuristic: 1-6 letters/numbers, allow dot class (e.g., BRK.B)
   return /^[A-Z]{1,6}(\.[A-Z])?$/.test(word.toUpperCase());
 }
 function extractSECQuery(text: string) {
-  // Find a form and a candidate identifier (ticker/company/CIK)
   const lower = text.toLowerCase();
   const foundForm = FORM_WORDS.find(f => lower.includes(f));
   if (!foundForm) return null;
 
-  // Try patterns: "NVDA 10-K", "10-K for NVDA", "file 10-K for NVIDIA", etc.
-  // 1) look for "for <word>"
   const forMatch = text.match(/\bfor\s+([A-Za-z0-9\.\-& ]{1,60})/i);
   let ident = forMatch?.[1]?.trim();
+
   if (!ident) {
-    // 2) find last ALLCAPS-ish token near the end
     const tokens = text.replace(/[^A-Za-z0-9\.\- ]/g, " ").split(/\s+/).filter(Boolean);
     const caps = [...tokens].reverse().find(t => looksLikeTicker(t));
     if (caps) ident = caps.toUpperCase();
   }
-  // If still nothing, try any non-empty word after the form
   if (!ident) {
     const afterForm = text.split(new RegExp(foundForm, "i"))[1]?.trim() || "";
     ident = afterForm.split(/[.,;:!?]/)[0]?.trim();
@@ -87,7 +95,7 @@ function wantHousingStarts(t: string){ t = t.toLowerCase(); return /housing star
 function wantNewHomeSales(t: string){ t = t.toLowerCase(); return /new home sales/i.test(t); }
 function wantGDP(t: string)        { t = t.toLowerCase(); return /\bgdp\b|gross domestic product|bea/i.test(t); }
 
-// ---------- main handler ----------
+// ---------- system prompt ----------
 const SYSTEM_PROMPT = `
 You are Herevna AI — a concise assistant for finance, markets, economic data, and SEC filings.
 Rules:
@@ -97,160 +105,207 @@ Rules:
 - Be concise and skimmable. Use bold for key numbers/labels.
 `;
 
+// ---------- handler ----------
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as ChatReq;
-    const messages = body?.messages || [];
+    const { messages = [] } = (await req.json()) as ChatReq;
     const userText = messages[messages.length - 1]?.content || "";
+    const base = deriveBase(req);
 
     const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
     if (!DEEPSEEK_API_KEY) return bad("Missing DEEPSEEK_API_KEY env var", 500);
 
-    // ========= 1) EDGAR filings intent =========
+    // ===== 1) EDGAR filings intent =====
     const secAsk = extractSECQuery(userText);
     if (secAsk?.form && secAsk.ident) {
-      // Use your filings route which resolves ticker/name/CIK
       const params = new URLSearchParams({
         start: "2000-01-01",
         end: new Date().toISOString().slice(0,10),
-        forms: secAsk.form,        // e.g., 10-K
+        forms: secAsk.form,
         perPage: "1",
         page: "1"
       });
-      const url = `${siteBase()}/api/filings/${encodeURIComponent(secAsk.ident)}?${params}`;
+      const url = `${base}/api/filings/${encodeURIComponent(secAsk.ident)}?${params}`;
       const j = await fetchJSON(url);
       const row = j?.data?.[0];
-      if (!row) return bad(`No ${secAsk.form} found for "${secAsk.ident}". Try a different form or identifier.`, 404);
+      if (!row) return bad(`No ${secAsk.form} found for "${secAsk.ident}".`, 404);
 
+      const link = row.links?.primary || row.download || row.links?.indexHtml || "";
       const txt = `**${row.company || row.cik} — ${row.form}** filed **${row.filed}**  
-Open / download: ${row.links?.primary || row.download || row.links?.indexHtml || "Unavailable"}  
+Open / download: ${link || "Unavailable"}  
 Source (SEC EDGAR): https://www.sec.gov/edgar/search/`;
       return ok({ text: txt });
     }
 
-    // ========= 2) Economic data intents =========
-    // CPI (headline). Try /api/bls first. If it fails, fallback to FRED CPIAUCSL YoY.
+    // ===== 2) Economic data intents =====
+
+    // CPI (headline, YoY). Try BLS proxy with both parameter styles, then FRED fallback.
     if (wantCPI(userText)) {
       try {
-        const j = await fetchJSON(`${siteBase()}/api/bls/series?ids=CUUR0000SA0R&freq=monthly&latest=1`);
-        const pt = j?.series?.[0]?.data?.[0];
-        if (pt) {
-          const txt = `**US CPI (YoY)** — **${Number(pt.value).toFixed(1)}%** in **${toMonthLabel(pt.date)}**.  
+        // a) Some builds expect ?series=, others ?ids=
+        const blsA = await fetchJSON(`${base}/api/bls/series?series=CUUR0000SA0R&freq=monthly&latest=1`);
+        const ptA = blsA?.series?.[0]?.data?.[0];
+        if (ptA) {
+          const txt = `**US CPI (YoY)** — **${Number(ptA.value).toFixed(1)}%** in **${toMonthLabel(ptA.date)}**.  
 BLS release: https://www.bls.gov/news.release/cpi.toc.htm`;
           return ok({ text: txt });
         }
-      } catch { /* fallthrough */ }
-      // Fallback: FRED CPIAUCSL YoY (calculated on server)
-      const fred = await fetchJSON(`${siteBase()}/api/fred/series?series_id=CPIAUCSL&transform=yoy&latest=1`);
-      const fp = fred?.data?.[0];
-      if (!fp) return bad("CPI data unavailable", 502);
-      const txt = `**US CPI (YoY)** — **${Number(fp.value).toFixed(1)}%** in **${toMonthLabel(fp.date)}**.  
+      } catch {/* try alternative shape */}
+      try {
+        const blsB = await fetchJSON(`${base}/api/bls/series?ids=CUUR0000SA0R&freq=monthly&latest=1`);
+        const ptB = blsB?.series?.[0]?.data?.[0];
+        if (ptB) {
+          const txt = `**US CPI (YoY)** — **${Number(ptB.value).toFixed(1)}%** in **${toMonthLabel(ptB.date)}**.  
+BLS release: https://www.bls.gov/news.release/cpi.toc.htm`;
+          return ok({ text: txt });
+        }
+      } catch {/* fall back to FRED */}
+      try {
+        const fred = await fetchJSON(`${base}/api/fred/series?series_id=CPIAUCSL&transform=yoy&latest=1`);
+        const fp = fred?.data?.[0];
+        if (fp) {
+          const txt = `**US CPI (YoY)** — **${Number(fp.value).toFixed(1)}%** in **${toMonthLabel(fp.date)}**.  
 Source: FRED (BLS CPIAUCSL). https://fred.stlouisfed.org/series/CPIAUCSL`;
-      return ok({ text: txt });
+          return ok({ text: txt });
+        }
+      } catch (e: any) {
+        return bad("CPI fetch failed", 502, e?.message || String(e));
+      }
+      return bad("CPI data unavailable", 502);
     }
 
-    // Core CPI
+    // Core CPI (YoY) — FRED CPILFESL
     if (wantCoreCPI(userText)) {
-      // FRED series: CPILFESL (Core CPI, SA Index). We'll return YoY via your FRED proxy
-      const fred = await fetchJSON(`${siteBase()}/api/fred/series?series_id=CPILFESL&transform=yoy&latest=1`);
-      const pt = fred?.data?.[0];
-      if (!pt) return bad("Core CPI data unavailable", 502);
-      const txt = `**US Core CPI (YoY)** — **${Number(pt.value).toFixed(1)}%** in **${toMonthLabel(pt.date)}**.  
+      try {
+        const fred = await fetchJSON(`${base}/api/fred/series?series_id=CPILFESL&transform=yoy&latest=1`);
+        const pt = fred?.data?.[0];
+        if (!pt) return bad("Core CPI data unavailable", 502);
+        const txt = `**US Core CPI (YoY)** — **${Number(pt.value).toFixed(1)}%** in **${toMonthLabel(pt.date)}**.  
 Source: FRED (CPILFESL). https://fred.stlouisfed.org/series/CPILFESL`;
-      return ok({ text: txt });
+        return ok({ text: txt });
+      } catch (e: any) {
+        return bad("Core CPI fetch failed", 502, e?.message || String(e));
+      }
     }
 
-    // PPI (Final demand YoY). BLS fallback to FRED CRBOBLPPIPROC? Simpler: FRED PPIACO YoY (All Commodities)
+    // PPI (YoY) — FRED PPIACO
     if (wantPPI(userText)) {
-      const fred = await fetchJSON(`${siteBase()}/api/fred/series?series_id=PPIACO&transform=yoy&latest=1`);
-      const pt = fred?.data?.[0];
-      if (!pt) return bad("PPI data unavailable", 502);
-      const txt = `**US PPI (YoY)** — **${Number(pt.value).toFixed(1)}%** in **${toMonthLabel(pt.date)}**.  
+      try {
+        const fred = await fetchJSON(`${base}/api/fred/series?series_id=PPIACO&transform=yoy&latest=1`);
+        const pt = fred?.data?.[0];
+        if (!pt) return bad("PPI data unavailable", 502);
+        const txt = `**US PPI (YoY)** — **${Number(pt.value).toFixed(1)}%** in **${toMonthLabel(pt.date)}**.  
 Source: FRED (PPIACO). https://fred.stlouisfed.org/series/PPIACO`;
-      return ok({ text: txt });
+        return ok({ text: txt });
+      } catch (e: any) {
+        return bad("PPI fetch failed", 502, e?.message || String(e));
+      }
     }
 
-    // Unemployment rate (U-3)
+    // Unemployment rate — BLS (LNS14000000) or FRED UNRATE
     if (wantUnemp(userText)) {
       try {
-        const j = await fetchJSON(`${siteBase()}/api/bls/series?ids=LNS14000000&freq=monthly&latest=1`);
+        const j = await fetchJSON(`${base}/api/bls/series?series=LNS14000000&freq=monthly&latest=1`);
         const pt = j?.series?.[0]?.data?.[0];
         if (pt) {
           const txt = `**US Unemployment Rate (U-3)** — **${Number(pt.value).toFixed(1)}%** in **${toMonthLabel(pt.date)}**.  
 BLS Employment Situation: https://www.bls.gov/news.release/empsit.toc.htm`;
           return ok({ text: txt });
         }
-      } catch { /* fallthrough */ }
-      const fred = await fetchJSON(`${siteBase()}/api/fred/series?series_id=UNRATE&latest=1`);
-      const pt = fred?.data?.[0];
-      if (!pt) return bad("Unemployment data unavailable", 502);
-      const txt = `**US Unemployment Rate (U-3)** — **${Number(pt.value).toFixed(1)}%** in **${toMonthLabel(pt.date)}**.  
+      } catch {/* try FRED */}
+      try {
+        const fred = await fetchJSON(`${base}/api/fred/series?series_id=UNRATE&latest=1`);
+        const pt = fred?.data?.[0];
+        if (!pt) return bad("Unemployment data unavailable", 502);
+        const txt = `**US Unemployment Rate (U-3)** — **${Number(pt.value).toFixed(1)}%** in **${toMonthLabel(pt.date)}**.  
 Source: FRED (UNRATE). https://fred.stlouisfed.org/series/UNRATE`;
-      return ok({ text: txt });
+        return ok({ text: txt });
+      } catch (e: any) {
+        return bad("Unemployment fetch failed", 502, e?.message || String(e));
+      }
     }
 
-    // NFP (change in payrolls). Use FRED PAYEMS (level); show monthly change.
+    // NFP (monthly change) — FRED PAYEMS diff
     if (wantNFP(userText)) {
-      const fred = await fetchJSON(`${siteBase()}/api/fred/series?series_id=PAYEMS&transform=diff&latest=1`);
-      const pt = fred?.data?.[0];
-      if (!pt) return bad("Payrolls data unavailable", 502);
-      const val = Math.round(Number(pt.value));
-      const txt = `**US Nonfarm Payrolls (change)** — **${val.toLocaleString()}** in **${toMonthLabel(pt.date)}**.  
+      try {
+        const fred = await fetchJSON(`${base}/api/fred/series?series_id=PAYEMS&transform=diff&latest=1`);
+        const pt = fred?.data?.[0];
+        if (!pt) return bad("Payrolls data unavailable", 502);
+        const val = Math.round(Number(pt.value));
+        const txt = `**US Nonfarm Payrolls (change)** — **${val.toLocaleString()}** in **${toMonthLabel(pt.date)}**.  
 Source: FRED (PAYEMS). https://fred.stlouisfed.org/series/PAYEMS`;
-      return ok({ text: txt });
+        return ok({ text: txt });
+      } catch (e: any) {
+        return bad("NFP fetch failed", 502, e?.message || String(e));
+      }
     }
 
-    // Retail sales (Census → fallback FRED RSAFS MoM or YoY)
+    // Retail sales (MoM) — FRED RSAFS mom
     if (wantRetail(userText)) {
-      // FRED: RSAFS (Retail Sales, SA, Mil.$). Return MoM %.
-      const fred = await fetchJSON(`${siteBase()}/api/fred/series?series_id=RSAFS&transform=mom&latest=1`);
-      const pt = fred?.data?.[0];
-      if (!pt) return bad("Retail sales data unavailable", 502);
-      const txt = `**US Retail Sales (MoM)** — **${Number(pt.value).toFixed(1)}%** in **${toMonthLabel(pt.date)}**.  
+      try {
+        const fred = await fetchJSON(`${base}/api/fred/series?series_id=RSAFS&transform=mom&latest=1`);
+        const pt = fred?.data?.[0];
+        if (!pt) return bad("Retail sales data unavailable", 502);
+        const txt = `**US Retail Sales (MoM)** — **${Number(pt.value).toFixed(1)}%** in **${toMonthLabel(pt.date)}**.  
 Source: Census via FRED (RSAFS). https://fred.stlouisfed.org/series/RSAFS`;
-      return ok({ text: txt });
+        return ok({ text: txt });
+      } catch (e: any) {
+        return bad("Retail sales fetch failed", 502, e?.message || String(e));
+      }
     }
 
-    // Housing starts
+    // Housing starts — FRED HOUST
     if (wantHousingStarts(userText)) {
-      const fred = await fetchJSON(`${siteBase()}/api/fred/series?series_id=HOUST&latest=1`);
-      const pt = fred?.data?.[0];
-      if (!pt) return bad("Housing starts data unavailable", 502);
-      const txt = `**US Housing Starts** — **${Number(pt.value).toLocaleString()}** (SAAR) in **${toMonthLabel(pt.date)}**.  
+      try {
+        const fred = await fetchJSON(`${base}/api/fred/series?series_id=HOUST&latest=1`);
+        const pt = fred?.data?.[0];
+        if (!pt) return bad("Housing starts data unavailable", 502);
+        const txt = `**US Housing Starts** — **${Number(pt.value).toLocaleString()}** (SAAR) in **${toMonthLabel(pt.date)}**.  
 Source: Census/HUD via FRED (HOUST). https://fred.stlouisfed.org/series/HOUST`;
-      return ok({ text: txt });
+        return ok({ text: txt });
+      } catch (e: any) {
+        return bad("Housing starts fetch failed", 502, e?.message || String(e));
+      }
     }
 
-    // New home sales
+    // New home sales — FRED HSN1F
     if (wantNewHomeSales(userText)) {
-      const fred = await fetchJSON(`${siteBase()}/api/fred/series?series_id=HSN1F&latest=1`);
-      const pt = fred?.data?.[0];
-      if (!pt) return bad("New home sales data unavailable", 502);
-      const txt = `**US New Home Sales** — **${Number(pt.value).toLocaleString()}** (SAAR) in **${toMonthLabel(pt.date)}**.  
+      try {
+        const fred = await fetchJSON(`${base}/api/fred/series?series_id=HSN1F&latest=1`);
+        const pt = fred?.data?.[0];
+        if (!pt) return bad("New home sales data unavailable", 502);
+        const txt = `**US New Home Sales** — **${Number(pt.value).toLocaleString()}** (SAAR) in **${toMonthLabel(pt.date)}**.  
 Source: Census via FRED (HSN1F). https://fred.stlouisfed.org/series/HSN1F`;
-      return ok({ text: txt });
+        return ok({ text: txt });
+      } catch (e: any) {
+        return bad("New home sales fetch failed", 502, e?.message || String(e));
+      }
     }
 
-    // GDP (BEA). Prefer BEA route if you’ve added it; fallback to FRED GDPC1 YoY or QoQ SAAR.
+    // GDP — try BEA proxy, then FRED GDPC1 qoq_saar
     if (wantGDP(userText)) {
       try {
-        const bea = await fetchJSON(`${siteBase()}/api/bea?table=NIPA_GDP&latest=1`);
+        const bea = await fetchJSON(`${base}/api/bea?table=NIPA_GDP&latest=1`);
         const pt = bea?.data?.[0];
         if (pt?.value && pt?.period) {
           const txt = `**US Real GDP (QoQ SAAR)** — **${Number(pt.value).toFixed(1)}%** in **${pt.period}**.  
 Source: BEA. https://www.bea.gov/news`;
           return ok({ text: txt });
         }
-      } catch { /* fallthrough */ }
-      const fred = await fetchJSON(`${siteBase()}/api/fred/series?series_id=GDPC1&transform=qoq_saar&latest=1`);
-      const pt = fred?.data?.[0];
-      if (!pt) return bad("GDP data unavailable", 502);
-      const txt = `**US Real GDP (QoQ SAAR)** — **${Number(pt.value).toFixed(1)}%** in **${pt.date}**.  
+      } catch {/* fall back */}
+      try {
+        const fred = await fetchJSON(`${base}/api/fred/series?series_id=GDPC1&transform=qoq_saar&latest=1`);
+        const pt = fred?.data?.[0];
+        if (!pt) return bad("GDP data unavailable", 502);
+        const txt = `**US Real GDP (QoQ SAAR)** — **${Number(pt.value).toFixed(1)}%** in **${pt.date}**.  
 Source: FRED (GDPC1). https://fred.stlouisfed.org/series/GDPC1`;
-      return ok({ text: txt });
+        return ok({ text: txt });
+      } catch (e: any) {
+        return bad("GDP fetch failed", 502, e?.message || String(e));
+      }
     }
 
-    // ========= 3) Else, ask the model (non-streaming) =========
+    // ===== 3) General Q&A via DeepSeek =====
     const upstream = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
