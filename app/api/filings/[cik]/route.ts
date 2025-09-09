@@ -1,26 +1,26 @@
 // app/api/filings/[cik]/route.ts
 import { NextResponse } from "next/server";
 
-/* =============================
-   Config & small shared helpers
-   ============================= */
-
+/** ==========
+ *  Config
+ *  ========== */
 const UA =
   process.env.SEC_USER_AGENT ||
   "your-email@example.com (Herevna EDGAR client)";
 
 const SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json";
-const EFTS_URL = "https://efts.sec.gov/LATEST/search-index"; // official search endpoint
+const SUBMISSIONS_ROOT = "https://data.sec.gov/submissions/";
 
-// normalize e.g. "brk-b" => "BRK.B"
+/** =====================================
+ *  Small helpers: normalize & fuzzy match
+ *  ===================================== */
 function normalizeTickerLike(s: string) {
   return s.trim().toUpperCase().replace(/-/g, ".").replace(/\s+/g, " ");
 }
 
-// in-memory cache for SEC tickers per serverless instance
 type SecRow = { cik: string; ticker: string; name: string };
 let _tickersCache: { rows: SecRow[]; at: number } | null = null;
-const TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const TTL_MS = 24 * 60 * 60 * 1000;
 
 async function loadSecTickers(): Promise<SecRow[]> {
   if (_tickersCache && Date.now() - _tickersCache.at < TTL_MS) {
@@ -30,9 +30,7 @@ async function loadSecTickers(): Promise<SecRow[]> {
     headers: { "User-Agent": UA, Accept: "application/json" },
     cache: "no-store",
   });
-  if (!r.ok) {
-    throw new Error(`SEC tickers fetch failed (${r.status})`);
-  }
+  if (!r.ok) throw new Error(`SEC tickers fetch failed (${r.status})`);
   const j = (await r.json()) as Record<
     string,
     { cik_str: number; ticker: string; title: string }
@@ -47,7 +45,6 @@ async function loadSecTickers(): Promise<SecRow[]> {
 }
 
 function scoreCandidate(q: string, row: SecRow): number {
-  // Lightweight fuzzy scoring: prioritise ticker startsWith, exact, name token hits
   const t = row.ticker;
   const n = row.name.toUpperCase();
   let score = 0;
@@ -64,17 +61,14 @@ function scoreCandidate(q: string, row: SecRow): number {
   return score;
 }
 
-/** Accepts ticker / company / CIK -> returns a padded 10-char CIK (or null) */
+/** Accepts ticker / company / CIK -> returns padded 10-char CIK (or null) */
 async function resolveIdentifierToCIK(raw: string): Promise<string | null> {
   const q = raw.trim();
   if (!q) return null;
-
-  // numeric CIK straight through
   if (/^\d{1,10}$/.test(q)) return q.padStart(10, "0");
 
   const rows = await loadSecTickers();
   const norm = normalizeTickerLike(q);
-
   const best = rows
     .map((r) => ({ r, s: scoreCandidate(norm, r) }))
     .sort((a, b) => b.s - a.s)[0];
@@ -83,10 +77,9 @@ async function resolveIdentifierToCIK(raw: string): Promise<string | null> {
   return best.r.cik;
 }
 
-/* =============================
-   Types for our API response
-   ============================= */
-
+/** ===========================
+ *  Types & transformation
+ *  =========================== */
 type Row = {
   cik: string;
   company?: string;
@@ -114,163 +107,189 @@ type ApiResult = {
   };
 };
 
-/* =========================================
-   Build file/dir links from an EFTS hit row
-   ========================================= */
-
-function stripDashes(acc: string) {
+function undash(acc: string) {
   return acc.replace(/-/g, "");
 }
 
-function inferDirFromUrl(url: string): string {
-  // EFTS "url" looks like: /Archives/edgar/data/0000320193/000032019324000123/...
-  // We strip the filename to get the dir.
-  const lastSlash = url.lastIndexOf("/");
-  return lastSlash > 0 ? url.slice(0, lastSlash + 1) : url;
+function stripLeadingZeros(cik: string) {
+  return String(parseInt(cik, 10));
 }
 
-function buildRowFromEftsHit(hit: any): Row | null {
-  // EFTS items typically carry: form, filingDate, companyName, cik, accessionNo, url, primaryDocument
-  const form = hit?.form || hit?.formType;
-  const filed = hit?.filedAt || hit?.filingDate || hit?.fileDate;
-  const cikRaw = (hit?.cik || "").toString().padStart(10, "0");
-  const company = hit?.displayNames?.[0] || hit?.companyName || undefined;
+function toIndexHtml(cikPadded: string, accessionDashed: string) {
+  const cikNoPad = stripLeadingZeros(cikPadded);
+  const accNoDash = undash(accessionDashed);
+  return `/Archives/edgar/data/${cikNoPad}/${accNoDash}/${accNoDash}-index.htm`;
+}
 
-  // The accession may be with dashes or without, try to standardize to dashed if present
-  let acc = hit?.accessionNo || hit?.adsh || hit?.accessionNumber || "";
-  if (!acc) {
-    // Fallback: some payloads only include the URL path. Try to extract accession from there.
-    // e.g. /Archives/edgar/data/320193/000032019324000123/...
-    const m = (hit?.url || "").match(/\/data\/\d+\/(\d{18,})\//);
-    if (m) {
-      const undashed = m[1];
-      // Try to format as 10-2-6 if length 18
-      if (undashed.length === 18) {
-        acc = `${undashed.slice(0, 10)}-${undashed.slice(10, 12)}-${undashed.slice(12)}`;
-      } else {
-        acc = undashed; // as-is
-      }
+function toPrimaryPath(
+  cikPadded: string,
+  accessionDashed: string,
+  primaryDocument?: string | null
+) {
+  const cikNoPad = stripLeadingZeros(cikPadded);
+  const accNoDash = undash(accessionDashed);
+  if (primaryDocument) {
+    return `/Archives/edgar/data/${cikNoPad}/${accNoDash}/${primaryDocument}`;
+  }
+  // fallback to index if doc unknown
+  return toIndexHtml(cikPadded, accessionDashed);
+}
+
+/** ===========================
+ *  Fetch submissions (recent + old)
+ *  =========================== */
+type BaseRecord = {
+  accessionNumber: string;
+  filingDate: string;
+  reportDate?: string | null;
+  form: string;
+  primaryDocument?: string | null;
+  primaryDocDescription?: string | null;
+  companyName?: string | null;
+  items?: string | null; // 8-K items text
+};
+
+type SubmissionsJSON = {
+  cik: string;
+  name?: string;
+  filings?: {
+    recent?: {
+      accessionNumber: string[];
+      filingDate: string[];
+      reportDate?: (string | null)[];
+      form: string[];
+      primaryDocument?: (string | null)[];
+      primaryDocDescription?: (string | null)[];
+      // sometimes includes 'items'
+      items?: (string | null)[];
+    };
+    files?: { name: string; filingCount: number; filingFrom: string; filingTo: string }[];
+  };
+};
+
+async function fetchJson(url: string) {
+  const r = await fetch(url, {
+    headers: { "User-Agent": UA, Accept: "application/json" },
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`Fetch failed ${r.status} for ${url}`);
+  return r.json();
+}
+
+async function loadAllFilingsForCIK(cikPadded: string): Promise<BaseRecord[]> {
+  const url = `${SUBMISSIONS_ROOT}CIK${cikPadded}.json`;
+  const root = (await fetchJson(url)) as SubmissionsJSON;
+
+  const out: BaseRecord[] = [];
+  const companyName = root.name || undefined;
+
+  // recent arrays
+  const rec = root?.filings?.recent;
+  if (rec && rec.accessionNumber?.length) {
+    const n = rec.accessionNumber.length;
+    for (let i = 0; i < n; i++) {
+      out.push({
+        accessionNumber: rec.accessionNumber[i],
+        filingDate: rec.filingDate[i],
+        reportDate: rec.reportDate?.[i] ?? null,
+        form: rec.form[i],
+        primaryDocument: rec.primaryDocument?.[i] ?? null,
+        primaryDocDescription: rec.primaryDocDescription?.[i] ?? null,
+        companyName,
+        items: rec.items?.[i] ?? null,
+      });
     }
   }
 
-  const accessionDashed = acc.includes("-")
-    ? acc
-    : acc.length === 18
-    ? `${acc.slice(0, 10)}-${acc.slice(10, 12)}-${acc.slice(12)}`
-    : acc;
-
-  // Folder directory & primary document path
-  const url = hit?.url || ""; // e.g. "/Archives/edgar/data/320193/000032019324000123/primary_doc.xml"
-  const dir = inferDirFromUrl(url);
-  const undashed = stripDashes(accessionDashed);
-  const indexHtml = `/Archives/edgar/data/${parseInt(cikRaw, 10)}/${undashed}/${undashed}-index.htm`;
-  const primary =
-    hit?.primaryDocument && dir
-      ? `${dir}${hit.primaryDocument}`
-      : // fallback to url if present
-        url;
-
-  return {
-    cik: cikRaw,
-    company,
-    form: form || "—",
-    filed: filed || "—",
-    accessionNumber: accessionDashed || "—",
-    links: {
-      indexHtml,
-      dir,
-      primary,
-    },
-    download: primary || indexHtml,
-  };
-}
-
-/* =======================
-   EFTS (SEC search) call
-   ======================= */
-
-async function searchEfts(params: {
-  cik?: string | null;
-  start: string;
-  end: string;
-  forms: string[];
-  freeText?: string | null;
-  from: number; // zero-based offset
-  size: number; // page size (<= 200 recommended)
-}) {
-  const body: any = {
-    category: "custom", // enables passing specific filters
-    startdt: params.start,
-    enddt: params.end,
-    // `keys` is the general search box. If we provide CIK filter, we can keep keys minimal (or use freeText).
-    keys: params.freeText ? params.freeText : "",
-    forms: params.forms && params.forms.length ? params.forms : undefined,
-    ciks: params.cik ? [params.cik] : undefined,
-    from: params.from,
-    size: params.size,
-    // sort by filing date desc by default
-    sortField: "filedAt",
-    sortOrder: "desc",
-  };
-
-  // Clean undefined fields (SEC endpoint is picky sometimes)
-  Object.keys(body).forEach((k) => body[k] === undefined && delete body[k]);
-
-  const r = await fetch(EFTS_URL, {
-    method: "POST",
-    headers: {
-      "User-Agent": UA,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      Origin: "https://www.sec.gov", // helps with some SEC edge cases
-      Referer: "https://www.sec.gov/",
-    },
-    body: JSON.stringify(body),
-    cache: "no-store",
-  });
-
-  if (!r.ok) {
-    const txt = await r.text().catch(() => "");
-    throw new Error(`SEC search failed (${r.status}) ${txt.slice(0, 200)}`);
+  // historical files (older chunks)
+  const files = root?.filings?.files || [];
+  for (const f of files) {
+    // Each 'name' is like "CIK0000320193-submissions-2020.json"
+    const histUrl = `${SUBMISSIONS_ROOT}${f.name}`;
+    try {
+      const j = (await fetchJson(histUrl)) as {
+        filings: {
+          files?: any[]; // not used
+          recent?: SubmissionsJSON["filings"]["recent"];
+        };
+        name?: string;
+      };
+      const r2 = j?.filings?.recent;
+      if (r2 && r2.accessionNumber?.length) {
+        const m = r2.accessionNumber.length;
+        for (let i = 0; i < m; i++) {
+          out.push({
+            accessionNumber: r2.accessionNumber[i],
+            filingDate: r2.filingDate[i],
+            reportDate: r2.reportDate?.[i] ?? null,
+            form: r2.form[i],
+            primaryDocument: r2.primaryDocument?.[i] ?? null,
+            primaryDocDescription: r2.primaryDocDescription?.[i] ?? null,
+            companyName: j?.name || companyName,
+            items: r2.items?.[i] ?? null,
+          });
+        }
+      }
+    } catch {
+      // ignore a single year failure; continue
+    }
   }
 
-  const j = (await r.json()) as {
-    hits: { total: { value: number }; hits: any[] };
-  };
-
-  const total = j?.hits?.total?.value || 0;
-  const hits = (j?.hits?.hits || []).map((h: any) => h?._source || h?.source || h);
-
-  return { total, items: hits };
+  return out;
 }
 
-/* ============
-   API handler
-   ============ */
+/** ===========================
+ *  Filtering & mapping
+ *  =========================== */
+function withinDate(d: string, start: string, end: string) {
+  return d >= start && d <= end;
+}
 
+function matchesFreeText(rec: BaseRecord, q: string) {
+  const L = q.toLowerCase();
+  return (
+    rec.form?.toLowerCase().includes(L) ||
+    (rec.primaryDocument || "").toLowerCase().includes(L) ||
+    (rec.primaryDocDescription || "").toLowerCase().includes(L) ||
+    (rec.items || "").toLowerCase().includes(L)
+  );
+}
+
+function toRow(cikPadded: string, rec: BaseRecord): Row {
+  const accDashed = rec.accessionNumber;
+  const indexHtml = toIndexHtml(cikPadded, accDashed);
+  const primary = toPrimaryPath(cikPadded, accDashed, rec.primaryDocument || null);
+  return {
+    cik: cikPadded,
+    company: rec.companyName || undefined,
+    form: rec.form,
+    filed: rec.filingDate,
+    accessionNumber: accDashed,
+    links: {
+      indexHtml,
+      dir: indexHtml.replace(/[^/]+$/, ""), // parent folder
+      primary,
+    },
+    download: primary,
+  };
+}
+
+/** ============
+ *  API handler
+ *  ============ */
 export async function GET(
   req: Request,
   { params }: { params: { cik: string } }
 ) {
   try {
     const idRaw = decodeURIComponent(params.cik || "").trim();
-    const { searchParams } = new URL(req.url);
+    if (!idRaw) {
+      return NextResponse.json(
+        { ok: false, error: "Missing identifier. Provide CIK, ticker, or company name." },
+        { status: 400 }
+      );
+    }
 
-    // inputs
-    const start = searchParams.get("start") || "2000-01-01";
-    const end = searchParams.get("end") || new Date().toISOString().slice(0, 10);
-    const formsParam = (searchParams.get("forms") || "").trim();
-    const forms = formsParam
-      ? formsParam.split(",").map((s) => s.trim()).filter(Boolean)
-      : []; // empty = any form
-    const perPage = Math.min(
-      200,
-      Math.max(1, parseInt(searchParams.get("perPage") || "50", 10))
-    );
-    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
-    const freeText = (searchParams.get("q") || "").trim() || null;
-
-    // Resolve identifier to CIK (ticker / company / cik all allowed)
     const resolvedCIK = await resolveIdentifierToCIK(idRaw);
     if (!resolvedCIK) {
       return NextResponse.json(
@@ -279,24 +298,40 @@ export async function GET(
       );
     }
 
-    // EFTS uses 0-based "from" offset
-    const from = (page - 1) * perPage;
+    const { searchParams } = new URL(req.url);
+    const start = searchParams.get("start") || "2000-01-01";
+    const end = searchParams.get("end") || new Date().toISOString().slice(0, 10);
+    const formsParam = (searchParams.get("forms") || "").trim();
+    const forms = formsParam
+      ? formsParam.split(",").map((s) => s.trim()).filter(Boolean)
+      : [];
+    const perPage = Math.min(200, Math.max(1, parseInt(searchParams.get("perPage") || "50", 10)));
+    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
+    const freeText = (searchParams.get("q") || "").trim() || null;
 
-    const { total, items } = await searchEfts({
-      cik: resolvedCIK,
-      start,
-      end,
-      forms,
-      freeText,
-      from,
-      size: perPage,
-    });
+    // Load all filings (recent + historical chunks)
+    const all = await loadAllFilingsForCIK(resolvedCIK);
 
-    const rows: Row[] = [];
-    for (const it of items) {
-      const row = buildRowFromEftsHit(it);
-      if (row) rows.push(row);
+    // Filter
+    let filtered = all.filter(
+      (r) => r.filingDate && withinDate(r.filingDate, start, end)
+    );
+    if (forms.length) {
+      const set = new Set(forms.map((f) => f.toUpperCase()));
+      filtered = filtered.filter((r) => set.has(r.form.toUpperCase()));
     }
+    if (freeText) {
+      filtered = filtered.filter((r) => matchesFreeText(r, freeText));
+    }
+
+    // Sort newest first
+    filtered.sort((a, b) => (a.filingDate < b.filingDate ? 1 : -1));
+
+    const total = filtered.length;
+    const startIdx = (page - 1) * perPage;
+    const pageItems = filtered.slice(startIdx, startIdx + perPage);
+
+    const rows: Row[] = pageItems.map((rec) => toRow(resolvedCIK, rec));
 
     const payload: ApiResult = {
       ok: true,
@@ -315,11 +350,7 @@ export async function GET(
       },
     };
 
-    return NextResponse.json(payload, {
-      headers: {
-        "Cache-Control": "no-store",
-      },
-    });
+    return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
     return NextResponse.json(
       { ok: false, error: e?.message || "Unexpected error" },
