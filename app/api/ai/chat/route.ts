@@ -1,47 +1,37 @@
 // app/api/ai/chat/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-const DS_ENDPOINT =
+const DS_BASE =
   (process.env.DEEPSEEK_API_BASE?.replace(/\/+$/, "") as string) ||
   "https://api.deepseek.com";
 const DS_API_KEY = process.env.DEEPSEEK_API_KEY;
+const DS_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
 
-// ---------- small helpers (fixed typing) ----------
+// ---------- helpers ----------
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
 }
 function err(message: string, status = 400) {
   return json({ error: message }, { status });
 }
+type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
 
-// ---------- BLS helpers ----------
+// ---------- tiny BLS live intercept (works for “latest unemployment …”) ----------
 type BLSPoint = { periodName: string; year: string; value: string };
 type BLSSeries = { seriesID: string; data: BLSPoint[] };
 type BLSResp = { Results?: { series?: BLSSeries[] } };
 
-async function blsLatest(seriesId: string): Promise<BLSPoint | null> {
-  const url = `https://api.bls.gov/publicAPI/v2/timeseries/data/${seriesId}?latest=true`;
-  const r = await fetch(url, { cache: "no-store", next: { revalidate: 0 } });
+async function blsFetch(seriesId: string) {
+  const r = await fetch(
+    `https://api.bls.gov/publicAPI/v2/timeseries/data/${seriesId}?latest=true`,
+    { cache: "no-store", next: { revalidate: 0 } }
+  );
   if (!r.ok) return null;
   const j = (await r.json()) as BLSResp;
-  return j?.Results?.series?.[0]?.data?.[0] ?? null;
+  return j?.Results?.series?.[0]?.data ?? null;
 }
-
-async function blsTwoLatest(seriesId: string): Promise<[BLSPoint, BLSPoint] | null> {
-  const url = `https://api.bls.gov/publicAPI/v2/timeseries/data/${seriesId}?latest=true`;
-  const r = await fetch(url, { cache: "no-store", next: { revalidate: 0 } });
-  if (!r.ok) return null;
-  const j = (await r.json()) as BLSResp;
-  const arr = j?.Results?.series?.[0]?.data ?? [];
-  return arr.length >= 2 ? [arr[0], arr[1]] : null;
-}
-
-function monthStamp(p: BLSPoint) {
-  return `${p.periodName} ${p.year}`; // e.g., "September 2025"
-}
-
-function isUnemploymentPrompt(q: string) {
-  const t = q.toLowerCase();
+function isUnempPrompt(t: string) {
+  t = t.toLowerCase();
   return (
     t.includes("unemployment") ||
     t.includes("employment situation") ||
@@ -51,90 +41,107 @@ function isUnemploymentPrompt(q: string) {
     t.includes("jobless rate")
   );
 }
-
+function monthStamp(p: BLSPoint) {
+  return `${p.periodName} ${p.year}`;
+}
 async function unemploymentAnswer() {
-  const unrate = await blsLatest("LNS14000000");            // Unemployment rate
-  const payemsTwo = await blsTwoLatest("CES0000000001");    // Nonfarm payrolls level
-
-  if (!unrate) {
-    return {
-      text:
-        "I tried to fetch the latest unemployment rate from BLS but couldn’t reach their API just now. Please try again in a moment.",
-    };
+  const rateArr = await blsFetch("LNS14000000");
+  const nfpArr = await blsFetch("CES0000000001");
+  if (!rateArr?.[0]) {
+    return "**I tried to fetch the latest BLS unemployment rate but couldn’t reach the API just now.** Try again in a moment.";
   }
-
-  let payrollLine = "";
-  if (payemsTwo) {
-    const [latest, prev] = payemsTwo;
-    const latestVal = Number(latest.value.replace(/,/g, "")); // thousands
-    const prevVal = Number(prev.value.replace(/,/g, ""));
-    const change = latestVal - prevVal;
-    const changeFmt =
-      (change >= 0 ? "+" : "−") + Math.abs(change).toLocaleString() + "k";
-    payrollLine = `\n**Nonfarm payrolls (m/m):** ${changeFmt}`;
+  const r = rateArr[0];
+  const rate = Number(r.value).toFixed(1);
+  let nfpLine = "";
+  if (nfpArr?.length >= 2) {
+    const latest = Number(nfpArr[0].value.replace(/,/g, ""));
+    const prev = Number(nfpArr[1].value.replace(/,/g, ""));
+    const ch = latest - prev;
+    nfpLine =
+      `\n**Nonfarm payrolls (m/m):** ` +
+      `${ch >= 0 ? "+" : "−"}${Math.abs(ch).toLocaleString()}k`;
   }
-
-  const rate = Number(unrate.value).toFixed(1);
-  const stamp = monthStamp(unrate);
-  const link = "https://www.bls.gov/news.release/empsit.nr0.htm";
-
-  return {
-    text: `**Latest Employment Situation (BLS) — ${stamp}**\n**Unemployment rate:** ${rate}%${payrollLine}\nFull report: ${link}`,
-  };
+  return `**Latest Employment Situation (BLS) — ${monthStamp(r)}**\n` +
+    `**Unemployment rate:** ${rate}%${nfpLine}\n` +
+    `Full report: https://www.bls.gov/news.release/empsit.nr0.htm`;
 }
 
-// ------------- main handler -------------
+// ---------- DeepSeek call (normalized output) ----------
+async function deepseekChat(messages: ChatMsg[]) {
+  if (!DS_API_KEY) throw new Error("Missing DEEPSEEK_API_KEY");
+
+  const sys =
+    "You are Herevna AI. Stay strictly on finance/econ/stocks/filings. " +
+    "For time-sensitive data (BLS, CPI, EDGAR latest filings, FRED, BEA), prefer live APIs and return direct source links.";
+
+  const payload = {
+    model: DS_MODEL,
+    messages: [{ role: "system", content: sys }, ...messages],
+    temperature: 0.2,
+    stream: false,
+  };
+
+  const r = await fetch(`${DS_BASE}/v1/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${DS_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+    next: { revalidate: 0 },
+  });
+
+  const bodyText = await r.text();
+  let ds: any = {};
+  try {
+    ds = bodyText ? JSON.parse(bodyText) : {};
+  } catch {
+    throw new Error(`DeepSeek returned non-JSON (${r.status})`);
+  }
+  if (!r.ok || ds.error) {
+    const msg = ds?.error?.message || bodyText || "DeepSeek error";
+    throw new Error(`DeepSeek request failed (${r.status}) ${msg}`);
+  }
+
+  // Normalize across possible provider variants
+  const content =
+    ds?.choices?.[0]?.message?.content ??
+    ds?.choices?.[0]?.text ??
+    ds?.output_text ??
+    (Array.isArray(ds?.content)
+      ? ds.content.map((c: any) => c?.text).filter(Boolean).join("\n")
+      : "");
+
+  if (!content) throw new Error("Empty response from model");
+
+  // Always return a stable shape for the UI
+  return { choices: [{ message: { role: "assistant", content } }] };
+}
+
+// ---------- main handler ----------
 export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json()) as {
-      messages: { role: "system" | "user" | "assistant"; content: string }[];
-    };
-    const messages = body?.messages;
+    const raw = await req.json().catch(() => ({}));
+    // Accept either {messages:[...]} OR {prompt:"..."}
+    let messages: ChatMsg[] | undefined = raw?.messages;
+    if (!messages && typeof raw?.prompt === "string") {
+      messages = [{ role: "user", content: raw.prompt }];
+    }
     if (!messages?.length) return err("No messages", 400);
 
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    const userText = lastUser?.content ?? "";
+    const userText =
+      [...messages].reverse().find((m) => m.role === "user")?.content || "";
 
-    // Intercept time-sensitive econ questions → live BLS
-    if (isUnemploymentPrompt(userText)) {
-      const ans = await unemploymentAnswer();
-      return json({
-        choices: [{ message: { role: "assistant", content: ans.text } }],
-      });
+    // Live intercept: unemployment
+    if (isUnempPrompt(userText)) {
+      const text = await unemploymentAnswer();
+      return json({ choices: [{ message: { role: "assistant", content: text } }] });
     }
 
-    // Otherwise → DeepSeek chat
-    if (!DS_API_KEY) return err("Missing DEEPSEEK_API_KEY", 500);
-
-    const sysPreamble =
-      "You are Herevna AI. For time-sensitive economic/market data (BLS, CPI, jobs report, EDGAR latest filings, FRED series, BEA releases), do not rely on static knowledge: fetch live data via the app's tools or say you are fetching live data. Keep answers concise and include direct source links when possible.";
-
-    const payload = {
-      model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
-      messages: [{ role: "system", content: sysPreamble }, ...messages],
-      temperature: 0.2,
-      stream: false,
-    };
-
-    const r = await fetch(`${DS_ENDPOINT}/v1/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${DS_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-      // no-store to avoid any stale proxies
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
-
-    if (!r.ok) {
-      const text = await r.text().catch(() => "");
-      return err(`DeepSeek request failed (${r.status}) ${text || ""}`, r.status);
-    }
-
-    const j = await r.json();
-    return json(j);
+    // Default: model
+    const normalized = await deepseekChat(messages);
+    return json(normalized);
   } catch (e: any) {
     return err(e?.message || "Unexpected server error", 500);
   }
