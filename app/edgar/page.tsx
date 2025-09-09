@@ -1,61 +1,293 @@
-async function getFilings(resetPage = true) {
-  try {
-    setErr(null);
-    setLoading(true);
-    if (resetPage) setPage(1);
+// app/edgar/page.tsx
+"use client";
 
-    let cik = selected?.cik || "";
+import { useEffect, useMemo, useState } from "react";
+import InsiderInput from "./InsiderInput";
 
-    // If user typed a CIK, accept it
-    const raw = query.trim();
-    if (!cik && /^\d{1,10}$/.test(raw)) {
-      cik = raw.padStart(10, "0");
-    }
+type Row = {
+  cik: string;
+  company?: string;
+  form: string;
+  filed: string;
+  accessionNumber: string;
+  links: { indexHtml: string; dir: string; primary: string };
+  download: string;
+};
 
-    // NEW: auto-lookup ticker/company if no CIK yet
-    if (!cik && raw) {
-      try {
-        const url = apiUrl(`/api/lookup/${encodeURIComponent(raw)}`);
-        const lr = await fetch(url, { cache: "no-store" });
-        if (lr.ok) {
-          const lj = await lr.json();
-          if (lj?.cik) cik = lj.cik;
-        }
-      } catch {
-        // ignore lookup failure; we'll error below if still no cik
-      }
-    }
+type ApiResult = {
+  ok: boolean;
+  total: number;
+  count: number;
+  data: Row[];
+  query: {
+    id: string;
+    resolvedCIK: string | null;
+    start: string;
+    end: string;
+    forms: string[];
+    perPage: number;
+    page: number;
+    freeText: string | null;
+  };
+};
 
-    if (!cik) {
-      setErr("Ticker/Company not recognized. Pick from suggestions or enter a numeric CIK.");
-      setRows([]);
-      setMeta(null);
+const FORM_OPTIONS = [
+  "10-K","10-Q","8-K","S-1","S-3","S-4","20-F","40-F","6-K","11-K",
+  "13F-HR","SC 13D","SC 13D/A","SC 13G","SC 13G/A",
+  "3","4","5","DEF 14A","DEFA14A","PX14A6G","424B2","424B3","424B4","424B5","424B7","424B8",
+];
+
+export default function EdgarPage() {
+  // ----- search state -----
+  const [identifier, setIdentifier] = useState<string>(""); // ticker / company / CIK
+  const [forms, setForms] = useState<string[]>(["10-K","10-Q","8-K"]);
+  const [start, setStart] = useState<string>("2000-01-01");
+  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0,10));
+  const [perPage, setPerPage] = useState<number>(50);
+  const [page, setPage] = useState<number>(1);
+  const [q, setQ] = useState<string>(""); // free-text (optional)
+
+  // ----- results state -----
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [total, setTotal] = useState<number>(0);
+
+  // Keep forms string stable
+  const formsParam = useMemo(() => forms.join(","), [forms]);
+
+  async function fetchFilings() {
+    if (!identifier.trim()) {
+      setError("Enter a ticker, company name, or CIK.");
       return;
     }
-
-    const qs = new URLSearchParams();
-    if (forms.length) qs.set("form", forms.join(","));
-    const s = normDate(start);
-    const e = normDate(end);
-    if (s) qs.set("start", s);
-    if (e) qs.set("end", e);
-    if (ownerName.trim()) qs.set("owner", ownerName.trim());
-    qs.set("page", String(page));
-    qs.set("pageSize", String(pageSize));
-
-    const url = apiUrl(`/api/filings/${encodeURIComponent(cik)}?${qs.toString()}`);
-    const r = await fetch(url, { cache: "no-store" });
-    const j = await r.json();
-
-    if (!r.ok) throw new Error(j?.error || "Fetch failed");
-
-    setRows(j.data || []);
-    setMeta(j.meta || null);
-  } catch (e: any) {
-    setErr(e?.message || "Error");
+    setLoading(true);
+    setError(null);
     setRows([]);
-    setMeta(null);
-  } finally {
-    setLoading(false);
+    try {
+      const params = new URLSearchParams({
+        start,
+        end,
+        forms: formsParam,
+        perPage: String(perPage),
+        page: String(page),
+      });
+      if (q.trim()) params.set("q", q.trim());
+
+      // IMPORTANT: encode the identifier for the path segment
+      const idForPath = encodeURIComponent(identifier.trim());
+      const url = `/api/filings/${idForPath}?${params.toString()}`;
+
+      const r = await fetch(url, { cache: "no-store" });
+      const j = (await r.json()) as Partial<ApiResult> & { error?: string; details?: string };
+      if (!r.ok || !j || j.ok === false) {
+        throw new Error(j?.error || "Failed to fetch filings");
+      }
+
+      setRows(j.data || []);
+      setTotal(j.total || 0);
+    } catch (e: any) {
+      setError(e?.message || "Unexpected error");
+    } finally {
+      setLoading(false);
+    }
   }
+
+  // reset page when inputs change (except page itself)
+  useEffect(() => {
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identifier, formsParam, start, end, perPage, q]);
+
+  return (
+    <main className="mx-auto max-w-6xl px-4 py-8">
+      <h1 className="text-2xl font-semibold">EDGAR Filings</h1>
+      <p className="text-gray-600 text-sm mb-4">Search by ticker, company name, or CIK. Click a result to open the SEC filing.</p>
+
+      {/* Controls */}
+      <section className="rounded-2xl border bg-white p-4">
+        <div className="grid gap-3 md:grid-cols-[minmax(240px,1fr)_1fr_1fr_1fr]">
+          <div>
+            <div className="text-sm text-gray-700 mb-1">Company / Ticker / CIK</div>
+            <InsiderInput
+              placeholder="e.g., NVDA, AAPL, JPMorgan, 0000320193"
+              onPick={(val) => setIdentifier(val)}
+              onType={(val) => setIdentifier(val)}
+              value={identifier}
+            />
+          </div>
+
+          <div>
+            <div className="text-sm text-gray-700 mb-1">Start</div>
+            <input
+              type="date"
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
+              className="w-full border rounded-md px-3 py-2"
+            />
+          </div>
+
+          <div>
+            <div className="text-sm text-gray-700 mb-1">End</div>
+            <input
+              type="date"
+              value={end}
+              onChange={(e) => setEnd(e.target.value)}
+              className="w-full border rounded-md px-3 py-2"
+            />
+          </div>
+
+          <div>
+            <div className="text-sm text-gray-700 mb-1">Per Page</div>
+            <select
+              value={perPage}
+              onChange={(e) => setPerPage(parseInt(e.target.value))}
+              className="w-full border rounded-md px-3 py-2"
+            >
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={200}>200</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Forms & free text */}
+        <div className="mt-3 grid gap-3 md:grid-cols-[2fr_1fr_auto]">
+          <div>
+            <div className="text-sm text-gray-700 mb-1">Form Types</div>
+            <FormPicker value={forms} onChange={setForms} />
+          </div>
+
+          <div>
+            <div className="text-sm text-gray-700 mb-1">Free text (optional)</div>
+            <input
+              type="text"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="e.g., merger, guidance, dividend"
+              className="w-full border rounded-md px-3 py-2"
+            />
+          </div>
+
+          <div className="flex items-end">
+            <button
+              onClick={fetchFilings}
+              className="w-full md:w-auto px-4 py-2 rounded-md bg-black text-white text-sm disabled:opacity-60"
+              disabled={loading}
+            >
+              {loading ? "Searching…" : "Get filings"}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* Errors */}
+      {error && (
+        <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      {/* Results */}
+      <section className="mt-4">
+        <div className="text-sm text-gray-600 mb-2">
+          {loading ? "Loading…" : `${total} matched${total !== 1 ? " filings" : " filing"}`}
+        </div>
+
+        <div className="grid gap-3">
+          {rows.map((r) => (
+            <article key={r.accessionNumber} className="rounded-xl border bg-white p-4">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                <div>
+                  <div className="text-sm text-gray-600">{r.company || r.cik}</div>
+                  <div className="font-medium">
+                    {r.form} • {r.filed}
+                  </div>
+                  <div className="text-xs text-gray-500">Accession: {r.accessionNumber}</div>
+                </div>
+                <div className="flex gap-2">
+                  <a
+                    href={r.links.indexHtml}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center rounded-full border px-3 py-1.5 text-sm hover:bg-gray-50"
+                  >
+                    View index
+                  </a>
+                  <a
+                    href={r.links.primary}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center rounded-full bg-black text-white px-3 py-1.5 text-sm hover:opacity-90"
+                  >
+                    Open / Download
+                  </a>
+                </div>
+              </div>
+            </article>
+          ))}
+
+          {!loading && rows.length === 0 && !error && (
+            <div className="text-sm text-gray-600">No results yet. Try a ticker (e.g., NVDA) or company name.</div>
+          )}
+        </div>
+
+        {/* Pagination */}
+        {total > rows.length && (
+          <div className="mt-4 flex items-center gap-2">
+            <button
+              className="px-3 py-1.5 rounded-md border bg-white text-sm disabled:opacity-50"
+              disabled={page <= 1 || loading}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              ← Prev
+            </button>
+            <div className="text-sm">Page {page}</div>
+            <button
+              className="px-3 py-1.5 rounded-md border bg-white text-sm disabled:opacity-50"
+              disabled={loading || rows.length < perPage}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Next →
+            </button>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+/** chips multi-select for forms */
+function FormPicker({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  function toggle(f: string) {
+    const has = value.includes(f);
+    onChange(has ? value.filter((x) => x !== f) : [...value, f]);
+  }
+  return (
+    <div className="flex flex-wrap gap-2">
+      {FORM_OPTIONS.map((f) => {
+        const active = value.includes(f);
+        return (
+          <button
+            key={f}
+            type="button"
+            onClick={() => toggle(f)}
+            className={`text-xs rounded-full px-3 py-1 border ${
+              active ? "bg-black text-white border-black" : "bg-white hover:bg-gray-100"
+            }`}
+            title={f}
+          >
+            {f}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
