@@ -1,73 +1,109 @@
+// app/api/suggest/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-/**
- * Loads the official SEC company_tickers.json once (per runtime) and searches it.
- * Shape is: { "0": { cik_str: 320193, ticker: "AAPL", title: "Apple Inc." }, ... }
- */
-let cache: { cik: string; ticker?: string; title: string }[] | null = null;
-let lastLoad = 0;
+const SEC_UA =
+  process.env.SEC_USER_AGENT || "herevna/1.0 (contact@herevna.io)";
 
-async function loadIndex(): Promise<typeof cache> {
+type TickerRecord = {
+  cik_str: number;
+  ticker: string;
+  title: string;
+};
+
+let CACHE: { at: number; items: TickerRecord[] } | null = null;
+
+const HEADERS = {
+  "User-Agent": SEC_UA,
+  Accept: "application/json; charset=utf-8",
+} as const;
+
+async function loadTickers(): Promise<TickerRecord[]> {
   const now = Date.now();
-  if (cache && now - lastLoad < 1000 * 60 * 60) return cache; // 1h cache
+  if (CACHE && now - CACHE.at < 6 * 60 * 60 * 1000) return CACHE.items;
 
   const url = "https://www.sec.gov/files/company_tickers.json";
-  const r = await fetch(url, {
-    headers: {
-      "User-Agent": process.env.SEC_USER_AGENT || "herevna.io contact@herevna.io",
-      Accept: "application/json",
-    },
-    cache: "no-store",
-  });
-  if (!r.ok) throw new Error(`SEC tickers fetch failed (${r.status})`);
-  const j = await r.json();
-  const out: { cik: string; ticker?: string; title: string }[] = [];
-  for (const k of Object.keys(j)) {
-    const row = j[k];
-    const cik = String(row.cik_str).padStart(10, "0");
-    const ticker = row.ticker ? String(row.ticker).toUpperCase() : undefined;
-    const title = String(row.title || "").trim();
-    out.push({ cik, ticker, title });
+  const r = await fetch(url, { headers: HEADERS, cache: "no-store" });
+  if (!r.ok) {
+    return []; // Fail soft; UI will show "No suggestions"
   }
-  cache = out;
-  lastLoad = now;
-  return cache;
+  const j = (await r.json()) as Record<
+    string,
+    { cik_str: number; ticker: string; title: string }
+  >;
+  const items = Object.values(j);
+  CACHE = { at: now, items };
+  return items;
 }
 
-function fuzzIncl(a: string, b: string) {
-  return a.toLowerCase().includes(b.toLowerCase());
+function norm(s: string) {
+  return s.toLowerCase();
+}
+function normTicker(s: string) {
+  return s.toUpperCase().replace(/[^\w.]/g, "");
 }
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const q = (searchParams.get("q") || "").trim();
-    if (!q) return NextResponse.json({ data: [] });
 
-    const list = await loadIndex();
+    if (!q) return NextResponse.json({ ok: true, data: [] }, { headers: { "Cache-Control": "no-store" } });
 
-    // if exact ticker match first
-    const upper = q.toUpperCase();
-    const exactTicker = list.filter(x => x.ticker === upper);
-
-    // otherwise loose search in ticker/title
-    const loose = list.filter(
-      x => (x.ticker && fuzzIncl(x.ticker, q)) || fuzzIncl(x.title, q)
-    );
-
-    // de-dupe, prioritize exact tickers
-    const seen = new Set<string>();
-    const data: { cik: string; ticker?: string; title: string }[] = [];
-    for (const row of [...exactTicker, ...loose]) {
-      const key = `${row.cik}-${row.ticker ?? row.title}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      data.push(row);
-      if (data.length >= 30) break;
+    // If the user typed a numeric CIK, short-circuit with that
+    if (/^\d{1,10}$/.test(q)) {
+      const cik10 = q.padStart(10, "0");
+      return NextResponse.json({
+        ok: true,
+        data: [
+          {
+            label: `CIK ${cik10}`,
+            sublabel: "Enter to use exact CIK",
+            value: cik10,
+            kind: "cik",
+          },
+        ],
+      }, { headers: { "Cache-Control": "no-store" } });
     }
 
-    return NextResponse.json({ data }, { status: 200 });
+    const list = await loadTickers();
+    if (!list.length) {
+      return NextResponse.json({ ok: true, data: [] }, { headers: { "Cache-Control": "no-store" } });
+    }
+
+    const qTicker = normTicker(q);
+    const qName = norm(q);
+
+    // Rank: ticker prefix, then ticker contains, then name contains
+    const scored = list
+      .map((x) => {
+        const t = normTicker(x.ticker);
+        const nm = norm(x.title);
+        let score = -1;
+
+        if (t.startsWith(qTicker)) score = 100 - t.length; // shorter ticker slightly higher
+        else if (t.includes(qTicker)) score = 50 - (t.indexOf(qTicker) || 0);
+        else if (nm.includes(qName)) score = 10 - (nm.indexOf(qName) || 0);
+
+        return { score, rec: x };
+      })
+      .filter((s) => s.score >= 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 15);
+
+    const out = scored.map(({ rec }) => {
+      const cik10 = String(rec.cik_str).padStart(10, "0");
+      return {
+        label: `${rec.ticker} — ${rec.title}`,
+        sublabel: `CIK ${cik10}`,
+        value: cik10,          // we return CIK so downstream is 100% reliable
+        alt: rec.ticker,       // keep ticker around if you need it
+        name: rec.title,
+        kind: "company",
+      };
+    });
+
+    return NextResponse.json({ ok: true, data: out }, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Server error", data: [] }, { status: 200 });
+    return NextResponse.json({ ok: true, data: [] }, { headers: { "Cache-Control": "no-store" } });
   }
 }
