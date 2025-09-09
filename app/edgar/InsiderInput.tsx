@@ -3,111 +3,116 @@
 
 import { useEffect, useRef, useState } from "react";
 
-type Suggest = { cik: string; ticker: string | null; name: string; display: string };
+type Suggestion = {
+  label: string;
+  value: string; // CIK (padded)
+  cik: string;
+  ticker: string;
+  name: string;
+};
 
-export default function InsiderInput({
-  placeholder,
-  value,
-  onType,
-  onPick,
-}: {
+export default function InsiderInput(props: {
   placeholder?: string;
   value: string;
-  onType: (val: string) => void;
-  onPick: (val: string) => void; // pass either picked CIK or raw input on Enter
+  onType: (v: string) => void;
+  onPick: (v: string) => void; // we pass CIK (value) here
 }) {
+  const { placeholder, value, onType, onPick } = props;
   const [open, setOpen] = useState(false);
-  const [items, setItems] = useState<Suggest[]>([]);
   const [loading, setLoading] = useState(false);
-  const [active, setActive] = useState(0);
+  const [items, setItems] = useState<Suggestion[]>([]);
+  const [err, setErr] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
-  const acRef = useRef<AbortController | null>(null);
-  const debRef = useRef<number | null>(null);
+  const tRef = useRef<number | null>(null);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
-      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
+      if (!boxRef.current) return;
+      if (!boxRef.current.contains(e.target as Node)) setOpen(false);
     }
     document.addEventListener("click", onDocClick);
     return () => document.removeEventListener("click", onDocClick);
   }, []);
 
-  // fetch suggestions (debounced + cancel previous)
+  // Debounced fetch suggestions
   useEffect(() => {
-    if (debRef.current) window.clearTimeout(debRef.current);
-    if (!value || value.trim().length < 1) {
-      setItems([]); setOpen(false); return;
+    if (tRef.current) window.clearTimeout(tRef.current);
+    const q = value.trim();
+    if (!q) {
+      setItems([]);
+      setOpen(false);
+      return;
     }
-    debRef.current = window.setTimeout(async () => {
-      acRef.current?.abort();
-      const ac = new AbortController();
-      acRef.current = ac;
+
+    tRef.current = window.setTimeout(async () => {
+      setLoading(true);
+      setErr(null);
       try {
-        setLoading(true);
-        const r = await fetch(`/api/suggest?q=${encodeURIComponent(value)}`, { signal: ac.signal, cache: "no-store" });
-        const j = await r.json();
-        setItems(j?.suggestions || []);
-        setActive(0);
+        const r = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`, {
+          cache: "no-store",
+        });
+        const j = (await r.json()) as {
+          ok: boolean;
+          suggestions?: Suggestion[];
+          error?: string;
+        };
+        if (!r.ok || j.ok === false) throw new Error(j?.error || "Suggest failed");
+        const list = j.suggestions || [];
+        setItems(list);
         setOpen(true);
-      } catch {
-        if (!ac.signal.aborted) setItems([]);
+      } catch (e: any) {
+        setItems([]);
+        setErr(e?.message || "Suggest failed");
+        setOpen(true);
       } finally {
-        if (!ac.signal.aborted) setLoading(false);
+        setLoading(false);
       }
-    }, 160);
-    return () => { if (debRef.current) window.clearTimeout(debRef.current); };
+    }, 150);
+
+    return () => {
+      if (tRef.current) window.clearTimeout(tRef.current);
+    };
   }, [value]);
 
-  function pick(idx: number) {
-    const it = items[idx];
-    if (it?.cik) {
-      onPick(it.cik); // always pass the CIK to caller
-      setOpen(false);
-    }
-  }
-
-  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => Math.min(a + 1, Math.max(0, items.length - 1))); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
-    else if (e.key === "Enter") {
-      e.preventDefault();
-      if (open && items.length) pick(active);
-      else onPick(value); // let server resolve raw text
-    }
-  }
-
   return (
-    <div className="relative w-full" ref={boxRef}>
+    <div ref={boxRef} className="relative">
       <input
-        type="text"
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onType(e.target.value)}
-        onFocus={() => value && setOpen(true)}
-        onKeyDown={onKeyDown}
         className="w-full border rounded-md px-3 py-2"
-        autoComplete="off"
+        placeholder={placeholder || "Start typing a ticker or company…"}
+        value={value}
+        onChange={(e) => onType(e.target.value)}
+        onFocus={() => value.trim() && setOpen(true)}
       />
+
       {open && (
         <div className="absolute z-20 mt-1 w-full rounded-md border bg-white shadow">
-          {loading && <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>}
-          {!loading && items.length === 0 && (
+          {loading && (
+            <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
+          )}
+          {!loading && err && (
+            <div className="px-3 py-2 text-sm text-red-600">{err}</div>
+          )}
+          {!loading && !err && items.length === 0 && (
             <div className="px-3 py-2 text-sm text-gray-500">No suggestions</div>
           )}
-          {!loading && items.map((s, i) => (
-            <button
-              type="button"
-              key={`${s.cik}-${i}`}
-              onMouseDown={(e) => { e.preventDefault(); pick(i); }}
-              onMouseEnter={() => setActive(i)}
-              className={`w-full text-left px-3 py-2 text-sm ${i === active ? "bg-gray-100" : ""}`}
-            >
-              <div className="font-medium">{s.name}</div>
-              <div className="text-gray-600 text-xs">
-                {s.ticker ? `${s.ticker} · ` : ""}CIK {s.cik}
-              </div>
-            </button>
-          ))}
+          {!loading &&
+            !err &&
+            items.map((s) => (
+              <button
+                key={s.cik}
+                type="button"
+                onClick={() => {
+                  // Set the input to a nice display and pass CIK upward
+                  onType(`${s.ticker} — ${s.name}`);
+                  onPick(s.value); // value is CIK (padded)
+                  setOpen(false);
+                }}
+                className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-50"
+                title={`CIK ${s.cik}`}
+              >
+                {s.label}
+              </button>
+            ))}
         </div>
       )}
     </div>
