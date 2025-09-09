@@ -1,216 +1,241 @@
-// app/api/filings/[cik]/route.ts
+// app/api/filings/route.ts
 import { NextResponse } from "next/server";
 
-const UA = process.env.SEC_USER_AGENT || "Herevna/1.0 (contact@example.com)";
-const SEC_JSON = (cik10: string) => `https://data.sec.gov/submissions/CIK${cik10}.json`;
-const SEC_ARCH_BASE = (cik: number, accNoNoDashes: string) =>
-  `https://www.sec.gov/Archives/edgar/data/${cik}/${accNoNoDashes}`;
+type Recent = {
+  accessionNumber: string[];
+  filingDate: string[];
+  reportDate: string[];
+  form: string[];
+  primaryDocDescription: string[];
+  primaryDocument: string[];
+};
 
-function padCIK(cikRaw: string) {
-  const n = (cikRaw || "").replace(/\D/g, "");
-  if (!n) throw new Error("Invalid CIK");
-  return n.padStart(10, "0");
+type HistoricFile = {
+  name: string; // e.g. "filing-details-YYYY.json"
+  filingCount: number;
+  filingFrom: string;
+  filingTo: string;
+};
+
+type HistoricPayload = {
+  filings: {
+    files: Array<{
+      accessionNumber: string;
+      filingDate: string;
+      reportDate?: string;
+      form: string;
+      primaryDocument: string;
+      primaryDocDescription?: string;
+    }>;
+  };
+};
+
+type Submissions = {
+  cik: string;
+  name: string;
+  tickers?: string[];
+  filings: {
+    recent: Recent;
+    files?: HistoricFile[];
+  };
+};
+
+const SEC = {
+  json: (cik: string) =>
+    `https://data.sec.gov/submissions/CIK${cik}.json`,
+  // historical per-year JSON entries are linked inside submissions.filings.files[].name
+  historic: (cik: string, name: string) =>
+    `https://data.sec.gov/submissions/${name.startsWith("Archives/") ? name : `CIK${cik}-${name}`}`,
+};
+
+const UA = process.env.SEC_USER_AGENT || "herevna.io contact@herevna.io";
+
+function stripDashes(acc: string) {
+  return acc.replace(/-/g, "");
+}
+function makeDocURL(cik: string, accession: string, primary: string) {
+  // https://www.sec.gov/Archives/edgar/data/{CIK no-leading-zeros}/{accessionNoDashes}/{primaryDocument}
+  const cikNum = String(parseInt(cik, 10)); // drop leading zeros for path
+  const accNoDash = stripDashes(accession);
+  return `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accNoDash}/${primary}`;
+}
+function makeIndexURL(cik: string, accession: string) {
+  const cikNum = String(parseInt(cik, 10));
+  const accNoDash = stripDashes(accession);
+  return `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accNoDash}/${accNoDash}-index.html`;
 }
 
-function toDate(s?: string) {
-  // accept YYYY, YYYY-MM, YYYY-MM-DD
-  if (!s) return null;
-  if (/^\d{4}$/.test(s)) return new Date(`${s}-01-01T00:00:00Z`);
-  if (/^\d{4}-\d{2}$/.test(s)) return new Date(`${s}-01T00:00:00Z`);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T00:00:00Z`);
-  const d = new Date(s);
-  return isNaN(+d) ? null : d;
-}
-
-function inRange(dISO: string, start?: Date | null, end?: Date | null) {
-  const d = new Date(dISO + "T00:00:00Z");
-  if (start && d < start) return false;
-  if (end && d > end) return false;
+function inDateRange(d: string, start?: string | null, end?: string | null) {
+  if (!d) return false;
+  const n = d.replace(/-/g, "");
+  if (start) {
+    const s = start.replace(/-/g, "");
+    if (n < s) return false;
+  }
+  if (end) {
+    const e = end.replace(/-/g, "");
+    if (n > e) return false;
+  }
   return true;
 }
 
-type FilingRow = {
-  form: string;
-  filingDate: string;
-  reportDate?: string;
-  acceptanceDateTime?: string;
-  accessionNumber: string; // with dashes
-  primaryDocument?: string;
-};
-
-function rowsFromRecent(json: any): FilingRow[] {
-  const r = json?.filings?.recent;
-  if (!r || !Array.isArray(r?.accessionNumber)) return [];
-  const L = r.accessionNumber.length;
-  const out: FilingRow[] = [];
-  for (let i = 0; i < L; i++) {
-    out.push({
-      form: String(r.form[i] ?? ""),
-      filingDate: String(r.filingDate[i] ?? ""),
-      reportDate: r.reportDate?.[i] ?? undefined,
-      acceptanceDateTime: r.acceptanceDateTime?.[i] ?? undefined,
-      accessionNumber: String(r.accessionNumber[i] ?? ""),
-      primaryDocument: r.primaryDocument?.[i] ?? undefined,
-    });
-  }
-  return out;
-}
-
-function rowsFromYearFile(y: any): FilingRow[] {
-  if (!y || !Array.isArray(y?.filings)) return [];
-  return y.filings.map((f: any) => ({
-    form: String(f.form ?? ""),
-    filingDate: String(f.filingDate ?? ""),
-    reportDate: f.reportDate ?? undefined,
-    acceptanceDateTime: f.acceptanceDateTime ?? undefined,
-    accessionNumber: String(f.accessionNumber ?? ""),
-    primaryDocument: f.primaryDocument ?? undefined,
-  }));
-}
-
-function uniqueByAcc(rows: FilingRow[]) {
-  const seen = new Set<string>();
-  const out: FilingRow[] = [];
-  for (const r of rows) {
-    const key = r.accessionNumber;
-    if (key && !seen.has(key)) {
-      seen.add(key);
-      out.push(r);
-    }
-  }
-  return out;
-}
-
-function matchesForm(r: FilingRow, formsSet?: Set<string>) {
-  if (!formsSet || formsSet.size === 0) return true;
-  const f = r.form?.toUpperCase() || "";
-  if (formsSet.has(f)) return true;
-  // allow coarse filters like "13D*" to catch 13D/A
-  for (const token of formsSet) {
-    if (token.endsWith("*")) {
-      const base = token.slice(0, -1);
-      if (f.startsWith(base)) return true;
-    }
-  }
-  return false;
-}
-
-function isHtmlLike(p?: string) {
-  const u = (p || "").toLowerCase();
-  return u.endsWith(".htm") || u.endsWith(".html") || u.endsWith(".txt");
-}
-
-export async function GET(req: Request, { params }: { params: { cik: string } }) {
+export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const start = toDate(url.searchParams.get("start") || "");
-    const end   = toDate(url.searchParams.get("end") || "");
-    const formsParam = (url.searchParams.get("forms") || "").trim();
-    const limit = Math.max(1, Math.min(200, parseInt(url.searchParams.get("limit") || "50", 10)));
-    const page  = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+    const cik = (url.searchParams.get("cik") || "").padStart(10, "0");
+    if (!/^\d{10}$/.test(cik)) {
+      return NextResponse.json({ error: "Invalid or missing CIK" }, { status: 400 });
+    }
 
-    const formsSet =
-      formsParam
-        ? new Set(formsParam.split(",").map(s => s.trim().toUpperCase()).filter(Boolean))
-        : undefined;
+    const form = (url.searchParams.get("form") || "").trim(); // optional exact match or CSV list
+    const start = url.searchParams.get("start"); // YYYY or YYYY-MM-DD
+    const end = url.searchParams.get("end");
+    const page = parseInt(url.searchParams.get("page") || "1", 10);
+    const pageSize = Math.min(100, parseInt(url.searchParams.get("pageSize") || "25", 10));
+    const ownerName = (url.searchParams.get("owner") || "").trim().toLowerCase();
 
-    const cik10 = padCIK(params.cik);
-    const r = await fetch(SEC_JSON(cik10), {
-      headers: { "User-Agent": UA, "Accept": "application/json" },
+    // load submissions JSON (contains recent + pointers to historical JSON files)
+    const subRes = await fetch(SEC.json(cik), {
+      headers: { "User-Agent": UA, Accept: "application/json" },
       cache: "no-store",
     });
-    if (!r.ok) {
-      return NextResponse.json({ error: `SEC fetch failed (${r.status})` }, { status: 502 });
+    if (!subRes.ok) {
+      return NextResponse.json(
+        { error: `SEC submissions fetch failed (${subRes.status})` },
+        { status: 502 }
+      );
     }
-    const baseJson = await r.json();
+    const subs = (await subRes.json()) as Submissions;
 
-    const companyName: string = baseJson?.name || baseJson?.entityType || "Company";
-    const cikNum = parseInt(cik10, 10);
+    // recent
+    const r = subs.filings.recent;
+    const recentRows =
+      r.accessionNumber.map((acc, i) => ({
+        accessionNumber: acc,
+        filingDate: r.filingDate[i],
+        reportDate: r.reportDate[i] || "",
+        form: r.form[i],
+        primaryDocument: r.primaryDocument[i],
+        primaryDocDescription: r.primaryDocDescription[i] || "",
+      })) || [];
 
-    // 1) recent
-    let all: FilingRow[] = rowsFromRecent(baseJson);
+    // historical (merge all year files if present)
+    let historicRows: Array<{
+      accessionNumber: string;
+      filingDate: string;
+      reportDate?: string;
+      form: string;
+      primaryDocument: string;
+      primaryDocDescription?: string;
+    }> = [];
 
-    // 2) yearly files (merge EVERYTHING, then we’ll filter by date/forms)
-    const files: { name: string; url: string }[] = Array.isArray(baseJson?.filings?.files)
-      ? baseJson.filings.files.map((f: any) => ({
-          name: String(f.name || ""),
-          url: `https://data.sec.gov/submissions/${String(f.name || "")}`,
-        }))
-      : [];
+    if (subs.filings.files && subs.filings.files.length) {
+      // fetch each referenced JSON
+      const tasks = subs.filings.files.map(async (f) => {
+        // BEWARE: SEC can return either absolute path or the name to be appended
+        const urlGuess = f.name.startsWith("edgar/data")
+          ? `https://www.sec.gov/Archives/${f.name}`
+          : `https://www.sec.gov/Archives/edgar/data/${parseInt(cik, 10)}/${f.name}`;
+        // A safer fallback is the alternative “submissions/<name>” pattern:
+        const tries = [urlGuess, SEC.historic(cik, f.name)];
 
-    // If start/end are provided, we can loosely reduce the number of year files to fetch,
-    // but to be safest, fetch all and then filter. (These files are small per company.)
-    // Throttle a bit to be nice to SEC.
-    const CHUNK = 4;
-    for (let i = 0; i < files.length; i += CHUNK) {
-      const slice = files.slice(i, i + CHUNK);
-      const batch = await Promise.all(
-        slice.map(async (f) => {
+        for (const u of tries) {
           try {
-            const rr = await fetch(f.url, { headers: { "User-Agent": UA, "Accept": "application/json" }, cache: "no-store" });
-            if (!rr.ok) return null;
-            const j = await rr.json();
-            return rowsFromYearFile(j);
+            const res = await fetch(u, {
+              headers: { "User-Agent": UA, Accept: "application/json" },
+              cache: "no-store",
+            });
+            if (!res.ok) continue;
+            const j = (await res.json()) as HistoricPayload;
+            return j.filings.files;
           } catch {
-            return null;
+            // keep trying next
           }
+        }
+        return [];
+      });
+
+      const lists = await Promise.all(tasks);
+      for (const list of lists) {
+        if (Array.isArray(list)) {
+          historicRows.push(...list);
+        }
+      }
+    }
+
+    // combine, filter, sort desc by date
+    let rows = [...recentRows, ...historicRows];
+
+    if (form) {
+      const forms = form
+        .split(",")
+        .map((s) => s.trim().toUpperCase())
+        .filter(Boolean);
+      rows = rows.filter((x) => forms.includes(x.form.toUpperCase()));
+    }
+    if (start || end) {
+      rows = rows.filter((x) => inDateRange(x.filingDate, start, end));
+    }
+
+    // If insider owner filter present (form 3/4/5), we’ll keep rows but
+    // when ownerName exists we’ll *augment* each row with a lazy owner hit flag
+    // by scanning the primary document (simple fast contains check).
+    // This is best-effort (for speed); it avoids an up-front crawl of every filing.
+    if (ownerName) {
+      const limited = rows.slice(0, 150); // cap quick scan to keep perf
+      const hits: Set<string> = new Set();
+      await Promise.all(
+        limited.map(async (x) => {
+          try {
+            const url = makeDocURL(cik, x.accessionNumber, x.primaryDocument);
+            const res = await fetch(url, {
+              headers: { "User-Agent": UA, Accept: "text/html,application/xml" },
+            });
+            if (!res.ok) return;
+            const text = await res.text();
+            // normalize whitespace + lowercase
+            const norm = text.replace(/\s+/g, " ").toLowerCase();
+            if (norm.includes(ownerName)) hits.add(x.accessionNumber);
+          } catch {}
         })
       );
-      for (const rows of batch) {
-        if (rows && rows.length) all.push(...rows);
-      }
-      // tiny delay
-      if (i + CHUNK < files.length) await new Promise(res => setTimeout(res, 120));
+      rows = rows.filter((x) => hits.has(x.accessionNumber));
     }
 
-    // 3) de-dup & sort desc by filingDate
-    all = uniqueByAcc(all).sort((a, b) => (a.filingDate < b.filingDate ? 1 : a.filingDate > b.filingDate ? -1 : 0));
+    // sort newest first
+    rows.sort((a, b) => (a.filingDate < b.filingDate ? 1 : -1));
 
-    // 4) apply filters
-    all = all.filter((row) => {
-      if (!inRange(row.filingDate, start, end)) return false;
-      if (!matchesForm(row, formsSet)) return false;
-      return true;
-    });
-
-    // 5) paginate
-    const total = all.length;
-    const offset = (page - 1) * limit;
-    const pageRows = all.slice(offset, offset + limit);
-
-    // 6) map to client-friendly output
-    const out = pageRows.map((row) => {
-      const noDash = row.accessionNumber.replace(/-/g, "");
-      const base = SEC_ARCH_BASE(cikNum, noDash);
-      const primaryDocUrl =
-        row.primaryDocument && isHtmlLike(row.primaryDocument)
-          ? `${base}/${row.primaryDocument}`
-          : `${base}/index.html`; // fallback to index
-
+    const total = rows.length;
+    const from = (page - 1) * pageSize;
+    const to = Math.min(from + pageSize, total);
+    const pageRows = rows.slice(from, to).map((x) => {
+      const viewUrl = makeIndexURL(cik, x.accessionNumber);
+      const docUrl = makeDocURL(cik, x.accessionNumber, x.primaryDocument);
       return {
-        cik: cik10,
-        company: companyName,
-        form: row.form,
-        filed_at: row.filingDate,
-        reported_at: row.reportDate || null,
-        title: `${companyName} • ${row.form} • ${row.filingDate}`,
-        accession: row.accessionNumber,
-        source_url: base,
-        primary_doc_url: primaryDocUrl,
-        // helpful direct downloads (best-effort)
-        downloads: {
-          index: `${base}/index.html`,
-          fullText: `${base}.txt`,
-          primary: primaryDocUrl,
+        form: x.form,
+        filingDate: x.filingDate,
+        reportDate: x.reportDate || "",
+        accessionNumber: x.accessionNumber,
+        primaryDocument: x.primaryDocument,
+        title: x.primaryDocDescription || "",
+        links: {
+          view: viewUrl, // SEC index page
+          download: docUrl, // direct primary document
         },
       };
     });
 
     return NextResponse.json({
-      meta: { cik: cik10, company: companyName, total, page, limit },
-      data: out,
+      meta: {
+        cik,
+        name: subs.name,
+        total,
+        page,
+        pageSize,
+      },
+      data: pageRows,
     });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
+    return NextResponse.json({ error: e.message || "Filings fetch failed" }, { status: 500 });
   }
 }
