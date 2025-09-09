@@ -1,4 +1,3 @@
-// app/components/Header.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -30,6 +29,7 @@ export default function Header() {
             <NavLink href="/" label="Home" />
             <NavLink href="/edgar" label="EDGAR" />
             <NavLink href="/bls" label="BLS" />
+            <NavLink href="/fred" label="FRED" /> {/* ✅ Added FRED */}
             <NavLink href="/census" label="Census" />
             <NavLink href="/news" label="News" />
             <NavLink href="/screener" label="Screener" />
@@ -62,6 +62,7 @@ export default function Header() {
             <MobileLink href="/" label="Home" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/edgar" label="EDGAR" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/bls" label="BLS" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/fred" label="FRED" onClick={() => setMobileOpen(false)} /> {/* ✅ Added FRED */}
             <MobileLink href="/census" label="Census" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/news" label="News" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/screener" label="Screener" onClick={() => setMobileOpen(false)} />
