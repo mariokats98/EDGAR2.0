@@ -10,7 +10,7 @@ type Row = {
   form: string;
   filed: string;
   accessionNumber: string;
-  open: string;
+  open: string; // fully-qualified link to primary doc or index
 };
 
 type ApiResult = {
@@ -53,7 +53,8 @@ const FORM_OPTIONS = [
  * Page
  * ---------------------------------------------------------------------------*/
 export default function EdgarPage() {
-  const [identifier, setIdentifier] = useState<string>(""); 
+  // ----- search state -----
+  const [identifier, setIdentifier] = useState<string>("");
   const [forms, setForms] = useState<string[]>(["10-K","10-Q","8-K"]);
   const [start, setStart] = useState<string>("2000-01-01");
   const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
@@ -61,12 +62,27 @@ export default function EdgarPage() {
   const [page, setPage] = useState<number>(1);
   const [q, setQ] = useState<string>("");
 
+  // ----- results state -----
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState<number>(0);
 
+  // ----- pagination input box state -----
+  const [pageInput, setPageInput] = useState<string>("1");
+
+  // Keep forms string stable
   const formsParam = useMemo(() => forms.join(","), [forms]);
+
+  // Keep page box in sync when page changes
+  useEffect(() => {
+    setPageInput(String(page));
+  }, [page]);
+
+  // Reset to page 1 when filters change (but not when page changes)
+  useEffect(() => {
+    setPage(1);
+  }, [identifier, formsParam, start, end, perPage, q]);
 
   /** Resolve to CIK */
   async function resolveToCIK(input: string): Promise<string> {
@@ -84,8 +100,8 @@ export default function EdgarPage() {
     throw new Error("Ticker/Company not recognized. Enter a numeric CIK or valid ticker.");
   }
 
-  /** Fetch filings */
-  async function fetchFilings() {
+  /** Core fetch that can override page */
+  async function doFetch(pageOverride?: number) {
     const raw = identifier.trim();
     if (!raw) {
       setError("Enter a ticker, company name, or CIK.");
@@ -98,25 +114,30 @@ export default function EdgarPage() {
 
     try {
       const cik10 = await resolveToCIK(raw);
+      const currentPage = pageOverride ?? page;
+
       const params = new URLSearchParams({
         start,
         end,
         forms: formsParam,
         perPage: String(perPage),
-        page: String(page),
+        page: String(currentPage),
       });
       if (q.trim()) params.set("q", q.trim());
 
       const url = `/api/filings/${encodeURIComponent(cik10)}?${params.toString()}`;
       const r = await fetch(url, { cache: "no-store" });
-      const j = await r.json();
+      const j: ApiResult | { ok?: false; error?: string } = await r.json();
 
-      if (!r.ok || !j || j.ok === false) {
-        throw new Error(j?.error || `Failed to fetch filings (${r.status})`);
+      if (!r.ok || !(j as ApiResult).ok) {
+        throw new Error((j as any)?.error || `Failed to fetch filings (${r.status})`);
       }
 
-      setRows(j.data || []);
-      setTotal(j.total || 0);
+      const ok = j as ApiResult;
+      setRows(ok.data || []);
+      setTotal(ok.total || 0);
+      // ensure page state matches what we actually fetched
+      setPage(currentPage);
     } catch (e: any) {
       setError(e?.message || "Unexpected error");
     } finally {
@@ -124,9 +145,27 @@ export default function EdgarPage() {
     }
   }
 
-  useEffect(() => {
-    setPage(1);
-  }, [identifier, formsParam, start, end, perPage, q]);
+  const totalPages = Math.max(1, Math.ceil((total || 0) / (perPage || 1)));
+
+  /** Handlers for pagination controls */
+  function handleGo() {
+    const n = parseInt(pageInput, 10);
+    if (!Number.isFinite(n)) return;
+    const target = Math.min(Math.max(1, n), totalPages);
+    doFetch(target);
+  }
+  function handleKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleGo();
+    }
+  }
+  function prev() {
+    if (page > 1) doFetch(page - 1);
+  }
+  function next() {
+    if (page < totalPages) doFetch(page + 1);
+  }
 
   /** ------------------------ Render ------------------------ */
   return (
@@ -139,7 +178,6 @@ export default function EdgarPage() {
       {/* Controls */}
       <section className="rounded-2xl border bg-white p-4">
         <div className="grid gap-3 md:grid-cols-[minmax(260px,1.25fr)_1fr_1fr_1fr]">
-          {/* Identifier input only */}
           <div>
             <div className="text-sm text-gray-700 mb-1">Company / Ticker / CIK</div>
             <input
@@ -205,7 +243,7 @@ export default function EdgarPage() {
 
           <div className="flex items-end">
             <button
-              onClick={fetchFilings}
+              onClick={() => doFetch(1)}
               className="w-full md:w-auto px-4 py-2 rounded-md bg-black text-white text-sm disabled:opacity-60"
               disabled={loading}
             >
@@ -224,8 +262,48 @@ export default function EdgarPage() {
 
       {/* Results */}
       <section className="mt-4">
-        <div className="text-sm text-gray-600 mb-2">
-          {loading ? "Loading…" : `${total} matched${total !== 1 ? " filings" : " filing"}`}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-2">
+          <div className="text-sm text-gray-600">
+            {loading ? "Loading…" : `${total} matched${total !== 1 ? " filings" : " filing"}`}
+          </div>
+
+          {/* Pagination bar */}
+          {total > 0 && (
+            <div className="flex items-center gap-2 text-sm">
+              <button
+                onClick={prev}
+                disabled={loading || page <= 1}
+                className="px-2 py-1 rounded-md border bg-white disabled:opacity-50"
+              >
+                ← Prev
+              </button>
+              <span>Page</span>
+              <input
+                value={pageInput}
+                onChange={(e) => setPageInput(e.target.value.replace(/\D/g, ""))}
+                onKeyDown={handleKey}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                className="w-14 border rounded-md px-2 py-1 text-center"
+                aria-label="Page number"
+              />
+              <span>of {totalPages}</span>
+              <button
+                onClick={handleGo}
+                disabled={loading || !pageInput}
+                className="px-2 py-1 rounded-md border bg-white disabled:opacity-50"
+              >
+                Go
+              </button>
+              <button
+                onClick={next}
+                disabled={loading || page >= totalPages}
+                className="px-2 py-1 rounded-md border bg-white disabled:opacity-50"
+              >
+                Next →
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-3">
@@ -252,6 +330,7 @@ export default function EdgarPage() {
               </div>
             </article>
           ))}
+
           {!loading && rows.length === 0 && !error && (
             <div className="text-sm text-gray-600">
               No results yet. Try a ticker (e.g., NVDA) or company name.
