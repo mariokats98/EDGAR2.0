@@ -10,7 +10,7 @@ type Row = {
   form: string;
   filed: string;
   accessionNumber: string;
-  open: string; // absolute URL to the filing (primary doc or index)
+  open: string;
 };
 
 type ApiResult = {
@@ -29,8 +29,6 @@ type ApiResult = {
     freeText: string | null;
   };
 };
-
-type SuggestItem = { label: string; value: string };
 
 /** ------------ Helpers ------------ */
 function normalizeCIKLike(input: string): string | null {
@@ -55,8 +53,7 @@ const FORM_OPTIONS = [
  * Page
  * ---------------------------------------------------------------------------*/
 export default function EdgarPage() {
-  // Search state
-  const [identifier, setIdentifier] = useState<string>(""); // ticker / company / CIK
+  const [identifier, setIdentifier] = useState<string>(""); 
   const [forms, setForms] = useState<string[]>(["10-K","10-Q","8-K"]);
   const [start, setStart] = useState<string>("2000-01-01");
   const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
@@ -64,12 +61,6 @@ export default function EdgarPage() {
   const [page, setPage] = useState<number>(1);
   const [q, setQ] = useState<string>("");
 
-  // Suggestions
-  const [suggesting, setSuggesting] = useState(false);
-  const [suggestions, setSuggestions] = useState<SuggestItem[] | null>(null);
-  const [showSuggest, setShowSuggest] = useState(false);
-
-  // Results
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
@@ -77,65 +68,20 @@ export default function EdgarPage() {
 
   const formsParam = useMemo(() => forms.join(","), [forms]);
 
-  /** Fetch suggestions (debounced) */
-  useEffect(() => {
-    const term = identifier.trim();
-    if (!term) {
-      setSuggestions(null);
-      setShowSuggest(false);
-      return;
-    }
-    setSuggesting(true);
-    const t = setTimeout(async () => {
-      try {
-        const r = await fetch(`/api/suggest?q=${encodeURIComponent(term)}`, { cache: "no-store" });
-        if (!r.ok) throw new Error();
-        const j = (await r.json()) as { ok?: boolean; items?: SuggestItem[] };
-        setSuggestions(j?.items && j.items.length ? j.items.slice(0, 8) : []);
-        setShowSuggest(true);
-      } catch {
-        setSuggestions([]);
-        setShowSuggest(true);
-      } finally {
-        setSuggesting(false);
-      }
-    }, 200);
-    return () => clearTimeout(t);
-  }, [identifier]);
-
-  /** Resolve whatever the user typed into a 10-digit CIK */
+  /** Resolve to CIK */
   async function resolveToCIK(input: string): Promise<string> {
     const maybe = normalizeCIKLike(input);
     if (maybe) return maybe;
 
-    // Try lookup by symbol or company text
     const path = `/api/lookup/${encodeURIComponent(input.trim())}`;
-    try {
-      const r = await fetch(path, { cache: "no-store" });
-      if (r.ok) {
-        const j = await r.json();
-        const raw = j?.resolvedCIK || j?.cik || (typeof j === "string" ? j : null);
-        const norm = raw ? normalizeCIKLike(String(raw)) : null;
-        if (norm) return norm;
-      }
-    } catch {
-      // ignore; try fallback
+    const r = await fetch(path, { cache: "no-store" });
+    if (r.ok) {
+      const j = await r.json();
+      const raw = j?.resolvedCIK || j?.cik || null;
+      const norm = raw ? normalizeCIKLike(String(raw)) : null;
+      if (norm) return norm;
     }
-
-    // Fallback: try again with a query param (covers alt lookup handlers)
-    try {
-      const r = await fetch(`${path}?q=${encodeURIComponent(input.trim())}`, { cache: "no-store" });
-      if (r.ok) {
-        const j = await r.json();
-        const raw = j?.resolvedCIK || j?.cik || null;
-        const norm = raw ? normalizeCIKLike(String(raw)) : null;
-        if (norm) return norm;
-      }
-    } catch {
-      // ignore
-    }
-
-    throw new Error("Ticker/Company not recognized. Pick from suggestions or enter a numeric CIK.");
+    throw new Error("Ticker/Company not recognized. Enter a numeric CIK or valid ticker.");
   }
 
   /** Fetch filings */
@@ -152,7 +98,6 @@ export default function EdgarPage() {
 
     try {
       const cik10 = await resolveToCIK(raw);
-
       const params = new URLSearchParams({
         start,
         end,
@@ -164,21 +109,14 @@ export default function EdgarPage() {
 
       const url = `/api/filings/${encodeURIComponent(cik10)}?${params.toString()}`;
       const r = await fetch(url, { cache: "no-store" });
-
-      let j: any = null;
-      try {
-        j = await r.json();
-      } catch {
-        throw new Error(`Failed to fetch filings (${r.status})`);
-      }
+      const j = await r.json();
 
       if (!r.ok || !j || j.ok === false) {
         throw new Error(j?.error || `Failed to fetch filings (${r.status})`);
       }
 
-      const data: Row[] = Array.isArray(j.data) ? j.data : [];
-      setRows(data);
-      setTotal(j.total || data.length || 0);
+      setRows(j.data || []);
+      setTotal(j.total || 0);
     } catch (e: any) {
       setError(e?.message || "Unexpected error");
     } finally {
@@ -186,10 +124,8 @@ export default function EdgarPage() {
     }
   }
 
-  /** Reset to page 1 when inputs (other than page) change */
   useEffect(() => {
     setPage(1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identifier, formsParam, start, end, perPage, q]);
 
   /** ------------------------ Render ------------------------ */
@@ -203,43 +139,15 @@ export default function EdgarPage() {
       {/* Controls */}
       <section className="rounded-2xl border bg-white p-4">
         <div className="grid gap-3 md:grid-cols-[minmax(260px,1.25fr)_1fr_1fr_1fr]">
-          {/* Identifier + suggestions */}
-          <div className="relative">
+          {/* Identifier input only */}
+          <div>
             <div className="text-sm text-gray-700 mb-1">Company / Ticker / CIK</div>
             <input
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
-              onFocus={() => identifier && setShowSuggest(true)}
-              onBlur={() => setTimeout(() => setShowSuggest(false), 150)}
-              placeholder="e.g., NVDA, AAPL, JPMorgan, 0001045810"
+              placeholder="Enter ticker, company name, or CIK"
               className="w-full border rounded-md px-3 py-2"
             />
-            {showSuggest && (
-              <div className="absolute z-10 mt-1 w-full rounded-md border bg-white shadow">
-                {suggesting && <div className="px-3 py-2 text-sm text-gray-500">Loading…</div>}
-                {!suggesting && suggestions && suggestions.length > 0 && (
-                  <ul>
-                    {suggestions.map((s) => (
-                      <li key={`${s.value}-${s.label}`}>
-                        <button
-                          type="button"
-                          className="w-full text-left px-3 py-2 hover:bg-gray-50"
-                          onMouseDown={() => {
-                            setIdentifier(s.value);
-                            setShowSuggest(false);
-                          }}
-                        >
-                          {s.label}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {!suggesting && suggestions && suggestions.length === 0 && (
-                  <div className="px-3 py-2 text-sm text-gray-500">No suggestions</div>
-                )}
-              </div>
-            )}
           </div>
 
           <div>
@@ -331,7 +239,7 @@ export default function EdgarPage() {
                   </div>
                   <div className="text-xs text-gray-500">Accession: {r.accessionNumber}</div>
                 </div>
-                <div className="flex gap-2">
+                <div>
                   <a
                     href={r.open}
                     target="_blank"
@@ -344,34 +252,12 @@ export default function EdgarPage() {
               </div>
             </article>
           ))}
-
           {!loading && rows.length === 0 && !error && (
             <div className="text-sm text-gray-600">
               No results yet. Try a ticker (e.g., NVDA) or company name.
             </div>
           )}
         </div>
-
-        {/* Pagination */}
-        {total > rows.length && (
-          <div className="mt-4 flex items-center gap-2">
-            <button
-              className="px-3 py-1.5 rounded-md border bg-white text-sm disabled:opacity-50"
-              disabled={page <= 1 || loading}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              ← Prev
-            </button>
-            <div className="text-sm">Page {page}</div>
-            <button
-              className="px-3 py-1.5 rounded-md border bg-white text-sm disabled:opacity-50"
-              disabled={loading || rows.length < perPage}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              Next →
-            </button>
-          </div>
-        )}
       </section>
     </main>
   );
