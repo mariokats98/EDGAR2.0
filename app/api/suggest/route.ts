@@ -1,45 +1,67 @@
 // app/api/suggest/route.ts
 import { NextResponse } from "next/server";
 
-const SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json";
-const UA = process.env.SEC_USER_AGENT || "Herevna/1.0 (contact@herevna.io)";
+type SecTickerRow = {
+  cik_str: number;
+  ticker: string;
+  title: string;
+};
 
-type Row = { cik: string; ticker: string; name: string };
+const SEC_TICKERS_URL =
+  "https://www.sec.gov/files/company_tickers.json"; // official master list
 
-let CACHE: { loadedAt: number; rows: Row[] } | null = null;
+// cache in serverless instance
+let _cache: { when: number; list: SecTickerRow[] } | null = null;
 
-async function loadSecList(): Promise<Row[]> {
-  if (CACHE && Date.now() - CACHE.loadedAt < 24 * 60 * 60 * 1000) return CACHE.rows;
-
+async function loadTickers(): Promise<SecTickerRow[]> {
+  const now = Date.now();
+  if (_cache && now - _cache.when < 1000 * 60 * 60) {
+    return _cache.list;
+  }
+  const ua = process.env.SEC_USER_AGENT || "herevna.io contact@herevna.io";
   const r = await fetch(SEC_TICKERS_URL, {
-    headers: { "User-Agent": UA, Accept: "application/json" },
+    headers: { "User-Agent": ua, Accept: "application/json" },
     cache: "no-store",
   });
-  if (!r.ok) throw new Error(`SEC tickers download failed: ${r.status}`);
-  const j = await r.json();
-  const rows: Row[] = Object.values(j as any).map((x: any) => ({
-    cik: String(x.cik_str).padStart(10, "0"),
-    ticker: String(x.ticker || "").toUpperCase(),
-    name: String(x.title || ""),
-  }));
-  CACHE = { loadedAt: Date.now(), rows };
-  return rows;
+  if (!r.ok) {
+    throw new Error(`SEC tickers fetch failed (${r.status})`);
+  }
+  const j = (await r.json()) as Record<string, SecTickerRow>;
+  const list = Object.values(j);
+  _cache = { when: now, list };
+  return list;
 }
 
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const qRaw = (searchParams.get("q") || "").trim();
-  if (!qRaw) return NextResponse.json([]);
+  try {
+    const url = new URL(req.url);
+    const q = (url.searchParams.get("q") || "").trim();
+    if (!q) return NextResponse.json({ data: [] });
 
-  const q = qRaw.toUpperCase();
-  const rows = await loadSecList();
+    const list = await loadTickers();
+    const needle = q.toLowerCase();
 
-  // For tickers: startsWith; for names: includes
-  const out = rows
-    .filter(
-      (r) => r.ticker.startsWith(q) || r.name.toUpperCase().includes(q)
-    )
-    .slice(0, 10);
+    // rank simple: startsWith > includes
+    const ranked = list
+      .map((row) => ({
+        ...row,
+        cik: String(row.cik_str).padStart(10, "0"),
+        score:
+          row.ticker.toLowerCase().startsWith(needle) ||
+          row.title.toLowerCase().startsWith(needle)
+            ? 2
+            : row.ticker.toLowerCase().includes(needle) ||
+              row.title.toLowerCase().includes(needle)
+            ? 1
+            : 0,
+      }))
+      .filter((r) => r.score > 0)
+      .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
+      .slice(0, 12)
+      .map(({ cik, ticker, title }) => ({ cik, ticker, title }));
 
-  return NextResponse.json(out);
+    return NextResponse.json({ data: ranked });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message || "Suggest failed" }, { status: 500 });
+  }
 }
