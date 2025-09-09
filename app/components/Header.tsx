@@ -36,9 +36,9 @@ export default function Header() {
             {/* AI CTA */}
             <a
               href="/ai"
-              className="ml-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-indigo-600 to-fuchsia-600 text-white px-4 py-2 text-sm shadow hover:opacity-95"
+              className="ml-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow hover:opacity-95"
             >
-              ✨ AI assistant
+              ✨ Herevna AI
             </a>
           </nav>
 
