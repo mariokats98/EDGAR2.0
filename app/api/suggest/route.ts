@@ -1,67 +1,73 @@
-// app/api/suggest/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-type SecTickerRow = {
-  cik_str: number;
-  ticker: string;
-  title: string;
-};
+/**
+ * Loads the official SEC company_tickers.json once (per runtime) and searches it.
+ * Shape is: { "0": { cik_str: 320193, ticker: "AAPL", title: "Apple Inc." }, ... }
+ */
+let cache: { cik: string; ticker?: string; title: string }[] | null = null;
+let lastLoad = 0;
 
-const SEC_TICKERS_URL =
-  "https://www.sec.gov/files/company_tickers.json"; // official master list
-
-// cache in serverless instance
-let _cache: { when: number; list: SecTickerRow[] } | null = null;
-
-async function loadTickers(): Promise<SecTickerRow[]> {
+async function loadIndex(): Promise<typeof cache> {
   const now = Date.now();
-  if (_cache && now - _cache.when < 1000 * 60 * 60) {
-    return _cache.list;
-  }
-  const ua = process.env.SEC_USER_AGENT || "herevna.io contact@herevna.io";
-  const r = await fetch(SEC_TICKERS_URL, {
-    headers: { "User-Agent": ua, Accept: "application/json" },
+  if (cache && now - lastLoad < 1000 * 60 * 60) return cache; // 1h cache
+
+  const url = "https://www.sec.gov/files/company_tickers.json";
+  const r = await fetch(url, {
+    headers: {
+      "User-Agent": process.env.SEC_USER_AGENT || "herevna.io contact@herevna.io",
+      Accept: "application/json",
+    },
     cache: "no-store",
   });
-  if (!r.ok) {
-    throw new Error(`SEC tickers fetch failed (${r.status})`);
+  if (!r.ok) throw new Error(`SEC tickers fetch failed (${r.status})`);
+  const j = await r.json();
+  const out: { cik: string; ticker?: string; title: string }[] = [];
+  for (const k of Object.keys(j)) {
+    const row = j[k];
+    const cik = String(row.cik_str).padStart(10, "0");
+    const ticker = row.ticker ? String(row.ticker).toUpperCase() : undefined;
+    const title = String(row.title || "").trim();
+    out.push({ cik, ticker, title });
   }
-  const j = (await r.json()) as Record<string, SecTickerRow>;
-  const list = Object.values(j);
-  _cache = { when: now, list };
-  return list;
+  cache = out;
+  lastLoad = now;
+  return cache;
 }
 
-export async function GET(req: Request) {
+function fuzzIncl(a: string, b: string) {
+  return a.toLowerCase().includes(b.toLowerCase());
+}
+
+export async function GET(req: NextRequest) {
   try {
-    const url = new URL(req.url);
-    const q = (url.searchParams.get("q") || "").trim();
+    const { searchParams } = new URL(req.url);
+    const q = (searchParams.get("q") || "").trim();
     if (!q) return NextResponse.json({ data: [] });
 
-    const list = await loadTickers();
-    const needle = q.toLowerCase();
+    const list = await loadIndex();
 
-    // rank simple: startsWith > includes
-    const ranked = list
-      .map((row) => ({
-        ...row,
-        cik: String(row.cik_str).padStart(10, "0"),
-        score:
-          row.ticker.toLowerCase().startsWith(needle) ||
-          row.title.toLowerCase().startsWith(needle)
-            ? 2
-            : row.ticker.toLowerCase().includes(needle) ||
-              row.title.toLowerCase().includes(needle)
-            ? 1
-            : 0,
-      }))
-      .filter((r) => r.score > 0)
-      .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
-      .slice(0, 12)
-      .map(({ cik, ticker, title }) => ({ cik, ticker, title }));
+    // if exact ticker match first
+    const upper = q.toUpperCase();
+    const exactTicker = list.filter(x => x.ticker === upper);
 
-    return NextResponse.json({ data: ranked });
+    // otherwise loose search in ticker/title
+    const loose = list.filter(
+      x => (x.ticker && fuzzIncl(x.ticker, q)) || fuzzIncl(x.title, q)
+    );
+
+    // de-dupe, prioritize exact tickers
+    const seen = new Set<string>();
+    const data: { cik: string; ticker?: string; title: string }[] = [];
+    for (const row of [...exactTicker, ...loose]) {
+      const key = `${row.cik}-${row.ticker ?? row.title}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      data.push(row);
+      if (data.length >= 30) break;
+    }
+
+    return NextResponse.json({ data }, { status: 200 });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "Suggest failed" }, { status: 500 });
+    return NextResponse.json({ error: e?.message || "Server error", data: [] }, { status: 200 });
   }
 }
