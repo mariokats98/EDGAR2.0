@@ -1,70 +1,122 @@
+// app/api/census/data/route.ts
 import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+function noStoreHeaders() {
+  return {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+  };
+}
+
 /**
- * GET /api/census/data?dataset=acs/acs5&vintage=2022&get=NAME,B01001_001E&for=state:*
- * Optional: in=state:06, year=2022, filters=encodedPairs
- * - Adds your CENSUS_API_KEY automatically.
+ * GET /api/census/data
+ * Required:
+ *  - dataset: e.g., "acs/acs5" OR "timeseries/eits/marts"
+ *  - get: comma-separated list, e.g., "NAME,B01001_001E"
+ *  - for: geography, e.g., "us:1" or "state:*"
+ *  - (annual dataset) year: "2023" or "latest"
+ *  - (timeseries dataset) time: e.g., "from 2018-01 to 2025-12" OR "2024-01"
+ * Optional:
+ *  - Any additional Census predicates: e.g., "in=metropolitan%20statistical%20area/micropolitan%20statistical%20area:*"
  */
 export async function GET(req: Request) {
   try {
-    const key = process.env.CENSUS_API_KEY || "";
-    if (!key) return NextResponse.json({ error: "Missing CENSUS_API_KEY env var." }, { status: 500 });
+    const { searchParams } = new URL(req.url);
 
-    const u = new URL(req.url);
-    const dataset = (u.searchParams.get("dataset") || "acs/acs5").trim();
-    const rawVintage = (u.searchParams.get("vintage") || "2022").trim();
-    const get = u.searchParams.get("get") || "NAME,B01001_001E";
-    const forClause = u.searchParams.get("for") || "state:*";
-    const inClause = u.searchParams.get("in") || "";
-    const year = u.searchParams.get("year") || ""; // some timeseries expect YEAR=
-    const filters = u.searchParams.get("filters") || "";
+    const dataset = (searchParams.get("dataset") || "").trim();
+    const get = (searchParams.get("get") || "").trim();
+    const geoFor = (searchParams.get("for") || "").trim();
+    let year = (searchParams.get("year") || "").trim(); // for annual datasets
+    const time = (searchParams.get("time") || "").trim(); // for timeseries datasets
 
-    const isTimeseries = dataset.toLowerCase().startsWith("timeseries/");
-    const base = isTimeseries
-      ? `https://api.census.gov/data/${encodeURIComponent(dataset)}`
-      : `https://api.census.gov/data/${encodeURIComponent(rawVintage)}/${encodeURIComponent(dataset)}`;
-
-    const qp = new URLSearchParams();
-    qp.set("get", get);
-    qp.set("for", forClause);
-    if (inClause) qp.set("in", inClause);
-    if (year) qp.set("YEAR", year);
-    qp.set("key", key);
-    if (filters) {
-      for (const part of filters.split("&")) {
-        const [k, v] = part.split("=");
-        if (k && v) qp.append(k, v);
-      }
-    }
-
-    const url = `${base}?${qp.toString()}`;
-    const r = await fetch(url, { cache: "no-store" });
-    const txt = await r.text();
-
-    if (!r.ok) {
+    if (!dataset) {
       return NextResponse.json(
-        { error: `Census data fetch failed (${r.status})`, url, body: txt?.slice(0, 800) },
-        { status: 502 }
+        { error: "Missing required query param: dataset" },
+        { status: 400, headers: noStoreHeaders() }
+      );
+    }
+    if (!get) {
+      return NextResponse.json(
+        { error: "Missing required query param: get" },
+        { status: 400, headers: noStoreHeaders() }
+      );
+    }
+    if (!geoFor) {
+      return NextResponse.json(
+        { error: "Missing required query param: for" },
+        { status: 400, headers: noStoreHeaders() }
       );
     }
 
-    let rows: any[] = [];
-    try {
-      rows = JSON.parse(txt);
-    } catch {
-      return NextResponse.json({ error: "Non-JSON response from Census", url, body: txt?.slice(0, 800) }, { status: 502 });
+    // Resolve "latest" for year if given
+    if (year.toLowerCase() === "latest") {
+      year = String(new Date().getFullYear());
     }
-    if (!Array.isArray(rows) || rows.length === 0) return NextResponse.json({ columns: [], data: [], url });
 
-    const columns = rows[0];
-    const data = rows.slice(1).map((arr: any[]) => {
-      const obj: Record<string, any> = {};
-      for (let i = 0; i < columns.length; i++) obj[columns[i]] = arr[i];
-      return obj;
+    const isTimeseries = dataset.startsWith("timeseries/");
+    const base = "https://api.census.gov/data";
+
+    // Build query string
+    const qs = new URLSearchParams();
+    qs.set("get", get);
+    qs.set("for", geoFor);
+
+    // Pass through any additional predicates (e.g. `in=...` or `ucgid=...`)
+    for (const [k, v] of searchParams.entries()) {
+      if (["dataset", "get", "for", "year", "time"].includes(k)) continue;
+      if (v != null && v !== "") qs.set(k, v);
+    }
+
+    // API key (recommended for production)
+    const apiKey = process.env.CENSUS_API_KEY || "";
+    if (apiKey) qs.set("key", apiKey);
+
+    // Path differs by dataset type
+    let url: string;
+    if (isTimeseries) {
+      if (!time) {
+        return NextResponse.json(
+          { error: "Missing required query param: time for timeseries datasets" },
+          { status: 400, headers: noStoreHeaders() }
+        );
+      }
+      qs.set("time", time);
+      url = `${base}/${dataset}?${qs.toString()}`;
+    } else {
+      if (!year) {
+        return NextResponse.json(
+          { error: "Missing required query param: year for annual datasets" },
+          { status: 400, headers: noStoreHeaders() }
+        );
+      }
+      url = `${base}/${year}/${dataset}?${qs.toString()}`;
+    }
+
+    const r = await fetch(url, {
+      cache: "no-store",
+      headers: { "User-Agent": process.env.SEC_USER_AGENT ?? "Herevna/1.0 (contact@herevna.io)" },
     });
 
-    return NextResponse.json({ columns, data, url });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
+    if (!r.ok) {
+      // Bubble upstream error body for easier debugging when possible
+      let detail = "";
+      try { detail = await r.text(); } catch {}
+      return NextResponse.json(
+        { error: `Census data fetch failed (${r.status})`, detail },
+        { status: 502, headers: noStoreHeaders() }
+      );
+    }
+
+    const data = await r.json();
+    return NextResponse.json({ data, source: url }, { status: 200, headers: noStoreHeaders() });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err?.message || "Unexpected error" },
+      { status: 500, headers: noStoreHeaders() }
+    );
   }
 }
