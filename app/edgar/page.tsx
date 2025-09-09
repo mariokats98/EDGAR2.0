@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import InsiderInput from "./InsiderInput";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-type SuggestHit = { cik: string; name: string; ticker?: string };
+type SuggestItem = { cik: string; ticker?: string; title: string };
 type FilingRow = {
   form: string;
   filingDate: string;
@@ -13,63 +12,140 @@ type FilingRow = {
   title?: string;
   links: { view: string; download: string };
 };
-type Meta = { cik: string; name: string; total: number; page: number; pageSize: number };
+type Meta = { cik: string; name: string; page: number; pageSize: number; total: number };
 
 const FORM_OPTIONS = [
-  "10-K","10-Q","8-K","S-1","S-3","S-4","13D","13G","6-K",
-  "3","4","5","SC 13D","SC 13G","SD","11-K","20-F","40-F","424B5","424B3"
+  // core
+  "10-K","10-Q","8-K","S-1","S-3","S-4","424B2","424B3","424B4","424B5","424B7","424B8",
+  // ownership
+  "3","4","5",
+  // large holders
+  "13D","13G","SC 13D","SC 13G","SC 13DA","SC 13GA",
+  // foreign/private
+  "6-K","20-F","F-1","F-3","F-4",
+  // misc
+  "DEF 14A","DEFA14A","PRE 14A","SD","11-K","13F-HR","13F-NT"
 ];
 
+function normDate(d: string): string | "" {
+  const s = d.trim();
+  if (!s) return "";
+  if (/^\d{4}$/.test(s)) return `${s}-01-01`;
+  if (/^\d{4}-(0[1-9]|1[0-2])$/.test(s)) return `${s}-01`;
+  if (/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s)) return s;
+  return ""; // drop bad input instead of sending it
+}
+
+/** Build absolute URL for API (avoids “Failed to parse URL from /api/…” in some environments) */
+function apiUrl(path: string) {
+  if (typeof window !== "undefined") {
+    return `${window.location.origin}${path}`;
+  }
+  // Server-render fallback (Vercel / edge compatible)
+  // This runs only briefly; most fetches are client-initiated.
+  return path.startsWith("http") ? path : `http://localhost:3000${path}`;
+}
+
 export default function EdgarPage() {
-  // ---------- search state ----------
-  const [companyQuery, setCompanyQuery] = useState("");
-  const [picked, setPicked] = useState<SuggestHit | null>(null);
+  // search box
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<SuggestItem | null>(null);
 
-  const [forms, setForms] = useState<string[]>([]);
-  const [start, setStart] = useState(""); // accepts YYYY / YYYY-MM / YYYY-MM-DD
+  // suggestions
+  const [sugs, setSugs] = useState<SuggestItem[]>([]);
+  const [sugOpen, setSugOpen] = useState(false);
+  const sugRef = useRef<HTMLDivElement>(null);
+
+  // filters
+  const [forms, setForms] = useState<string[]>(["10-K","10-Q","8-K"]);
+  const [start, setStart] = useState("2019");
   const [end, setEnd] = useState("");
-  const [owner, setOwner] = useState(""); // insider name (optional)
+  const [ownerName, setOwnerName] = useState(""); // for 3/4/5 refinement (client-side note)
 
-  // ---------- results ----------
-  const [rows, setRows] = useState<FilingRow[]>([]);
-  const [meta, setMeta] = useState<Meta | null>(null);
+  // paging
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
+  // results
+  const [rows, setRows] = useState<FilingRow[]>([]);
+  const [meta, setMeta] = useState<Meta | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Reset pagination on filter change
-  useEffect(() => { setPage(1); }, [forms.join(","), start, end, owner, picked?.cik]);
-
-  async function runSearch(p = 1) {
-    if (!picked?.cik) {
-      setErr("Please choose a company from the suggestions list.");
-      return;
+  // click-outside to close suggestions
+  useEffect(() => {
+    function onClick(e: MouseEvent) {
+      if (!sugRef.current) return;
+      if (!sugRef.current.contains(e.target as Node)) setSugOpen(false);
     }
-    setLoading(true);
-    setErr(null);
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, []);
 
+  // fetch suggestions (debounced)
+  useEffect(() => {
+    const q = query.trim();
+    setSelected(null);
+    if (!q) { setSugs([]); return; }
+    const id = setTimeout(async () => {
+      try {
+        const url = apiUrl(`/api/suggest?q=${encodeURIComponent(q)}`);
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok) throw new Error(`Suggest failed (${r.status})`);
+        const j = await r.json();
+        setSugs(j?.data || []);
+        setSugOpen(true);
+      } catch {
+        setSugs([]);
+        setSugOpen(false);
+      }
+    }, 180);
+    return () => clearTimeout(id);
+  }, [query]);
+
+  function toggleForm(f: string) {
+    setForms(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f]);
+  }
+
+  async function getFilings(resetPage = true) {
     try {
-      const qs = new URLSearchParams({
-        cik: picked.cik,
-        page: String(p),
-        pageSize: String(pageSize),
-      });
-      if (forms.length) qs.set("form", forms.join(","));
-      if (start.trim()) qs.set("start", start.trim()); // YYYY / YYYY-MM / YYYY-MM-DD
-      if (end.trim()) qs.set("end", end.trim());
-      if (owner.trim()) qs.set("owner", owner.trim());
+      setErr(null);
+      setLoading(true);
+      if (resetPage) setPage(1);
 
-      const r = await fetch(`/api/filings?${qs.toString()}`, { cache: "no-store" });
+      // we need a CIK: either from selection, or a direct numeric CIK in the box.
+      let cik = selected?.cik || "";
+      if (!cik && /^\d{1,10}$/.test(query.trim())) {
+        cik = query.trim().padStart(10, "0");
+      }
+      if (!cik) {
+        setErr("Ticker/Company not recognized. Pick from suggestions or enter a numeric CIK.");
+        setRows([]);
+        setMeta(null);
+        return;
+      }
+
+      const qs = new URLSearchParams();
+      // never include empty params:
+      if (forms.length) qs.set("form", forms.join(","));
+      const s = normDate(start);
+      const e = normDate(end);
+      if (s) qs.set("start", s);
+      if (e) qs.set("end", e);
+      if (ownerName.trim()) qs.set("owner", ownerName.trim());
+      qs.set("page", String(page));
+      qs.set("pageSize", String(pageSize));
+
+      const url = apiUrl(`/api/filings/${encodeURIComponent(cik)}?${qs.toString()}`);
+      const r = await fetch(url, { cache: "no-store" });
       const j = await r.json();
-      if (!r.ok || j?.error) throw new Error(j?.error || "Fetch failed");
+
+      if (!r.ok) throw new Error(j?.error || "Fetch failed");
 
       setRows(j.data || []);
       setMeta(j.meta || null);
-      setPage(j.meta?.page || 1);
     } catch (e: any) {
-      setErr(e?.message || "Error fetching filings");
+      setErr(e?.message || "Error");
       setRows([]);
       setMeta(null);
     } finally {
@@ -77,191 +153,161 @@ export default function EdgarPage() {
     }
   }
 
-  const totalPages = useMemo(() => {
-    if (!meta) return 1;
-    return Math.max(1, Math.ceil((meta.total || 0) / pageSize));
-  }, [meta, pageSize]);
+  // run when page/pageSize change after first search
+  useEffect(() => {
+    if (selected?.cik) getFilings(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize]);
 
-  function toggleForm(f: string) {
-    setForms(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f]);
-  }
+  const headerName = useMemo(() => selected?.title || (meta?.name ?? ""), [selected, meta]);
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
       <h1 className="text-2xl font-semibold">EDGAR Filings</h1>
       <p className="text-gray-600 text-sm mb-4">
-        Search by company/ticker (pick from suggestions), filter by form, date range, or insider name. Links open the SEC index or the primary document.
+        Type a ticker or company name. Pick forms, dates, and get working View/Download links.
       </p>
 
-      {/* Search panel */}
-      <section className="rounded-2xl border bg-white p-4 space-y-4">
-        {/* Company / ticker with suggestions */}
-        <div>
-          <label className="block text-sm text-gray-700 mb-1">Company or Ticker</label>
-          <InsiderInput
-            value={companyQuery}
-            onChange={(v) => {
-              setCompanyQuery(v);
-              setPicked(null); // force a re-pick to lock a valid CIK
-            }}
-            onPick={(hit) => {
-              setCompanyQuery(hit.ticker ? `${hit.ticker} — ${hit.name}` : hit.name);
-              setPicked(hit);
-            }}
-            placeholder="Type at least 1 letter, then pick…"
-            api="/api/suggest"
-          />
-          {picked?.cik && (
-            <div className="mt-1 text-xs text-gray-500">
-              Selected: <strong>{picked.name}</strong> (CIK {picked.cik})
-            </div>
-          )}
-        </div>
-
-        {/* Forms pills */}
-        <div>
-          <div className="text-sm text-gray-700 mb-1">Form types</div>
-          <div className="flex flex-wrap gap-2">
-            {FORM_OPTIONS.map((f) => (
+      {/* Search + suggestions */}
+      <div className="relative" ref={sugRef}>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => query.trim() && setSugOpen(true)}
+          placeholder="Try NVDA, AAPL, TESLA, or 'Berkshire Hathaway'"
+          className="w-full rounded-md border px-3 py-2"
+        />
+        {sugOpen && sugs.length > 0 && (
+          <div className="absolute z-10 mt-1 w-full rounded-md border bg-white shadow">
+            {sugs.slice(0, 12).map((sug) => (
               <button
-                key={f}
-                onClick={() => toggleForm(f)}
-                className={`text-xs rounded-full px-3 py-1 border ${
-                  forms.includes(f) ? "bg-black text-white border-black" : "bg-white hover:bg-gray-100"
-                }`}
+                key={`${sug.cik}-${sug.ticker ?? sug.title}`}
+                onClick={() => { setSelected(sug); setQuery(sug.ticker ? `${sug.ticker} — ${sug.title}` : sug.title); setSugOpen(false); }}
+                className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-gray-50"
               >
-                {f}
+                <span className="truncate">{sug.title}</span>
+                <span className="ml-3 shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+                  {sug.ticker ?? sug.cik}
+                </span>
               </button>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr]">
+        <div className="rounded-2xl border bg-white p-3">
+          <div className="text-sm font-medium mb-2">Form types</div>
+          <div className="flex flex-wrap gap-2">
+            {FORM_OPTIONS.map((f) => {
+              const on = forms.includes(f);
+              return (
+                <button
+                  key={f}
+                  onClick={() => toggleForm(f)}
+                  className={`text-xs rounded-full px-3 py-1 border ${on ? "bg-black text-white border-black" : "bg-white hover:bg-gray-100"}`}
+                >
+                  {f}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-3 text-xs text-gray-600">
+            Tip: Ownership forms (3/4/5) are for insiders; 13D/13G are large holders.
+          </div>
         </div>
 
-        {/* Dates + Insider */}
-        <div className="grid gap-3 sm:grid-cols-4">
-          <label className="block">
-            <div className="text-sm text-gray-700">Start</div>
-            <input
-              className="mt-1 w-full rounded-md border px-3 py-2"
-              placeholder="YYYY or YYYY-MM or YYYY-MM-DD"
-              value={start}
-              onChange={(e) => setStart(e.target.value)}
-            />
-          </label>
-          <label className="block">
-            <div className="text-sm text-gray-700">End</div>
-            <input
-              className="mt-1 w-full rounded-md border px-3 py-2"
-              placeholder="YYYY or YYYY-MM or YYYY-MM-DD"
-              value={end}
-              onChange={(e) => setEnd(e.target.value)}
-            />
-          </label>
-          <label className="block sm:col-span-2">
-            <div className="text-sm text-gray-700">Insider (optional)</div>
-            <input
-              className="mt-1 w-full rounded-md border px-3 py-2"
-              placeholder='e.g., "Jensen Huang"'
-              value={owner}
-              onChange={(e) => setOwner(e.target.value)}
-            />
-          </label>
-        </div>
+        <div className="rounded-2xl border bg-white p-3">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-sm">
+              <div className="text-gray-700">Start (YYYY or YYYY-MM or YYYY-MM-DD)</div>
+              <input value={start} onChange={(e) => setStart(e.target.value)} className="mt-1 w-full rounded-md border px-3 py-2" />
+            </label>
+            <label className="text-sm">
+              <div className="text-gray-700">End (optional)</div>
+              <input value={end} onChange={(e) => setEnd(e.target.value)} className="mt-1 w-full rounded-md border px-3 py-2" />
+            </label>
+          </div>
 
-        {/* Actions */}
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="text-sm text-gray-700">
-            Page size
-            <select
-              className="ml-2 rounded-md border px-2 py-1 text-sm"
-              value={pageSize}
-              onChange={(e) => setPageSize(parseInt(e.target.value))}
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <label className="text-sm">
+              <div className="text-gray-700">Insider name (optional)</div>
+              <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} className="mt-1 w-full rounded-md border px-3 py-2" />
+            </label>
+            <div className="text-sm">
+              <div className="text-gray-700">Paging</div>
+              <div className="mt-1 flex gap-2">
+                <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value))} className="rounded-md border px-2 py-2">
+                  {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n} / page</option>)}
+                </select>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    className="rounded-md border px-3 py-2 disabled:opacity-50"
+                    disabled={page <= 1}
+                  >Prev</button>
+                  <span className="text-sm">Page {page}</span>
+                  <button
+                    onClick={() => setPage(p => p + 1)}
+                    className="rounded-md border px-3 py-2"
+                  >Next</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <button
+              onClick={() => getFilings(true)}
+              className="rounded-md bg-black text-white px-4 py-2"
+              disabled={loading}
             >
-              {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-          </label>
-          <button
-            onClick={() => runSearch(1)}
-            className="px-4 py-2 rounded-md bg-black text-white text-sm disabled:opacity-60"
-            disabled={loading}
-          >
-            {loading ? "Searching…" : "Get filings"}
-          </button>
-          {err && <span className="text-sm text-red-600">Error: {err}</span>}
+              {loading ? "Loading…" : "Get filings"}
+            </button>
+          </div>
         </div>
-      </section>
+      </div>
 
       {/* Results */}
-      <section className="mt-6">
+      <div className="mt-6">
+        {err && <div className="text-red-600 text-sm mb-3">Error: {err}</div>}
         {meta && (
           <div className="mb-2 text-sm text-gray-700">
-            {meta.name} — {meta.total.toLocaleString()} results
+            <strong>{headerName || meta.cik}</strong> — {meta.total.toLocaleString()} filings
           </div>
         )}
-
-        <div className="rounded-2xl border overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="overflow-x-auto rounded-2xl border bg-white">
+          <table className="min-w-full text-sm">
             <thead className="bg-gray-50 text-gray-700">
               <tr>
+                <th className="px-3 py-2 text-left">Date</th>
                 <th className="px-3 py-2 text-left">Form</th>
-                <th className="px-3 py-2 text-left">Filing date</th>
-                <th className="px-3 py-2 text-left">Report date</th>
-                <th className="px-3 py-2 text-left">Document</th>
-                <th className="px-3 py-2 text-left">Actions</th>
+                <th className="px-3 py-2 text-left">Title</th>
+                <th className="px-3 py-2 text-left">Report</th>
+                <th className="px-3 py-2 text-left">Links</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.accessionNumber} className="border-t">
-                  <td className="px-3 py-2">{r.form}</td>
+              {rows.map((r, i) => (
+                <tr key={`${r.accessionNumber}-${i}`} className="border-t">
                   <td className="px-3 py-2">{r.filingDate}</td>
+                  <td className="px-3 py-2">{r.form}</td>
+                  <td className="px-3 py-2">{r.title ?? r.primaryDocument}</td>
                   <td className="px-3 py-2">{r.reportDate || "—"}</td>
                   <td className="px-3 py-2">
-                    <div className="max-w-[36ch] truncate" title={r.title || r.primaryDocument}>
-                      {r.title || r.primaryDocument}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex gap-2">
-                      <a className="text-blue-600 hover:underline" href={r.links.view} target="_blank" rel="noreferrer">View</a>
-                      <a className="text-blue-600 hover:underline" href={r.links.download} target="_blank" rel="noreferrer">Download</a>
-                    </div>
+                    <a className="text-blue-600 hover:underline mr-3" href={r.links.view} target="_blank" rel="noreferrer">View</a>
+                    <a className="text-blue-600 hover:underline" href={r.links.download} target="_blank" rel="noreferrer">Download</a>
                   </td>
                 </tr>
               ))}
-              {!rows.length && (
-                <tr>
-                  <td className="px-3 py-6 text-center text-gray-500" colSpan={5}>
-                    {loading ? "Loading…" : "No results yet."}
-                  </td>
-                </tr>
+              {!loading && rows.length === 0 && (
+                <tr><td className="px-3 py-6 text-gray-500" colSpan={5}>No filings yet. Try adjusting date range or forms.</td></tr>
               )}
             </tbody>
           </table>
         </div>
-
-        {/* Pagination */}
-        {meta && totalPages > 1 && (
-          <div className="mt-3 flex items-center gap-3">
-            <button
-              className="px-3 py-1 rounded border disabled:opacity-50"
-              disabled={page <= 1 || loading}
-              onClick={() => { const p = page - 1; setPage(p); runSearch(p); }}
-            >
-              Prev
-            </button>
-            <div className="text-sm text-gray-700">
-              Page {page} of {totalPages}
-            </div>
-            <button
-              className="px-3 py-1 rounded border disabled:opacity-50"
-              disabled={page >= totalPages || loading}
-              onClick={() => { const p = page + 1; setPage(p); runSearch(p); }}
-            >
-              Next
-            </button>
-          </div>
-        )}
-      </section>
+      </div>
     </main>
   );
 }
