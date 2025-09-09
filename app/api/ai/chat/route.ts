@@ -1,253 +1,280 @@
 // app/api/ai/chat/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { deepseekChat } from "@/lib/ai";
-import { getBaseUrl, httpJSON } from "@/lib/http";
+export const runtime = "edge";
 
-// Types you already return from your endpoints
-type LookupResult =
-  | { ok: true; kind: "cik"; cik: string; name?: string; ticker?: string }
-  | { ok: true; kind: "symbol"; cik: string; name?: string; ticker?: string }
-  | { ok: false; error: string };
-
-type FilingRow = {
-  cik: string; company?: string; form: string; filed: string; accessionNumber: string;
-  links: { indexHtml: string; dir: string; primary: string };
-  download: string;
-};
-type FilingsResponse = {
-  ok: boolean; total: number; count: number; data: FilingRow[];
-  query: any;
+type ChatRequest = {
+  messages: { role: "system" | "user" | "assistant"; content: string }[];
 };
 
-type FredSeriesResponse = {
-  ok: boolean;
-  seriesId: string;
-  title: string;
-  frequency: string;
-  data: { date: string; value: number }[];
-  units?: string;
-};
+const SITE =
+  process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") ||
+  // Fallback for local dev; prod should set NEXT_PUBLIC_SITE_URL to your domain
+  "http://localhost:3000";
 
-type BLSResponse = {
-  ok: boolean;
-  series: { id: string; title: string; data: { period: string; year: number; value: number; periodName?: string }[] }[];
-};
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY; // set in Vercel
+const SEC_USER_AGENT =
+  process.env.SEC_USER_AGENT ||
+  "herevna.ai contact@yourdomain.com"; // keep your existing UA (must be valid email/domain)
 
-type NewsResponse = {
-  ok: boolean;
-  items: { title: string; url: string; source?: string; published?: string }[];
-};
-
-type BEAResponse = {
-  ok: boolean;
-  table?: string;
-  title?: string;
-  data?: { time: string; value: number }[];
-  units?: string;
-};
-
-// ------------ Simple intent detection ------------
-function detectIntent(q: string) {
-  const s = q.toLowerCase();
-  if (/\b(cpi|consumer price index|inflation)\b/.test(s)) return "bls.cpi";
-  if (/\bgdp\b/.test(s)) return "fred.gdp"; // you also have /api/gdp if you prefer
-  if (/\b(pce|personal consumption)\b/.test(s)) return "fred.pce";
-  if (/\bedgar\b|\bfiling|\b10-k\b|\b10q\b|\b10-q\b|\b8-k\b|\b6-k\b|\b20-f\b|\bform\b|\bprospectus\b|\bs-1\b/.test(s)) return "edgar";
-  if (/\bnews\b|\bheadline\b/.test(s)) return "news";
-  if (/\bbea\b/.test(s)) return "bea";
-  return "mixed";
+function json(data: any, init?: number | ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    status: typeof init === "number" ? init : init?.status ?? 200,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...(typeof init === "object" ? init.headers : {}),
+    },
+  });
 }
 
-// try to pick a symbol/CIK-ish chunk
-function guessIdentifier(msg: string) {
-  const m = msg.match(/\b[A-Z]{1,5}(\.[A-Z])?(-[A-Z])?\b/); // NVDA, BRK.B, RDS-A
-  return m?.[0];
+// --- Quick heuristics to decide if the user asked for filings ---
+const FORM_ALIASES = [
+  "10-k",
+  "10k",
+  "10-q",
+  "10q",
+  "8-k",
+  "8k",
+  "6-k",
+  "6k",
+  "20-f",
+  "20f",
+  "40-f",
+  "40f",
+  "s-1",
+  "s1",
+  "s-3",
+  "s3",
+  "s-4",
+  "s4",
+  "13f",
+  "def 14a",
+  "def14a",
+] as const;
+
+function extractFormHints(text: string) {
+  const lower = text.toLowerCase();
+  const matched: string[] = [];
+  for (const f of FORM_ALIASES) {
+    if (lower.includes(f)) matched.push(f);
+  }
+  // Normalize to EDGAR canonical forms where possible
+  const map: Record<string, string> = {
+    "10-k": "10-K",
+    "10k": "10-K",
+    "10-q": "10-Q",
+    "10q": "10-Q",
+    "8-k": "8-K",
+    "8k": "8-K",
+    "6-k": "6-K",
+    "6k": "6-K",
+    "20-f": "20-F",
+    "20f": "20-F",
+    "40-f": "40-F",
+    "40f": "40-F",
+    "s-1": "S-1",
+    "s1": "S-1",
+    "s-3": "S-3",
+    "s3": "S-3",
+    "s-4": "S-4",
+    "s4": "S-4",
+    "13f": "13F-HR",
+    "def 14a": "DEF 14A",
+    "def14a": "DEF 14A",
+  };
+  const forms = matched.map((m) => map[m] ?? m.toUpperCase());
+  // If user said "latest filing" / "most recent", keep empty and we’ll pick most recent any-form
+  const wantsLatest =
+    /\blatest\b|\bmost recent\b|\brecent\b|\btoday\b/i.test(text);
+  return { forms: Array.from(new Set(forms)), wantsLatest };
 }
 
-// Build markdown of filings with single “Open / Download” button
-function filingsToMarkdown(rows: FilingRow[], limit = 10) {
-  if (!rows?.length) return "_No filings found._";
-  const top = rows.slice(0, limit);
-  return top.map(r =>
-`**${r.form}** — ${r.filed}  
-${r.company || r.cik}  
-Accession: \`${r.accessionNumber}\`  
-[Open / Download](${r.links.primary})  ·  [Index](${r.links.indexHtml})`).join("\n\n");
+function extractSymbolish(text: string) {
+  // Try to pull a likely ticker (simple heuristic). We still resolve through /api/lookup
+  // e.g. "NVDA 10-K", "get AAPL 10q", "latest for AMD"
+  const m = text.toUpperCase().match(/\b[A-Z]{1,5}(\.[A-Z])?\b/);
+  return m?.[0] || null;
 }
 
-// Small helper to clamp dates
-function clampDate(str: string) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(str) ? str : new Date().toISOString().slice(0,10);
+// Build “primary document” link from API row
+function buildPrimaryHref(row: any) {
+  // our /api/filings route already returns proper URLs in row.links.primary
+  if (row?.links?.primary) return row.links.primary as string;
+  // Fallbacks if shape differs
+  if (row?.download) return row.download as string;
+  return row?.links?.indexHtml ?? "";
 }
 
-export async function POST(req: NextRequest) {
+// Format one filing line
+function formatFilingLine(r: any) {
+  const href = buildPrimaryHref(r);
+  const label = `${r.form} • ${r.filed}${
+    r.company ? ` • ${r.company}` : ""
+  }`;
+  return `- [Open / Download](${href}) — ${label}  \n  Accession: \`${r.accessionNumber}\``;
+}
+
+// Call your internal lookup → resolves ticker/company/CIK to CIK
+async function resolveCIK(input: string) {
+  const url = `${SITE}/api/lookup/${encodeURIComponent(input)}`;
+  const r = await fetch(url, {
+    headers: { "x-sec-user-agent": SEC_USER_AGENT },
+    cache: "no-store",
+  });
+  if (!r.ok) return null;
+  const j = (await r.json()) as
+    | { kind: "cik"; value: string }
+    | { kind: "symbol"; value: string; cik: string }
+    | { kind: "name"; value: string; cik: string }
+    | null;
+  if (!j) return null;
+  if (j.kind === "cik") return j.value;
+  return (j as any).cik || null;
+}
+
+// Fetch filings from your internal API
+async function fetchFilings(cik: string, forms: string[] | null) {
+  const params = new URLSearchParams({
+    start: "2000-01-01",
+    end: new Date().toISOString().slice(0, 10),
+    perPage: "25",
+    page: "1",
+  });
+  if (forms && forms.length) params.set("forms", forms.join(","));
+  const url = `${SITE}/api/filings/${encodeURIComponent(cik)}?${params}`;
+  const r = await fetch(url, {
+    headers: { "x-sec-user-agent": SEC_USER_AGENT },
+    cache: "no-store",
+  });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(
+      `Filings fetch failed (${r.status}) ${text?.slice(0, 200)}`.trim()
+    );
+  }
+  const j = (await r.json()) as {
+    ok: boolean;
+    total: number;
+    data: any[];
+  };
+  if (j?.ok === false) throw new Error("Filings fetch failed");
+  return j;
+}
+
+// Decide if the user asked for filings/EDGAR type task
+function isEdgarIntent(text: string) {
+  return (
+    /\bedgar\b/i.test(text) ||
+    /\bfiling(s)?\b/i.test(text) ||
+    extractFormHints(text).forms.length > 0
+  );
+}
+
+const SYSTEM_PROMPT = `
+You are Herevna AI — a finance/econ assistant.
+HARD RULES:
+- Do NOT mention training cutoffs or that you "don't have up-to-date knowledge".
+- When asked for filings, tickers, economics, or market data, prefer calling the site's APIs (EDGAR/BLS/FRED/BEA/Census through provided endpoints) and summarize live results.
+- Provide clean, concise answers. For filings, always include direct "Open / Download" links returned from the API. 
+- If a request is ambiguous, ask one targeted clarifying question.
+- If something isn't available, explain briefly and provide the next best action.
+`.trim();
+
+export async function POST(req: Request) {
   try {
-    const { messages, question } = await req.json();
-    const userQ: string = question || messages?.slice()?.reverse()?.find((m: any) => m.role === "user")?.content || "";
-    if (!userQ?.trim()) {
-      return NextResponse.json({ ok: false, error: "Empty question" }, { status: 400 });
-    }
+    const body = (await req.json()) as ChatRequest;
+    const userMsg =
+      body?.messages?.slice().reverse().find((m) => m.role === "user")
+        ?.content || "";
 
-    const base = getBaseUrl(req);
-    const intent = detectIntent(userQ);
-    const idGuess = guessIdentifier(userQ);
+    // 1) Try EDGAR flow first (always-live; no "2022" staleness)
+    if (isEdgarIntent(userMsg)) {
+      const { forms, wantsLatest } = extractFormHints(userMsg);
+      const symbolish = extractSymbolish(userMsg);
+      // Use full user message for name/ticker resolution, but symbolish helps
+      const queryForLookup = symbolish || userMsg;
 
-    // resolve symbol/company → CIK (best-effort)
-    let resolved: { cik?: string; name?: string; ticker?: string } = {};
-    if (intent === "edgar" || intent === "news" || intent === "mixed" || idGuess) {
-      try {
-        const lookup = await httpJSON<LookupResult>(`${base}/api/lookup/${encodeURIComponent(idGuess || userQ.trim())}`);
-        if ((lookup as any).ok && (lookup as any).cik) {
-          resolved.cik = (lookup as any).cik;
-          resolved.ticker = (lookup as any).ticker;
-          resolved.name = (lookup as any).name;
-        }
-      } catch {
-        // leave unresolved – we’ll still try generic answers
-      }
-    }
-
-    // --------- ROUTING ----------
-    let contextBlocks: string[] = [];
-    let finalAnswer = "";
-
-    if (intent === "edgar") {
-      if (!resolved.cik) {
-        finalAnswer = `I couldn't confidently identify the company. Try entering a ticker like **NVDA** or a CIK.`;
-      } else {
-        // Pull the most recent filings (last 90 days) unless user specified forms
-        const want6k = /\b6-k\b/i.test(userQ);
-        const want10k = /\b10-?k\b/i.test(userQ);
-        const want8k  = /\b8-?k\b/i.test(userQ);
-        const want20f = /\b20-?f\b/i.test(userQ);
-        let forms = ["10-K","10-Q","8-K","6-K","20-F"];
-        if (want6k) forms = ["6-K"];
-        else if (want10k) forms = ["10-K"];
-        else if (want8k) forms = ["8-K"];
-        else if (want20f) forms = ["20-F"];
-
-        const today = new Date();
-        const start = new Date(today.getTime() - 1000*60*60*24*90).toISOString().slice(0,10);
-        const end = today.toISOString().slice(0,10);
-
-        const params = new URLSearchParams({
-          start, end, forms: forms.join(","), perPage: "50", page: "1",
+      const cik = await resolveCIK(queryForLookup);
+      if (!cik) {
+        return json({
+          role: "assistant",
+          content:
+            "I couldn’t resolve that company. Try a ticker (e.g., NVDA) or paste a 10-digit CIK.",
         });
-
-        const filings = await httpJSON<FilingsResponse>(`${base}/api/filings/${resolved.cik}?${params}`);
-        contextBlocks.push(`Company: ${resolved.name || ""} (${resolved.ticker || ""}) — CIK ${resolved.cik}`);
-        contextBlocks.push(`Results: ${filings.total} total, showing top ${Math.min(filings.data.length, 10)}`);
-        finalAnswer = filingsToMarkdown(filings.data, 10);
-      }
-    }
-
-    else if (intent === "bls.cpi") {
-      const series = await httpJSON<BLSResponse>(`${base}/api/bls/series?ids=CUUR0000SA0`);
-      const s = series.series?.[0];
-      if (!s || !s.data?.length) finalAnswer = "_No CPI data returned._";
-      else {
-        const last = s.data[0];
-        contextBlocks.push(`Series: ${s.title || "CPI-U All Items, SA"}`);
-        finalAnswer = `**US CPI (All Items, SA)**  
-Latest: **${last.value}** (Index, ${last.periodName || ""} ${last.year})  
-Source: BLS.`;
-      }
-    }
-
-    else if (intent === "fred.gdp") {
-      const fred = await httpJSON<FredSeriesResponse>(`${base}/api/fred/series?id=GDPC1`);
-      if (!fred?.data?.length) finalAnswer = "_No GDP data returned._";
-      else {
-        const last = fred.data[fred.data.length - 1];
-        finalAnswer = `**Real GDP (GDPC1, chained 2017 $)**  
-Latest: **${last.value.toLocaleString()}** (${last.date})  
-Frequency: ${fred.frequency}. Source: FRED.`;
-      }
-    }
-
-    else if (intent === "news") {
-      if (!resolved.cik && !idGuess) {
-        finalAnswer = `Give me a company/ticker (e.g., **NVDA**) for headlines, or ask “market headlines”.`;
-      } else {
-        const q = resolved.ticker || resolved.name || idGuess!;
-        const news = await httpJSON<NewsResponse>(`${base}/api/news?q=${encodeURIComponent(q)}`);
-        if (!news.items?.length) finalAnswer = `_No recent headlines for ${q}._`;
-        else {
-          finalAnswer = news.items.slice(0, 8).map(n =>
-            `- [${n.title}](${n.url}) ${n.source ? `— *${n.source}*` : ""}${n.published ? ` (${n.published})` : ""}`
-          ).join("\n");
-        }
-      }
-    }
-
-    else if (intent === "bea") {
-      // Example: call your /api/bea or /api/gdp route
-      const bea = await httpJSON<BEAResponse>(`${base}/api/gdp`);
-      if (!bea?.data?.length) finalAnswer = `_No BEA data returned._`;
-      else {
-        const last = bea.data[bea.data.length - 1];
-        finalAnswer = `**BEA: Real GDP**  
-Latest: **${last.value.toLocaleString()}** (${last.time})  
-Units: ${bea.units || "Chained $ (2017)"}  
-Source: BEA.`;
-      }
-    }
-
-    else {
-      // Mixed/general: try to enrich context (EDGAR + headlines) then let DeepSeek summarize
-      let enrich: string[] = [];
-      if (resolved.cik) {
-        try {
-          const today = new Date();
-          const start = new Date(today.getTime() - 1000*60*60*24*30).toISOString().slice(0,10);
-          const end = today.toISOString().slice(0,10);
-          const params = new URLSearchParams({ start, end, forms: "10-K,10-Q,8-K,6-K,20-F", perPage: "20", page: "1" });
-          const filings = await httpJSON<FilingsResponse>(`${base}/api/filings/${resolved.cik}?${params}`);
-          enrich.push(`Latest filings (${resolved.ticker || ""} / CIK ${resolved.cik}):\n${filingsToMarkdown(filings.data, 6)}`);
-        } catch {}
-        try {
-          const q = resolved.ticker || resolved.name || "";
-          if (q) {
-            const news = await httpJSON<NewsResponse>(`${base}/api/news?q=${encodeURIComponent(q)}`);
-            if (news.items?.length) {
-              const block = news.items.slice(0, 5).map(n => `• ${n.title} — ${n.url}`).join("\n");
-              enrich.push(`Recent headlines:\n${block}`);
-            }
-          }
-        } catch {}
       }
 
-      const system =
-`You are a finance/economics assistant. Only use facts supplied in the CONTEXT.
-If something is unknown or unreturned, say so briefly and suggest the exact query the user can try.
-Prefer precise numbers, dates, tickers, CIKs, and provide clean markdown with short bullets.
-Always include direct links when you reference filings.`;
+      const filings = await fetchFilings(cik, forms.length ? forms : null);
 
-      const content =
-`USER QUESTION:
-${userQ}
+      if (!filings?.data?.length) {
+        return json({
+          role: "assistant",
+          content:
+            "No filings matched that request. Try widening the date range or removing form filters (e.g., just type the ticker).",
+        });
+      }
 
-CONTEXT (may be empty, but do not fabricate):
-${enrich.concat(contextBlocks).join("\n\n") || "(none)"}
+      // If wantsLatest, take most recent one; else return up to 5
+      const list = wantsLatest ? filings.data.slice(0, 1) : filings.data.slice(0, 5);
+      const lines = list.map(formatFilingLine).join("\n");
 
-RESPONSE REQUIREMENTS:
-- Be concise, correct, and current.
-- If giving filings, show at most 10 with "Open / Download" links.
-- If a series is requested, show the latest value with date and unit.
-- If nothing returned, explain what input would succeed (e.g., “Try ticker NVDA”).`;
+      const header =
+        wantsLatest && list[0]
+          ? `**Latest ${list[0].form} for ${list[0].company ?? list[0].cik}**`
+          : `**Recent filings (${list.length}/${filings.total})**`;
 
-      const text = await deepseekChat([
-        { role: "system", content: system },
-        { role: "user", content },
-      ]);
-
-      finalAnswer = text;
+      return json({
+        role: "assistant",
+        content: `${header}\n\n${lines}`,
+      });
     }
 
-    const preface = "⌛ Processing live data…\n\n";
-    const ctx = contextBlocks.length ? `\n\n---\n\n<sup>Context: ${contextBlocks.join(" • ")}</sup>` : "";
-    return NextResponse.json({ ok: true, answer: preface + finalAnswer + ctx });
+    // 2) Otherwise, use DeepSeek — but enforce live-first behavior in prompt
+    if (!DEEPSEEK_API_KEY) {
+      return json(
+        {
+          role: "assistant",
+          content:
+            "AI is temporarily unavailable (missing DeepSeek API key). Ask for a filing by ticker/CIK in the meantime.",
+        },
+        500
+      );
+    }
+
+    const dsRes = await fetch("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          ...(body?.messages || []).filter((m) => m.role !== "system"),
+        ],
+      }),
+    });
+
+    if (!dsRes.ok) {
+      const txt = await dsRes.text().catch(() => "");
+      return json(
+        { role: "assistant", content: `AI request failed (${dsRes.status}). ${txt}` },
+        502
+      );
+    }
+
+    const dsJson = await dsRes.json();
+    const content =
+      dsJson?.choices?.[0]?.message?.content ||
+      "I couldn’t generate a reply. Please try rephrasing.";
+
+    return json({ role: "assistant", content });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "AI route error" }, { status: 500 });
+    return json(
+      {
+        role: "assistant",
+        content: `Unexpected error: ${e?.message || "unknown"}`,
+      },
+      500
+    );
   }
 }
