@@ -1,84 +1,114 @@
 "use client";
 
-import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  useEffect(() => {
+    const handler = () => setMobileOpen(false);
+    window.addEventListener("hashchange", handler);
+    window.addEventListener("popstate", handler);
+    return () => {
+      window.removeEventListener("hashchange", handler);
+      window.removeEventListener("popstate", handler);
+    };
+  }, []);
+
   return (
-    <header className="border-b bg-white sticky top-0 z-50">
-      <div className="mx-auto max-w-7xl flex items-center justify-between px-4 py-3">
-        {/* Logo */}
-        <Link href="/" className="text-xl font-bold">
-          Herevna
-        </Link>
-
-        {/* Desktop nav */}
-        <nav className="hidden md:flex items-center gap-4">
-          <Link href="/edgar" className="text-sm text-gray-700 hover:text-black">
-            EDGAR
-          </Link>
-          <Link href="/news" className="text-sm text-gray-700 hover:text-black">
-            News
-          </Link>
-          <Link href="/screener" className="text-sm text-gray-700 hover:text-black">
-            Screener
-          </Link>
-
-          {/* AI Button */}
-          <a
-            href="/ai"
-            className="liquid-btn ml-2 inline-flex items-center gap-2 px-4 py-2 text-sm shadow"
-          >
-            <span>✨ Herevna AI</span>
+    <header className="sticky top-0 z-50 border-b bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
+      <div className="mx-auto max-w-6xl px-4">
+        <div className="flex h-14 items-center justify-between">
+          <a href="/" className="shrink-0 font-bold text-lg tracking-tight text-brand">
+            Herevna.io
           </a>
-        </nav>
 
-        {/* Mobile menu toggle */}
-        <button
-          className="md:hidden inline-flex items-center justify-center rounded-md p-2 text-gray-600 hover:bg-gray-100"
-          onClick={() => setMobileOpen(!mobileOpen)}
-        >
-          ☰
-        </button>
+          {/* Desktop nav */}
+          <nav className="hidden md:flex items-center gap-1">
+            <NavLink href="/" label="Home" />
+            <NavLink href="/edgar" label="EDGAR" />
+            <NavLink href="/bls" label="BLS" />
+            <NavLink href="/census" label="Census" />
+            <NavLink href="/news" label="News" />
+            <NavLink href="/screener" label="Screener" />
+
+            {/* AI CTA - animated gradient */}
+            <a
+              href="/ai"
+              className="ml-2 inline-flex items-center gap-2 rounded-full 
+                         bg-gradient-to-r from-blue-600 via-indigo-500 to-blue-600 
+                         bg-[length:200%_200%] animate-gradient
+                         text-white px-4 py-2 text-sm shadow hover:opacity-95"
+            >
+              ✨ Herevna AI
+            </a>
+          </nav>
+
+          {/* Mobile hamburger */}
+          <button
+            className="md:hidden inline-flex items-center justify-center rounded-md p-2 text-gray-700 hover:bg-gray-100"
+            aria-label="Toggle menu"
+            aria-expanded={mobileOpen}
+            onClick={() => setMobileOpen(v => !v)}
+          >
+            <Burger open={mobileOpen} />
+          </button>
+        </div>
       </div>
 
-      {/* Mobile nav */}
+      {/* Mobile panel */}
       {mobileOpen && (
-        <div className="md:hidden border-t bg-white px-4 pb-4">
-          <Link
-            href="/edgar"
-            onClick={() => setMobileOpen(false)}
-            className="block py-2 text-sm text-gray-700 hover:text-black"
-          >
-            EDGAR
-          </Link>
-          <Link
-            href="/news"
-            onClick={() => setMobileOpen(false)}
-            className="block py-2 text-sm text-gray-700 hover:text-black"
-          >
-            News
-          </Link>
-          <Link
-            href="/screener"
-            onClick={() => setMobileOpen(false)}
-            className="block py-2 text-sm text-gray-700 hover:text-black"
-          >
-            Screener
-          </Link>
+        <div className="md:hidden border-t bg-white">
+          <nav className="mx-auto max-w-6xl px-4 py-2">
+            <MobileLink href="/" label="Home" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/edgar" label="EDGAR" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/bls" label="BLS" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/census" label="Census" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/news" label="News" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/screener" label="Screener" onClick={() => setMobileOpen(false)} />
 
-          {/* AI Button (mobile) */}
-          <a
-            href="/ai"
-            onClick={() => setMobileOpen(false)}
-            className="liquid-btn mt-2 inline-flex items-center gap-2 px-4 py-2 text-sm shadow"
-          >
-            <span>✨ Herevna AI</span>
-          </a>
+            {/* Mobile AI CTA - animated gradient */}
+            <a
+              href="/ai"
+              onClick={() => setMobileOpen(false)}
+              className="mt-2 inline-flex items-center gap-2 rounded-full 
+                         bg-gradient-to-r from-blue-600 via-indigo-500 to-blue-600 
+                         bg-[length:200%_200%] animate-gradient
+                         text-white px-4 py-2 text-sm shadow hover:opacity-95"
+            >
+              ✨ Herevna AI
+            </a>
+          </nav>
         </div>
       )}
     </header>
+  );
+}
+
+function NavLink({ href, label }: { href: string; label: string }) {
+  return (
+    <a href={href} className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition">
+      {label}
+    </a>
+  );
+}
+
+function MobileLink({ href, label, onClick }: { href: string; label: string; onClick?: () => void }) {
+  return (
+    <a href={href} onClick={onClick} className="block w-full px-3 py-2 rounded-md hover:bg-gray-100">
+      {label}
+    </a>
+  );
+}
+
+function Burger({ open }: { open: boolean }) {
+  return (
+    <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden>
+      {open ? (
+        <path strokeWidth="2" strokeLinecap="round" d="M6 6l12 12M18 6L6 18" />
+      ) : (
+        <path strokeWidth="2" strokeLinecap="round" d="M3 6h18M3 12h18M3 18h18" />
+      )}
+    </svg>
   );
 }
