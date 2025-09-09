@@ -1,54 +1,68 @@
+// app/api/census/variables/route.ts
 import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+function noStoreHeaders() {
+  return {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+  };
+}
+
 /**
- * GET /api/census/variables?dataset=acs/acs5&vintage=2022
- * Notes:
- *  - ACS/PEP/etc → use /data/<vintage>/<dataset>/variables.json
- *  - timeseries/... → use /data/<dataset>/variables.json  (no vintage in path)
+ * GET /api/census/variables?dataset=acs/acs5&year=latest
+ * GET /api/census/variables?dataset=timeseries/eits/marts
+ *
+ * For annual datasets (like acs/acs5), the path is /data/{year}/{dataset}/variables.json
+ * For timeseries datasets (like timeseries/eits/marts), it's /data/{dataset}/variables.json
  */
 export async function GET(req: Request) {
   try {
-    const u = new URL(req.url);
-    const dataset = (u.searchParams.get("dataset") || "acs/acs5").trim();
-    const vintage = (u.searchParams.get("vintage") || "2022").trim();
+    const { searchParams } = new URL(req.url);
+    const dataset = (searchParams.get("dataset") || "").trim();
+    let year = (searchParams.get("year") || "").trim();
 
-    // Build the proper URL (timeseries has no vintage in path)
-    const isTimeseries = dataset.toLowerCase().startsWith("timeseries/");
-    const url = isTimeseries
-      ? `https://api.census.gov/data/${encodeURIComponent(dataset)}/variables.json`
-      : `https://api.census.gov/data/${encodeURIComponent(vintage)}/${encodeURIComponent(
-          dataset
-        )}/variables.json`;
-
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) {
-      // helpful context back to the UI
-      const body = await r.text();
+    if (!dataset) {
       return NextResponse.json(
-        { error: `Census variables fetch failed (${r.status})`, url, body: body?.slice(0, 500) },
-        { status: 502 }
+        { error: "Missing required query param: dataset" },
+        { status: 400, headers: noStoreHeaders() }
       );
     }
-    const j = await r.json();
 
-    const vars = Object.entries(j?.variables || {}).map(([name, meta]: any) => ({
-      name,
-      label: meta?.label || name,
-      concept: meta?.concept || "",
-      predicateType: meta?.predicateType || "",
-      group: meta?.group || null,
-    }));
+    // Resolve "latest" year for annual datasets
+    if (year.toLowerCase() === "latest") {
+      year = String(new Date().getFullYear());
+    }
 
-    // Sort a bit nicer: estimates (…_E) first, then alphabetical
-    vars.sort((a, b) => {
-      const ae = a.name.endsWith("_E") ? 0 : 1;
-      const be = b.name.endsWith("_E") ? 0 : 1;
-      if (ae !== be) return ae - be;
-      return a.name.localeCompare(b.name);
+    // Build Census endpoint
+    const isTimeseries = dataset.startsWith("timeseries/");
+    const base = "https://api.census.gov/data";
+    const url = isTimeseries
+      ? `${base}/${dataset}/variables.json`
+      : `${base}/${year || new Date().getFullYear()}/${dataset}/variables.json`;
+
+    const r = await fetch(url, {
+      cache: "no-store",
+      // Avoid leaking your API key on this endpoint; variables.json doesn’t need a key
+      headers: { "User-Agent": process.env.SEC_USER_AGENT ?? "Herevna/1.0 (contact@herevna.io)" },
     });
 
-    return NextResponse.json({ dataset, vintage, variables: vars, url });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
+    if (!r.ok) {
+      return NextResponse.json(
+        { error: `Census variables fetch failed (${r.status})` },
+        { status: 502, headers: noStoreHeaders() }
+      );
+    }
+
+    const json = await r.json();
+    return NextResponse.json(json, { status: 200, headers: noStoreHeaders() });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err?.message || "Unexpected error" },
+      { status: 500, headers: noStoreHeaders() }
+    );
   }
 }
