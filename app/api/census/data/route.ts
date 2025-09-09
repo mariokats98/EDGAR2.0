@@ -1,39 +1,66 @@
-// app/api/census/data/route.ts
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function noStoreHeaders() {
+const UA = process.env.SEC_USER_AGENT ?? "Herevna/1.0 (contact@herevna.io)";
+
+function cleanDataset(s: string) {
+  return s.replace(/^\/+|\/+$/g, "");
+}
+
+function noStoreHeaders(extra?: Record<string, string>) {
   return {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-    "Pragma": "no-cache",
-    "Expires": "0",
+    Pragma: "no-cache",
+    Expires: "0",
+    ...(extra || {}),
   };
+}
+
+async function findLatestAnnualVintage(dataset: string, startFromYear: number) {
+  const base = "https://api.census.gov/data";
+  const tried: string[] = [];
+  for (let y = startFromYear, i = 0; i <= 10 && y >= 2013; y--, i++) {
+    const url = `${base}/${y}/${dataset}/variables.json`;
+    tried.push(url);
+    const r = await fetch(url, { cache: "no-store", headers: { "User-Agent": UA } });
+    if (r.ok) return { year: y, tried };
+    if (r.status >= 500) {
+      let detail = "";
+      try { detail = await r.text(); } catch {}
+      throw new Error(`Census vintage probe failed (${r.status}) ${detail ? " - " + detail : ""}`);
+    }
+  }
+  return { year: null as number | null, tried };
 }
 
 /**
  * GET /api/census/data
+ *
  * Required:
- *  - dataset: e.g., "acs/acs5" OR "timeseries/eits/marts"
- *  - get: comma-separated list, e.g., "NAME,B01001_001E"
- *  - for: geography, e.g., "us:1" or "state:*"
- *  - (annual dataset) year: "2023" or "latest"
- *  - (timeseries dataset) time: e.g., "from 2018-01 to 2025-12" OR "2024-01"
- * Optional:
- *  - Any additional Census predicates: e.g., "in=metropolitan%20statistical%20area/micropolitan%20statistical%20area:*"
+ *  - dataset: "acs/acs5" OR "timeseries/eits/marts"
+ *  - get: comma-separated columns (e.g., "NAME,B01001_001E")
+ *  - for: geography (e.g., "us:1" or "state:*")
+ *
+ * Annual datasets:
+ *  - year: "YYYY" or "latest"
+ *
+ * Timeseries datasets:
+ *  - time: e.g., "from 2021-01 to 2025-12" or "2024-01"
+ *
+ * Pass-through predicates like `in=...` are supported.
  */
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-
-    const dataset = (searchParams.get("dataset") || "").trim();
+    const datasetRaw = (searchParams.get("dataset") || "").trim();
     const get = (searchParams.get("get") || "").trim();
     const geoFor = (searchParams.get("for") || "").trim();
-    let year = (searchParams.get("year") || "").trim(); // for annual datasets
-    const time = (searchParams.get("time") || "").trim(); // for timeseries datasets
+    let yearRaw = (searchParams.get("year") || "").trim();
+    const time = (searchParams.get("time") || "").trim();
 
-    if (!dataset) {
+    if (!datasetRaw) {
       return NextResponse.json(
         { error: "Missing required query param: dataset" },
         { status: 400, headers: noStoreHeaders() }
@@ -52,31 +79,24 @@ export async function GET(req: Request) {
       );
     }
 
-    // Resolve "latest" for year if given
-    if (year.toLowerCase() === "latest") {
-      year = String(new Date().getFullYear());
-    }
-
+    const dataset = cleanDataset(datasetRaw);
     const isTimeseries = dataset.startsWith("timeseries/");
     const base = "https://api.census.gov/data";
 
-    // Build query string
     const qs = new URLSearchParams();
     qs.set("get", get);
     qs.set("for", geoFor);
 
-    // Pass through any additional predicates (e.g. `in=...` or `ucgid=...`)
+    // Pass through extra predicates (e.g., in=..., ucgid=..., etc.)
     for (const [k, v] of searchParams.entries()) {
       if (["dataset", "get", "for", "year", "time"].includes(k)) continue;
       if (v != null && v !== "") qs.set(k, v);
     }
 
-    // API key (recommended for production)
     const apiKey = process.env.CENSUS_API_KEY || "";
     if (apiKey) qs.set("key", apiKey);
 
-    // Path differs by dataset type
-    let url: string;
+    // TIMESERIES: use 'time'
     if (isTimeseries) {
       if (!time) {
         return NextResponse.json(
@@ -85,34 +105,73 @@ export async function GET(req: Request) {
         );
       }
       qs.set("time", time);
-      url = `${base}/${dataset}?${qs.toString()}`;
-    } else {
-      if (!year) {
+      const url = `${base}/${dataset}?${qs.toString()}`;
+      const r = await fetch(url, { cache: "no-store", headers: { "User-Agent": UA } });
+      if (!r.ok) {
+        let detail = "";
+        try { detail = await r.text(); } catch {}
         return NextResponse.json(
-          { error: "Missing required query param: year for annual datasets" },
+          { error: `Census data fetch failed (${r.status})`, detail, source: url },
+          { status: 502, headers: noStoreHeaders() }
+        );
+      }
+      const data = await r.json();
+      return NextResponse.json({ data, source: url }, { status: 200, headers: noStoreHeaders() });
+    }
+
+    // ANNUAL: resolve year (support `latest`)
+    const now = new Date().getFullYear();
+    let targetYear: number | null = null;
+    if (!yearRaw || yearRaw.toLowerCase() === "latest") {
+      const probe = await findLatestAnnualVintage(dataset, now);
+      targetYear = probe.year;
+      if (!targetYear) {
+        return NextResponse.json(
+          { error: "No annual vintage found within the last ~10 years.", dataset, tried: probe.tried },
+          { status: 404, headers: noStoreHeaders() }
+        );
+      }
+    } else {
+      const y = parseInt(yearRaw, 10);
+      if (!Number.isFinite(y)) {
+        return NextResponse.json(
+          { error: "Invalid year. Use 'YYYY' or 'latest'." },
           { status: 400, headers: noStoreHeaders() }
         );
       }
-      url = `${base}/${year}/${dataset}?${qs.toString()}`;
+      targetYear = y;
     }
 
-    const r = await fetch(url, {
-      cache: "no-store",
-      headers: { "User-Agent": process.env.SEC_USER_AGENT ?? "Herevna/1.0 (contact@herevna.io)" },
-    });
-
+    const url = `${base}/${targetYear}/${dataset}?${qs.toString()}`;
+    const r = await fetch(url, { cache: "no-store", headers: { "User-Agent": UA } });
     if (!r.ok) {
-      // Bubble upstream error body for easier debugging when possible
+      // If caller asked for 'latest', try falling back a few years on data as well
+      if (!yearRaw || yearRaw.toLowerCase() === "latest") {
+        for (let y = (targetYear ?? now) - 1, i = 0; i < 5 && y >= 2013; y--, i++) {
+          const tryUrl = `${base}/${y}/${dataset}?${qs.toString()}`;
+          const rr = await fetch(tryUrl, { cache: "no-store", headers: { "User-Agent": UA } });
+          if (rr.ok) {
+            const data = await rr.json();
+            return NextResponse.json(
+              { data, source: tryUrl, resolvedYear: y },
+              { status: 200, headers: noStoreHeaders({ "X-Census-Resolved-Year": String(y) }) }
+            );
+          }
+        }
+      }
       let detail = "";
       try { detail = await r.text(); } catch {}
       return NextResponse.json(
-        { error: `Census data fetch failed (${r.status})`, detail },
+        { error: `Census data fetch failed (${r.status})`, detail, source: url },
         { status: 502, headers: noStoreHeaders() }
       );
     }
 
     const data = await r.json();
-    return NextResponse.json({ data, source: url }, { status: 200, headers: noStoreHeaders() });
+    return NextResponse.json(
+      { data, source: url, resolvedYear: targetYear },
+      { status: 200, headers: noStoreHeaders({ "X-Census-Resolved-Year": String(targetYear) }) }
+    );
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message || "Unexpected error" },
