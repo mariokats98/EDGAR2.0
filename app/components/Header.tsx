@@ -1,3 +1,4 @@
+// app/components/Header.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -32,12 +33,12 @@ export default function Header() {
             <NavLink href="/fred" label="FRED" />
             <NavLink href="/news" label="News" />
             <NavLink href="/screener" label="Screener" />
-            <NavLink href="/game" label="Game 🎮" />
+            <NavLink href="/game" label="Guessonomics" />
 
-            {/* AI CTA */}
+            {/* AI CTA (your animated gradient stays as-is) */}
             <a
               href="/ai"
-              className="ml-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow hover:opacity-95 animate-liquid-x"
+              className="ml-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow hover:opacity-95 animate-[sheen_2.6s_infinite]"
             >
               ✨ Herevna AI
             </a>
@@ -66,11 +67,11 @@ export default function Header() {
             <MobileLink href="/fred" label="FRED" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/news" label="News" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/screener" label="Screener" onClick={() => setMobileOpen(false)} />
-            <MobileLink href="/game" label="Game 🎮" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/game" label="Guessonomics" onClick={() => setMobileOpen(false)} />
             <a
               href="/ai"
               onClick={() => setMobileOpen(false)}
-              className="mt-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow animate-liquid-x"
+              className="mt-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow animate-[sheen_2.6s_infinite]"
             >
               ✨ Herevna AI
             </a>
