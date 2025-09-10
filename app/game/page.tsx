@@ -2,14 +2,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Metadata } from "next";
-
-// If you prefer using app-level metadata files, you can remove this and set it in layout.
-// Keeping it here for a simple drop-in:
-export const metadata = {
-  title: "Guessonomics — Herevna",
-  description: "A fast, friendly econ & finance guessing game.",
-};
 
 const BANK = [
   "INFLATION","YIELD","DEFICIT","SURPLUS","GDP","CPI","PPI","PAYROLLS","FED",
@@ -65,19 +57,15 @@ export default function GuessonomicsPage() {
   }
 
   function score(guess: string) {
-    // Simple Wordle-like feedback
     const res: ("correct"|"present"|"absent")[] = [];
     const freq: Record<string, number> = {};
     for (const ch of target) freq[ch] = (freq[ch] ?? 0) + 1;
-
-    // first pass: correct
     for (let i = 0; i < guess.length; i++) {
       if (guess[i] === target[i]) {
         res[i] = "correct";
         freq[guess[i]] -= 1;
       }
     }
-    // second pass: present / absent
     for (let i = 0; i < guess.length; i++) {
       if (res[i]) continue;
       const ch = guess[i];
@@ -145,11 +133,11 @@ export default function GuessonomicsPage() {
             );
           })}
 
-          {/* Empty rows for remaining */}
+          {/* Empty rows */}
           {Array.from({ length: remaining }).map((_, idx) => (
             <div key={`empty-${idx}`} className="flex gap-2 justify-center opacity-30">
               {target.split("").slice(0, Math.min(7, target.length)).map((_, j) => (
-                <div key={j} className="h-12 w-10 grid place-content-center rounded-md border bg-gray-50"></div>
+                <div key={j} className="h-12 w-10 grid place-content-center rounded-md border bg-gray-50" />
               ))}
             </div>
           ))}
@@ -196,11 +184,9 @@ export default function GuessonomicsPage() {
         </div>
       </section>
 
-      {/* Tips */}
       <p className="mt-6 text-xs text-gray-500">
         Colors: <span className="font-medium text-emerald-600">Green</span> = correct spot,{" "}
-        <span className="font-medium text-amber-600">Yellow</span> = wrong spot,{" "}
-        Gray = not in word.
+        <span className="font-medium text-amber-600">Yellow</span> = wrong spot, Gray = not in word.
       </p>
     </main>
   );
