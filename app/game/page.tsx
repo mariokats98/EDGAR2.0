@@ -16,19 +16,19 @@ const COLS = 5;
 
 // Curated 5-letter econ/finance words (uppercased)
 const WORDS: string[] = [
-  "YIELD","BONDS","INDEX","EQUITY","DELTA".slice(0,5),"ALPHA",
+  "YIELD","BONDS","INDEX","EQUITY","DELTA".slice(0,5),"HEDGE",
   "VALUE","FLOAT","MONEY","CAPEX",
-  "CARRY","TREND","DELIV".slice(0,5),"GROSS","MARGE".slice(0,5),
-  "SPEND","PRICE","CPIES".slice(0,5),"RATES","CASHY".slice(0,5),
-  "LEVER".slice(0,5),"RALLY","SHORT","STACK".slice(0,5),"DELIV".slice(0,5),
-  "RENTS","HOUSY".slice(0,5),"WAGES","INPUT".slice(0,5),"CLOUD".slice(0,5),
-  "BRENT","WTIXX".slice(0,5),"METAL".slice(0,5),"COPPR".slice(0,5),
-  "GOLDS".slice(0,5),"SILVR".slice(0,5),"NIKKE".slice(0,5),"ASSET",
-  "RISKY".slice(0,5),"BIDAS".slice(0,5),"ASKED","SPXEW".slice(0,5),
-  "EPSGA".slice(0,5),"CYCLE","EARNX".slice(0,5),"BULLS","BEARS",
-  "DELTA","GAMMA","OMEGA","BASIS","ALPHA",
-  "FUTUR".slice(0,5),"REITS","COVER","SWAPS","AGGRO".slice(0,5),
-  "AUDIT","FLOAT","DEBTS","CAVEN".slice(0,5),"CLOBO".slice(0,5),
+  "CARRY","TREND","DEBIT".slice(0,5),"GROSS","EUROS".slice(0,5),
+  "SPEND","PRICE","MOODY".slice(0,5),"RATES","FRANC".slice(0,5),
+  "LEVER".slice(0,5),"RALLY","SHORT","STACK".slice(0,5),"TNOTE".slice(0,5),
+  "RENTS","RUPEE".slice(0,5),"WAGES","INPUT".slice(0,5),"RISKS".slice(0,5),
+  "BRENT","CALLS".slice(0,5),"METAL".slice(0,5),"TRADE".slice(0,5),
+  "TOKEN".slice(0,5),"SILVR".slice(0,5),"NIKKE".slice(0,5),"ASSET",
+  "RISKY".slice(0,5),"FINRA".slice(0,5),"","PESOS".slice(0,5),
+  "".slice(0,5),"CYCLE","TARIF".slice(0,5),"BULLS","BEARS",
+  "TBILL","GAMMA","OMEGA","BASIS","ALPHA",
+  "FUTUR".slice(0,5),"REITS","COVER","SWAPS","STOCKS".slice(0,5),
+  "AUDIT","LIMIT","DEBTS","POUND".slice(0,5),"".slice(0,5),
 ].map(w => w.padEnd(5, "X")).map(w => w.slice(0,5)); // ensure 5 chars
 
 // Filter to keep only A-Z words, replace any X padding with reasonable letters
