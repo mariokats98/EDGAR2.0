@@ -29,16 +29,15 @@ export default function Header() {
             <NavLink href="/edgar" label="EDGAR" />
             <NavLink href="/bls" label="BLS" />
             <NavLink href="/census" label="Census" />
+            <NavLink href="/fred" label="FRED" />
             <NavLink href="/news" label="News" />
             <NavLink href="/screener" label="Screener" />
+            <NavLink href="/game" label="Game 🎮" />
 
-            {/* AI CTA - animated gradient */}
+            {/* AI CTA */}
             <a
               href="/ai"
-              className="ml-2 inline-flex items-center gap-2 rounded-full 
-                         bg-gradient-to-r from-blue-600 via-indigo-500 to-blue-600 
-                         bg-[length:200%_200%] animate-gradient
-                         text-white px-4 py-2 text-sm shadow hover:opacity-95"
+              className="ml-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow hover:opacity-95 animate-liquid-x"
             >
               ✨ Herevna AI
             </a>
@@ -64,17 +63,14 @@ export default function Header() {
             <MobileLink href="/edgar" label="EDGAR" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/bls" label="BLS" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/census" label="Census" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/fred" label="FRED" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/news" label="News" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/screener" label="Screener" onClick={() => setMobileOpen(false)} />
-
-            {/* Mobile AI CTA - animated gradient */}
+            <MobileLink href="/game" label="Game 🎮" onClick={() => setMobileOpen(false)} />
             <a
               href="/ai"
               onClick={() => setMobileOpen(false)}
-              className="mt-2 inline-flex items-center gap-2 rounded-full 
-                         bg-gradient-to-r from-blue-600 via-indigo-500 to-blue-600 
-                         bg-[length:200%_200%] animate-gradient
-                         text-white px-4 py-2 text-sm shadow hover:opacity-95"
+              className="mt-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow animate-liquid-x"
             >
               ✨ Herevna AI
             </a>
