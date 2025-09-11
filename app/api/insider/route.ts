@@ -1,11 +1,8 @@
 // app/api/insider/route.ts
 import { NextResponse } from "next/server";
 
-export const dynamic = "force-dynamic"; // no caching
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-const FMP_KEY = process.env.FMP_API_KEY;
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY;
 
 type UiRow = {
   id: string;
@@ -14,210 +11,188 @@ type UiRow = {
   symbol?: string;
   filedAt: string;
   type?: "A" | "D";
-  beneficialShares?: number; // post-transaction
-  price?: number;
-  valueUSD?: number;
-  docUrl?: string;
-  title?: string;
-  cik?: string | number;
+  beneficialShares?: number;        // "Amount of Securities Beneficially Owned Following..."
+  price?: number;                   // transactionPricePerShare
+  valueUSD?: number;                // price * amount
+  amount?: number;                  // transactionShares (line item)
+  docUrl?: string;                  // direct link to the XML
+  title?: string;                   // securityTitle
+  cik?: string;
   accessionNumber?: string;
-  primaryDocument?: string;
+  primaryDocument?: string;         // xml file name
 };
 
-function parseNum(n: any): number | undefined {
-  if (n == null) return undefined;
-  if (typeof n === "number") return Number.isFinite(n) ? n : undefined;
-  if (typeof n === "string") {
-    const v = Number(n.replace(/[$, ]/g, ""));
-    return Number.isFinite(v) ? v : undefined;
-  }
-  return undefined;
-}
+// --------------------------------------------------
+// small helpers
+// --------------------------------------------------
+const UA = { "User-Agent": "herevna.io (contact@herevna.io)" };
 
-function val(n?: number, p?: number) {
-  return n != null && p != null ? n * p : undefined;
+function okSymbol(sym?: string|null) {
+  return sym ? sym.toUpperCase().trim() : undefined;
 }
-
 function normalizeDate(s?: string) {
-  // prefer YYYY-MM-DD
   if (!s) return "—";
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  // try to cut timestamps to YYYY-MM-DD
   const m = s.match(/^\d{4}-\d{2}-\d{2}/);
   return m ? m[0] : s;
 }
-
-function okSymbol(sym?: string) {
-  if (!sym) return undefined;
-  return sym.toUpperCase().trim();
+function toNum(x: any): number | undefined {
+  if (x == null) return;
+  if (typeof x === "number") return Number.isFinite(x) ? x : undefined;
+  if (typeof x === "string") {
+    const n = Number(x.replace(/[$, ]/g, ""));
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return;
+}
+function multiply(a?: number, b?: number) {
+  return a != null && b != null ? a * b : undefined;
+}
+function dezero(s: string) {
+  return s.replace(/^0+/, "");
+}
+function flatAcc(acc: string) {
+  return acc.replace(/-/g, "");
 }
 
-/* --------- FMP normalizer (v4/insider-trading) ----------
-   Example fields from FMP:
-   - symbol, filIngDate, transactionDate, acquisitionOrDisposition ("A"/"D")
-   - securityName, reportingCik, reportingName, transactionPrice, transactionShares,
-     sharesOwnedFollowingTransaction, link (filing URL)
---------------------------------------------------------- */
-function normalizeFmp(items: any[] = []): UiRow[] {
-  return items.map((d: any, i: number): UiRow => {
-    const symbol = okSymbol(d.symbol);
-    const type = d.acquisitionOrDisposition === "A" || d.acquisitionOrDisposition === "D" ? d.acquisitionOrDisposition : undefined;
-    const price = parseNum(d.transactionPrice);
-    const qty = parseNum(d.transactionShares);
-    const beneficial = parseNum(d.sharesOwnedFollowingTransaction);
+// Get text inside the first occurrence of <tag>...</tag>
+function tagValue(block: string, tag: string): string | undefined {
+  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i");
+  const m = block.match(re);
+  return m ? m[1].trim() : undefined;
+}
 
-    // use filingDate or transactionDate for “filedAt”
-    const filedAt = normalizeDate(d.filingDate || d.transactionDate);
+// Return all blocks of <nonDerivativeTransaction>...</nonDerivativeTransaction>
+function extractNonDerivativeTransactions(xml: string): string[] {
+  const re = /<nonDerivativeTransaction[\s\S]*?<\/nonDerivativeTransaction>/gi;
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml))) out.push(m[0]);
+  return out;
+}
 
-    // try to shape an SEC URL if missing
-    let docUrl: string | undefined = d.link;
-    const cik = d.reportingCik ?? d.cik;
-    const acc = d.accessionNumber ?? d.accession;
-    const primaryDoc = d.primaryDocument ?? d.primary;
+// Extract first <reportingOwner> block (for insider name)
+function extractFirstReportingOwner(xml: string): string | undefined {
+  const block = (xml.match(/<reportingOwner[\s\S]*?<\/reportingOwner>/i) || [])[0];
+  if (!block) return;
+  const id = (block.match(/<reportingOwnerId[\s\S]*?<\/reportingOwnerId>/i) || [])[0];
+  const name = id ? tagValue(id, "rptOwnerName") : undefined;
+  return name;
+}
 
-    if (!docUrl && cik && acc) {
-      const noZeros = String(cik).replace(/^0+/, "");
-      const flatAcc = String(acc).replace(/-/g, "");
-      docUrl = `https://www.sec.gov/Archives/edgar/data/${noZeros}/${flatAcc}/${primaryDoc || "index.htm"}`;
-    }
+// --------------------------------------------------
+// SEC lookups
+// --------------------------------------------------
 
-    return {
-      id: d.id || d.accessionNumber || `${symbol || "FMP"}-${i}`,
-      insider: d.reportingName || d.ownerName || "—",
-      issuer: d.issuerName || d.companyName || d.issuer || symbol || "—",
-      symbol,
-      filedAt,
-      type,
+// Resolve Ticker -> { cik, name }
+async function resolveTicker(symbol: string): Promise<{ cik: string; name?: string } | null> {
+  const res = await fetch("https://www.sec.gov/files/company_tickers_exchange.json", { headers: UA });
+  if (!res.ok) return null;
+  const data = await res.json() as any;
+  // file is array-like object: {0:{ticker, cik, title}, 1:{...}, ...}
+  const hit = Object.values(data as any).find((r: any) => (r?.ticker || "").toUpperCase() === symbol);
+  if (!hit?.cik) return null;
+  return {
+    cik: String(hit.cik).padStart(10, "0"),
+    name: hit.title
+  };
+}
+
+// Pull recent submissions JSON
+async function getSubmissions(cik: string): Promise<any|null> {
+  const res = await fetch(`https://www.sec.gov/submissions/CIK${cik}.json`, { headers: UA, cache: "no-store" });
+  if (!res.ok) return null;
+  try { return await res.json(); } catch { return null; }
+}
+
+// Find a likely XML doc for a filing using the directory index
+async function findXmlDoc(cikNoZeros: string, accFlat: string): Promise<string | null> {
+  // index.json lists files in the filing directory
+  const ix = await fetch(`https://www.sec.gov/Archives/edgar/data/${cikNoZeros}/${accFlat}/index.json`, { headers: UA });
+  if (!ix.ok) return null;
+  const j = await ix.json() as any;
+  const items: any[] = j?.directory?.item || [];
+  // prefer a form4*.xml or primary*.xml
+  const preferred = items.find((it: any) => /\.xml$/i.test(it?.name) && /form4|primary/i.test(it?.name));
+  if (preferred) return preferred.name;
+  // else any xml
+  const anyXml = items.find((it: any) => /\.xml$/i.test(it?.name));
+  return anyXml ? anyXml.name : null;
+}
+
+// Parse a single Form 4 XML → array of UiRow (one per nonDerivativeTransaction)
+function parseForm4XmlToRows(xml: string, ctx: {
+  symbol?: string;
+  issuer?: string;
+  cik: string;
+  accessionNumber: string;
+  filedAt: string;
+  baseUrl: string;          // https://www.sec.gov/Archives/edgar/data/{cikNoZeros}/{accFlat}/
+  xmlName: string;
+}): UiRow[] {
+  const issuerName = tagValue(xml, "issuerName") || ctx.issuer || "—";
+  const securityTitle = tagValue(xml, "securityTitle") || undefined;
+  const insiderName = extractFirstReportingOwner(xml) || "—";
+
+  const txBlocks = extractNonDerivativeTransactions(xml);
+  if (txBlocks.length === 0) {
+    // No line items; still return a summary row w/ link
+    return [{
+      id: `${ctx.cik}-${ctx.accessionNumber}-0`,
+      insider: insiderName,
+      issuer: issuerName,
+      symbol: ctx.symbol,
+      filedAt: normalizeDate(ctx.filedAt),
+      type: undefined,
+      beneficialShares: undefined,
+      price: undefined,
+      valueUSD: undefined,
+      amount: undefined,
+      docUrl: `${ctx.baseUrl}${ctx.xmlName}`,
+      title: securityTitle,
+      cik: ctx.cik,
+      accessionNumber: ctx.accessionNumber,
+      primaryDocument: ctx.xmlName,
+    }];
+  }
+
+  const rows: UiRow[] = [];
+  txBlocks.forEach((block, i) => {
+    const amount = toNum(tagValue(block, "value") ?? tagValue(block, "transactionShares") ?? tagValue(block, "shares"));
+    const typeVal = (tagValue(block, "transactionAcquiredDisposedCode") || "")
+      .match(/<value>(A|D)<\/value>/i)?.[1]?.toUpperCase() as "A" | "D" | undefined;
+
+    const price = toNum(tagValue(block, "transactionPricePerShare") ?? tagValue(block, "price"));
+    const beneficial = toNum(tagValue(block, "sharesOwnedFollowingTransaction") ?? tagValue(block, "postTransactionAmounts"));
+
+    rows.push({
+      id: `${ctx.cik}-${ctx.accessionNumber}-${i + 1}`,
+      insider: insiderName,
+      issuer: issuerName,
+      symbol: ctx.symbol,
+      filedAt: normalizeDate(ctx.filedAt),
+      type: typeVal,
       beneficialShares: beneficial,
       price,
-      valueUSD: val(qty, price),
-      docUrl,
-      title: d.securityName || undefined,
-      cik,
-      accessionNumber: acc,
-      primaryDocument: primaryDoc,
-    };
-  });
-}
-
-/* --------- Finnhub normalizer (stock/insider-transactions) ----------
-   Example fields from Finnhub:
-   - symbol, name, share, change (0 buy, 1 sell not consistent; we’ll rely on transaction type if given),
-     transactionPrice (d.price), transactionDate (d.transactionDate or d.filingDate),
-     filings? not always present; url may be absent
---------------------------------------------------------------------- */
-function normalizeFinnhub(items: any[] = []): UiRow[] {
-  return items.map((d: any, i: number): UiRow => {
-    const symbol = okSymbol(d.symbol);
-    const price = parseNum(d.price);
-    const qty = parseNum(d.share) ?? parseNum(d.shares);
-    const filedAt = normalizeDate(d.filingDate || d.transactionDate || d.date);
-
-    // Finnhub doesn’t always provide A/D; heuristics (positive shares => A; negative => D)
-    let type: "A" | "D" | undefined = undefined;
-    if (typeof qty === "number") {
-      if (qty > 0) type = "A";
-      if (qty < 0) type = "D";
-    }
-    if (d.transactionType === "A" || d.transactionType === "D") {
-      type = d.transactionType;
-    }
-
-    return {
-      id: d.id || `${symbol || "FINN"}-${i}`,
-      insider: d.name || d.owner || "—",
-      issuer: d.company || symbol || "—",
-      symbol,
-      filedAt,
-      type,
-      beneficialShares: parseNum(d.ownedFollowing) ?? parseNum(d.sharesOwnedFollowingTransaction),
-      price,
-      valueUSD: val(Math.abs(qty ?? 0), price),
-      docUrl: d.url || d.link || undefined,
-      title: d.title || d.position || undefined,
-    };
-  });
-}
-
-/* --------- SEC fallback (submissions JSON) ----------
-   Only to provide basic filing links (price/qty not guaranteed).
-   We’ll fetch the company’s submissions and filter form “4”.
------------------------------------------------------ */
-async function secFallback(symbol: string, start: string, end: string): Promise<UiRow[]> {
-  try {
-    // 1) Resolve ticker->CIK (via SEC ticker file)
-    const tRes = await fetch("https://www.sec.gov/files/company_tickers_exchange.json", {
-      headers: { "User-Agent": "herevna.io (contact@herevna.io)" },
+      valueUSD: multiply(amount, price),
+      amount,
+      docUrl: `${ctx.baseUrl}${ctx.xmlName}`,
+      title: securityTitle,
+      cik: ctx.cik,
+      accessionNumber: ctx.accessionNumber,
+      primaryDocument: ctx.xmlName,
     });
-    if (!tRes.ok) return [];
-    const tJson: any = await tRes.json();
-    // find matching symbol
-    const entry = Object.values(tJson as any[]).find(
-      (r: any) => (r?.ticker || "").toUpperCase() === symbol
-    ) as any | undefined;
-    if (!entry?.cik) return [];
-    const cik = String(entry.cik).padStart(10, "0");
+  });
 
-    // 2) Pull submissions
-    const sRes = await fetch(`https://www.sec.gov/submissions/CIK${cik}.json`, {
-      headers: { "User-Agent": "herevna.io (contact@herevna.io)" },
-    });
-    if (!sRes.ok) return [];
-    const sJson: any = await sRes.json();
-    const f = sJson?.filings?.recent;
-    if (!f) return [];
-
-    const forms: string[] = f.form || [];
-    const accs: string[] = f.accessionNumber || [];
-    const prims: string[] = f.primaryDocument || [];
-    const filed: string[] = f.filingDate || [];
-    const issuers: string[] = f.companyName || [];
-
-    const startMs = Date.parse(start);
-    const endMs = Date.parse(end);
-
-    const rows: UiRow[] = [];
-    for (let i = 0; i < forms.length; i++) {
-      if (forms[i] !== "4") continue;
-      const filedAt = filed[i];
-      const ts = Date.parse(filedAt);
-      if (Number.isFinite(startMs) && ts < startMs) continue;
-      if (Number.isFinite(endMs) && ts > endMs) continue;
-
-      const acc = accs[i];
-      const primaryDoc = prims[i] || "index.htm";
-      const noZeros = cik.replace(/^0+/, "");
-      const flatAcc = String(acc).replace(/-/g, "");
-      const docUrl = `https://www.sec.gov/Archives/edgar/data/${noZeros}/${flatAcc}/${primaryDoc}`;
-
-      rows.push({
-        id: `${symbol}-SEC-${i}`,
-        insider: "—",
-        issuer: issuers[i] || symbol,
-        symbol,
-        filedAt,
-        type: undefined,
-        beneficialShares: undefined,
-        price: undefined,
-        valueUSD: undefined,
-        docUrl,
-        title: "Form 4 (fallback)",
-        cik,
-        accessionNumber: acc,
-        primaryDocument: primaryDoc,
-      });
-    }
-    return rows;
-  } catch (e) {
-    console.error("SEC fallback error:", e);
-    return [];
-  }
+  return rows;
 }
 
+// --------------------------------------------------
+// Main GET
+// --------------------------------------------------
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const symbol = okSymbol(url.searchParams.get("symbol") || "");
+    const symbol = okSymbol(url.searchParams.get("symbol"));
     const start = url.searchParams.get("start") || "2024-01-01";
     const end = url.searchParams.get("end") || new Date().toISOString().slice(0, 10);
     const type = (url.searchParams.get("type") || "ALL").toUpperCase() as "ALL" | "A" | "D";
@@ -226,81 +201,125 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "Missing symbol" }, { status: 400 });
     }
 
-    // If no keys, return a mock so the UI isn't empty (helps diagnose wiring)
-    if (!FMP_KEY && !FINNHUB_KEY) {
-      const mock: UiRow[] = [
-        {
-          id: "mock-1",
-          insider: "Sample Insider",
-          issuer: symbol,
+    // 1) Resolve ticker → CIK
+    const resolved = await resolveTicker(symbol);
+    if (!resolved) {
+      return NextResponse.json({ ok: true, data: [] }); // no such ticker
+    }
+    const cik = resolved.cik;
+    const cikNoZeros = dezero(cik);
+
+    // 2) Pull submissions and filter Form 4 in date window
+    const subs = await getSubmissions(cik);
+    const recent = subs?.filings?.recent;
+    if (!recent) {
+      return NextResponse.json({ ok: true, data: [] });
+    }
+
+    const forms: string[] = recent.form || [];
+    const accs: string[] = recent.accessionNumber || [];
+    const prims: string[] = recent.primaryDocument || [];
+    const filed: string[] = recent.filingDate || [];
+    const coName: string = subs?.name || resolved.name || symbol;
+
+    const startMs = Date.parse(start);
+    const endMs = Date.parse(end);
+
+    const candidates: { acc: string; xml: string | null; filedAt: string }[] = [];
+
+    // Collect candidate filings + ensure we know the XML filename
+    for (let i = 0; i < forms.length; i++) {
+      if (forms[i] !== "4") continue;
+      const filedAt = filed[i];
+      const ts = Date.parse(filedAt);
+      if (Number.isFinite(startMs) && ts < startMs) continue;
+      if (Number.isFinite(endMs) && ts > endMs) continue;
+
+      const acc = accs[i];
+      let xml = prims[i] || null;
+
+      const accFlat = flatAcc(acc);
+      const baseUrl = `https://www.sec.gov/Archives/edgar/data/${cikNoZeros}/${accFlat}/`;
+
+      // make sure we have an xml doc (primaryDocument might be HTML)
+      if (!xml || !/\.xml$/i.test(xml)) {
+        xml = await findXmlDoc(cikNoZeros, accFlat);
+      }
+
+      candidates.push({ acc, xml, filedAt });
+    }
+
+    // 3) Download & parse each XML
+    const allRows: UiRow[] = [];
+    for (const c of candidates) {
+      if (!c.xml) {
+        // no XML found; push a basic row w/ index.htm link
+        const accFlat = flatAcc(c.acc);
+        allRows.push({
+          id: `${cik}-${c.acc}-0`,
+          insider: "—",
+          issuer: coName,
           symbol,
-          filedAt: start,
-          type: "D",
-          beneficialShares: 120000,
-          price: 125.5,
-          valueUSD: 125.5 * 1000,
-          docUrl: "https://www.sec.gov/Archives/edgar/data/0000000000/0000000000-25-000001/index.htm",
-          title: "Common Stock",
-        },
-      ];
-      return NextResponse.json({ ok: true, data: mock });
-    }
-
-    let rows: UiRow[] = [];
-
-    // 1) FMP first
-    if (FMP_KEY) {
-      try {
-        const fmpURL = new URL("https://financialmodelingprep.com/api/v4/insider-trading");
-        fmpURL.searchParams.set("symbol", symbol);
-        fmpURL.searchParams.set("from", start);
-        fmpURL.searchParams.set("to", end);
-        fmpURL.searchParams.set("apikey", FMP_KEY);
-
-        const fmpRes = await fetch(fmpURL.toString(), { cache: "no-store" });
-        if (!fmpRes.ok) throw new Error(`FMP failed: ${fmpRes.status}`);
-        const fmpJson = (await fmpRes.json()) as any[];
-        const fmpRows = normalizeFmp(Array.isArray(fmpJson) ? fmpJson : []);
-        rows = fmpRows;
-      } catch (e) {
-        console.error("FMP fetch error:", e);
+          filedAt: normalizeDate(c.filedAt),
+          type: undefined,
+          beneficialShares: undefined,
+          price: undefined,
+          valueUSD: undefined,
+          amount: undefined,
+          docUrl: `https://www.sec.gov/Archives/edgar/data/${cikNoZeros}/${accFlat}/index.htm`,
+          title: "Form 4",
+          cik,
+          accessionNumber: c.acc,
+          primaryDocument: "index.htm",
+        });
+        continue;
       }
-    }
 
-    // 2) Finnhub fallback if needed
-    if (rows.length === 0 && FINNHUB_KEY) {
-      try {
-        const fhURL = new URL("https://finnhub.io/api/v1/stock/insider-transactions");
-        fhURL.searchParams.set("symbol", symbol);
-        fhURL.searchParams.set("from", start);
-        fhURL.searchParams.set("to", end);
-        fhURL.searchParams.set("token", FINNHUB_KEY);
+      const accFlat = flatAcc(c.acc);
+      const baseUrl = `https://www.sec.gov/Archives/edgar/data/${cikNoZeros}/${accFlat}/`;
+      const xmlUrl = `${baseUrl}${c.xml}`;
 
-        const fhRes = await fetch(fhURL.toString(), { cache: "no-store" });
-        if (!fhRes.ok) throw new Error(`Finnhub failed: ${fhRes.status}`);
-        const fhJson = await fhRes.json();
-        const list = Array.isArray(fhJson?.data) ? fhJson.data : Array.isArray(fhJson?.transactions) ? fhJson.transactions : [];
-        const fhRows = normalizeFinnhub(list);
-        rows = fhRows;
-      } catch (e) {
-        console.error("Finnhub fetch error:", e);
+      const res = await fetch(xmlUrl, { headers: UA, cache: "no-store" });
+      if (!res.ok) {
+        // fallback to index.htm row
+        allRows.push({
+          id: `${cik}-${c.acc}-0`,
+          insider: "—",
+          issuer: coName,
+          symbol,
+          filedAt: normalizeDate(c.filedAt),
+          type: undefined,
+          beneficialShares: undefined,
+          price: undefined,
+          valueUSD: undefined,
+          amount: undefined,
+          docUrl: `${baseUrl}index.htm`,
+          title: "Form 4",
+          cik,
+          accessionNumber: c.acc,
+          primaryDocument: "index.htm",
+        });
+        continue;
       }
+      const xml = await res.text();
+      const rows = parseForm4XmlToRows(xml, {
+        symbol,
+        issuer: coName,
+        cik,
+        accessionNumber: c.acc,
+        filedAt: c.filedAt,
+        baseUrl,
+        xmlName: c.xml,
+      });
+      allRows.push(...rows);
     }
 
-    // 3) SEC submissions fallback (links only)
-    if (rows.length === 0) {
-      const secRows = await secFallback(symbol, start, end);
-      rows = secRows;
-    }
+    // 4) filter by A/D if requested
+    const filtered = (type === "ALL") ? allRows : allRows.filter(r => r.type === type);
 
-    // Final filter by A/D (if requested)
-    if (type === "A" || type === "D") {
-      rows = rows.filter((r) => r.type === type);
-    }
-
-    return NextResponse.json({ ok: true, data: rows });
+    return NextResponse.json({ ok: true, data: filtered });
   } catch (e: any) {
-    console.error("Insider API fatal error:", e);
+    console.error("Insider route error:", e);
     return NextResponse.json({ ok: false, error: e?.message || "Internal error" }, { status: 500 });
   }
 }
