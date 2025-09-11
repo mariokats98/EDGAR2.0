@@ -1,325 +1,464 @@
 // app/api/insider/route.ts
-import { NextResponse } from "next/server";
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
+export const runtime = "nodejs"; // we need Node for string/XML parsing
 
-type UiRow = {
-  id: string;
-  insider: string;
-  issuer: string;
-  symbol?: string;
-  filedAt: string;
-  type?: "A" | "D";
-  beneficialShares?: number;        // "Amount of Securities Beneficially Owned Following..."
-  price?: number;                   // transactionPricePerShare
-  valueUSD?: number;                // price * amount
-  amount?: number;                  // transactionShares (line item)
-  docUrl?: string;                  // direct link to the XML
-  title?: string;                   // securityTitle
-  cik?: string;
-  accessionNumber?: string;
-  primaryDocument?: string;         // xml file name
-};
+import { NextRequest, NextResponse } from "next/server";
 
-// --------------------------------------------------
-// small helpers
-// --------------------------------------------------
-const UA = { "User-Agent": "herevna.io (contact@herevna.io)" };
+// ---------- small helpers ----------
+function json(data: any, init?: ResponseInit) {
+  return NextResponse.json(data, init);
+}
+function err(message: string, status = 400) {
+  return json({ error: message }, { status });
+}
 
-function okSymbol(sym?: string|null) {
-  return sym ? sym.toUpperCase().trim() : undefined;
+const SEC_UA =
+  process.env.SEC_USER_AGENT ||
+  "herevna.ai/1.0 (admin@herevna.io; +https://herevna.io)";
+
+/** Fetch JSON from SEC with required headers + no-store caching */
+async function fetchJSON<T = any>(url: string): Promise<T> {
+  const r = await fetch(url, {
+    headers: {
+      "user-agent": SEC_UA,
+      accept: "application/json",
+    },
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`Fetch failed ${r.status} for ${url}`);
+  return (await r.json()) as T;
 }
-function normalizeDate(s?: string) {
-  if (!s) return "—";
-  const m = s.match(/^\d{4}-\d{2}-\d{2}/);
-  return m ? m[0] : s;
+
+/** Fetch text (for XML/HTML) from SEC with required headers */
+async function fetchTEXT(url: string): Promise<string> {
+  const r = await fetch(url, {
+    headers: {
+      "user-agent": SEC_UA,
+      accept: "text/plain, text/xml, application/xml, */*",
+    },
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`Fetch failed ${r.status} for ${url}`);
+  return await r.text();
 }
-function toNum(x: any): number | undefined {
-  if (x == null) return;
-  if (typeof x === "number") return Number.isFinite(x) ? x : undefined;
-  if (typeof x === "string") {
-    const n = Number(x.replace(/[$, ]/g, ""));
-    return Number.isFinite(n) ? n : undefined;
-  }
-  return;
+
+/** Parse YYYY-MM-DD from string; returns null if invalid */
+function asDate(s?: string | null): Date | null {
+  if (!s) return null;
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00Z`);
+  return isNaN(d.getTime()) ? null : d;
 }
-function multiply(a?: number, b?: number) {
-  return a != null && b != null ? a * b : undefined;
+
+/** Strip leading zeros from a CIK for /Archives path */
+function cikNoLeadingZeros(cik: string) {
+  return String(parseInt(cik, 10));
 }
-function dezero(s: string) {
-  return s.replace(/^0+/, "");
-}
-function flatAcc(acc: string) {
+
+/** Remove dashes from an accession number for /Archives dir */
+function accessionNoDashes(acc: string) {
   return acc.replace(/-/g, "");
 }
 
-// Get text inside the first occurrence of <tag>...</tag>
-function tagValue(block: string, tag: string): string | undefined {
-  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i");
-  const m = block.match(re);
-  return m ? m[1].trim() : undefined;
-}
-
-// Return all blocks of <nonDerivativeTransaction>...</nonDerivativeTransaction>
-function extractNonDerivativeTransactions(xml: string): string[] {
-  const re = /<nonDerivativeTransaction[\s\S]*?<\/nonDerivativeTransaction>/gi;
+/** Extract all occurrences of <tag>...</tag> from xml string */
+function extractAll(xml: string, tag: string): string[] {
+  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi");
   const out: string[] = [];
   let m: RegExpExecArray | null;
-  while ((m = re.exec(xml))) out.push(m[0]);
+  while ((m = re.exec(xml))) out.push(m[1].trim());
   return out;
 }
 
-// Extract first <reportingOwner> block (for insider name)
-function extractFirstReportingOwner(xml: string): string | undefined {
-  const block = (xml.match(/<reportingOwner[\s\S]*?<\/reportingOwner>/i) || [])[0];
-  if (!block) return;
-  const id = (block.match(/<reportingOwnerId[\s\S]*?<\/reportingOwnerId>/i) || [])[0];
-  const name = id ? tagValue(id, "rptOwnerName") : undefined;
-  return name;
+/** Extract first <tag>value</tag> as string (or undefined) */
+function extractOne(xml: string, tag: string): string | undefined {
+  const m = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  return m ? m[1].trim() : undefined;
 }
 
-// --------------------------------------------------
-// SEC lookups
-// --------------------------------------------------
+/** Resolve stock symbol -> CIK + company name via SEC map */
+async function getCikFromSymbol(
+  rawSymbol: string
+): Promise<{ cik: string; name: string } | null> {
+  const symbol = (rawSymbol || "").trim().toUpperCase();
+  if (!symbol) return null;
 
-// Resolve Ticker -> { cik, name }
-async function resolveTicker(symbol: string): Promise<{ cik: string; name?: string } | null> {
-  const res = await fetch("https://www.sec.gov/files/company_tickers_exchange.json", { headers: UA });
-  if (!res.ok) return null;
-  const data = await res.json() as any;
-  // file is array-like object: {0:{ticker, cik, title}, 1:{...}, ...}
-  const hit = Object.values(data as any).find((r: any) => (r?.ticker || "").toUpperCase() === symbol);
-  if (!hit?.cik) return null;
+  const url = "https://www.sec.gov/files/company_tickers.json";
+  type SecTickerRow = { cik: number; ticker: string; title: string };
+  const data = (await fetchJSON<Record<string, SecTickerRow>>(url)) || {};
+
+  const hit: SecTickerRow | undefined = Object.values(data).find(
+    (r) => r?.ticker?.toUpperCase() === symbol
+  );
+  if (!hit) return null;
+
   return {
     cik: String(hit.cik).padStart(10, "0"),
-    name: hit.title
+    name: hit.title,
   };
 }
 
-// Pull recent submissions JSON
-async function getSubmissions(cik: string): Promise<any|null> {
-  const res = await fetch(`https://www.sec.gov/submissions/CIK${cik}.json`, { headers: UA, cache: "no-store" });
-  if (!res.ok) return null;
-  try { return await res.json(); } catch { return null; }
+/** Pull recent Form 4 filings for a CIK from SEC submissions JSON */
+async function getRecentForm4ForCik(cik: string) {
+  const padded = cik.padStart(10, "0");
+  const url = `https://data.sec.gov/submissions/CIK${padded}.json`;
+
+  const sub = await fetchJSON<any>(url);
+  const recent = sub?.filings?.recent;
+  if (!recent) return [];
+
+  // Build arrays aligned by index
+  const forms: string[] = recent.form || [];
+  const accs: string[] = recent.accessionNumber || [];
+  const reportDates: string[] = recent.reportDate || [];
+  const fileDates: string[] = recent.filingDate || [];
+  const primaryDocs: string[] = recent.primaryDocument || [];
+  const symbols: string[] = recent.ticker || []; // sometimes present
+
+  const out: {
+    form: string;
+    accessionNumber: string;
+    reportDate?: string;
+    filingDate: string;
+    primaryDoc?: string;
+    symbol?: string;
+  }[] = [];
+
+  for (let i = 0; i < forms.length; i++) {
+    if (forms[i] === "4") {
+      out.push({
+        form: forms[i],
+        accessionNumber: accs[i],
+        reportDate: reportDates[i],
+        filingDate: fileDates[i],
+        primaryDoc: primaryDocs[i],
+        symbol: symbols[i],
+      });
+    }
+  }
+  return out;
 }
 
-// Find a likely XML doc for a filing using the directory index
-async function findXmlDoc(cikNoZeros: string, accFlat: string): Promise<string | null> {
-  // index.json lists files in the filing directory
-  const ix = await fetch(`https://www.sec.gov/Archives/edgar/data/${cikNoZeros}/${accFlat}/index.json`, { headers: UA });
-  if (!ix.ok) return null;
-  const j = await ix.json() as any;
-  const items: any[] = j?.directory?.item || [];
-  // prefer a form4*.xml or primary*.xml
-  const preferred = items.find((it: any) => /\.xml$/i.test(it?.name) && /form4|primary/i.test(it?.name));
-  if (preferred) return preferred.name;
-  // else any xml
-  const anyXml = items.find((it: any) => /\.xml$/i.test(it?.name));
-  return anyXml ? anyXml.name : null;
-}
-
-// Parse a single Form 4 XML → array of UiRow (one per nonDerivativeTransaction)
-function parseForm4XmlToRows(xml: string, ctx: {
-  symbol?: string;
-  issuer?: string;
+/** Given a filing (Form 4), download & parse the XML for Table 1 (non-derivative transactions) */
+async function parseForm4Details(params: {
   cik: string;
   accessionNumber: string;
-  filedAt: string;
-  baseUrl: string;          // https://www.sec.gov/Archives/edgar/data/{cikNoZeros}/{accFlat}/
-  xmlName: string;
-}): UiRow[] {
-  const issuerName = tagValue(xml, "issuerName") || ctx.issuer || "—";
-  const securityTitle = tagValue(xml, "securityTitle") || undefined;
-  const insiderName = extractFirstReportingOwner(xml) || "—";
+  primaryDoc?: string;
+}) {
+  const { cik, accessionNumber, primaryDoc } = params;
+  // Construct archive path
+  const cikNo0 = cikNoLeadingZeros(cik);
+  const accDir = accessionNoDashes(accessionNumber);
 
-  const txBlocks = extractNonDerivativeTransactions(xml);
-  if (txBlocks.length === 0) {
-    // No line items; still return a summary row w/ link
-    return [{
-      id: `${ctx.cik}-${ctx.accessionNumber}-0`,
-      insider: insiderName,
-      issuer: issuerName,
-      symbol: ctx.symbol,
-      filedAt: normalizeDate(ctx.filedAt),
-      type: undefined,
-      beneficialShares: undefined,
-      price: undefined,
-      valueUSD: undefined,
-      amount: undefined,
-      docUrl: `${ctx.baseUrl}${ctx.xmlName}`,
-      title: securityTitle,
-      cik: ctx.cik,
-      accessionNumber: ctx.accessionNumber,
-      primaryDocument: ctx.xmlName,
-    }];
+  // If primaryDoc ends with .xml we can use it; otherwise try standard form4.xml
+  const candidates = [
+    primaryDoc,
+    "form4.xml",
+    "primary_doc.xml",
+    "ownership.xml",
+  ].filter(Boolean) as string[];
+
+  let xmlText: string | null = null;
+  let used: string | undefined;
+
+  for (const cand of candidates) {
+    const url = `https://www.sec.gov/Archives/edgar/data/${cikNo0}/${accDir}/${cand}`;
+    try {
+      const t = await fetchTEXT(url);
+      if (t && t.includes("<ownershipDocument")) {
+        xmlText = t;
+        used = cand;
+        break;
+      }
+    } catch {
+      // try next candidate
+    }
   }
 
-  const rows: UiRow[] = [];
-  txBlocks.forEach((block, i) => {
-    const amount = toNum(tagValue(block, "value") ?? tagValue(block, "transactionShares") ?? tagValue(block, "shares"));
-    const typeVal = (tagValue(block, "transactionAcquiredDisposedCode") || "")
-      .match(/<value>(A|D)<\/value>/i)?.[1]?.toUpperCase() as "A" | "D" | undefined;
+  if (!xmlText) {
+    // last resort: index to find xml name
+    const indexUrl = `https://www.sec.gov/Archives/edgar/data/${cikNo0}/${accDir}/index.json`;
+    try {
+      const idx = await fetchJSON<{ directory: { item: { name: string }[] } }>(
+        indexUrl
+      );
+      const guess = idx?.directory?.item?.find((it) =>
+        it.name.toLowerCase().endsWith(".xml")
+      );
+      if (guess) {
+        const alt = `https://www.sec.gov/Archives/edgar/data/${cikNo0}/${accDir}/${guess.name}`;
+        const t = await fetchTEXT(alt);
+        if (t && t.includes("<ownershipDocument")) {
+          xmlText = t;
+          used = guess.name;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
 
-    const price = toNum(tagValue(block, "transactionPricePerShare") ?? tagValue(block, "price"));
-    const beneficial = toNum(tagValue(block, "sharesOwnedFollowingTransaction") ?? tagValue(block, "postTransactionAmounts"));
+  if (!xmlText) return null;
 
-    rows.push({
-      id: `${ctx.cik}-${ctx.accessionNumber}-${i + 1}`,
-      insider: insiderName,
-      issuer: issuerName,
-      symbol: ctx.symbol,
-      filedAt: normalizeDate(ctx.filedAt),
-      type: typeVal,
-      beneficialShares: beneficial,
-      price,
-      valueUSD: multiply(amount, price),
-      amount,
-      docUrl: `${ctx.baseUrl}${ctx.xmlName}`,
-      title: securityTitle,
-      cik: ctx.cik,
-      accessionNumber: ctx.accessionNumber,
-      primaryDocument: ctx.xmlName,
-    });
+  // Parse issuer + reporting owner
+  const issuerName =
+    extractOne(xmlText, "issuerName") || extractOne(xmlText, "issuerNameText");
+  const issuerTradingSymbol =
+    extractOne(xmlText, "issuerTradingSymbol") ||
+    extractOne(xmlText, "issuerSymbol");
+
+  const reportingOwners = extractAll(xmlText, "reportingOwner");
+  const firstOwner = reportingOwners[0] || "";
+  const insiderName =
+    extractOne(firstOwner, "rptOwnerName") ||
+    extractOne(firstOwner, "reportingOwnerName") ||
+    "—";
+
+  // Table 1 non-derivative transactions (can be multiple)
+  const txBlocks = extractAll(xmlText, "nonDerivativeTransaction");
+
+  type TxRow = {
+    action: "A" | "D" | "—";
+    shares?: number;
+    price?: number;
+    ownedFollowing?: number;
+  };
+
+  const rows: TxRow[] = txBlocks.map((blk) => {
+    const shares =
+      extractOne(blk, "transactionShares") ||
+      extractOne(blk, "transactionAmounts") ||
+      undefined;
+
+    const sharesVal = Number(
+      extractOne(blk, "value") ||
+        extractOne(blk, "transactionShares") ||
+        "NaN"
+    );
+
+    const ad =
+      extractOne(blk, "transactionAcquiredDisposedCode") ||
+      extractOne(blk, "transactionAcquiredDisposed") ||
+      extractOne(blk, "transactionCode") ||
+      "—";
+    const action = (ad.match(/[AD]/i)?.[0]?.toUpperCase() as "A" | "D") || "—";
+
+    const priceVal = Number(
+      extractOne(blk, "transactionPricePerShare") ||
+        extractOne(blk, "pricePerShare") ||
+        "NaN"
+    );
+
+    const ownedFollowingVal = Number(
+      extractOne(blk, "sharesOwnedFollowingTransaction") ||
+        extractOne(blk, "postTransactionAmounts") ||
+        "NaN"
+    );
+
+    return {
+      action,
+      shares: Number.isFinite(sharesVal) ? sharesVal : undefined,
+      price: Number.isFinite(priceVal) ? priceVal : undefined,
+      ownedFollowing: Number.isFinite(ownedFollowingVal)
+        ? ownedFollowingVal
+        : undefined,
+    };
   });
 
-  return rows;
+  const archiveBase = `https://www.sec.gov/Archives/edgar/data/${cikNo0}/${accDir}`;
+  return {
+    issuer: issuerName || "—",
+    symbol: issuerTradingSymbol || undefined,
+    insider: insiderName || "—",
+    formUrl: `${archiveBase}/${used || "form4.xml"}`,
+    indexUrl: `${archiveBase}/index.html`,
+    transactions: rows,
+  };
 }
 
-// --------------------------------------------------
-// Main GET
-// --------------------------------------------------
-export async function GET(req: Request) {
+// ---------- API Route ----------
+/**
+ * GET /api/insider?symbol=NVDA
+ * GET /api/insider?cik=0000320193
+ * GET /api/insider?issuer=Apple
+ *
+ * Optional:
+ *   start=YYYY-MM-DD
+ *   end=YYYY-MM-DD
+ *   action=A|D|ALL  (default ALL)
+ *   page=1 (1-based)
+ *   perPage=25
+ */
+export async function GET(req: NextRequest) {
   try {
-    const url = new URL(req.url);
-    const symbol = okSymbol(url.searchParams.get("symbol"));
-    const start = url.searchParams.get("start") || "2024-01-01";
-    const end = url.searchParams.get("end") || new Date().toISOString().slice(0, 10);
-    const type = (url.searchParams.get("type") || "ALL").toUpperCase() as "ALL" | "A" | "D";
+    const { searchParams } = new URL(req.url);
 
-    if (!symbol) {
-      return NextResponse.json({ ok: false, error: "Missing symbol" }, { status: 400 });
+    const symbol = searchParams.get("symbol") || "";
+    const cik = searchParams.get("cik") || "";
+    const issuerQuery = searchParams.get("issuer") || "";
+
+    const startStr = searchParams.get("start") || "";
+    const endStr = searchParams.get("end") || "";
+    const actionRaw = (searchParams.get("action") || "ALL").toUpperCase();
+    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
+    const perPage = Math.min(
+      100,
+      Math.max(1, parseInt(searchParams.get("perPage") || "25", 10))
+    );
+
+    if (!symbol && !cik && !issuerQuery) {
+      return err("Provide symbol, cik, or issuer.");
     }
 
-    // 1) Resolve ticker → CIK
-    const resolved = await resolveTicker(symbol);
-    if (!resolved) {
-      return NextResponse.json({ ok: true, data: [] }); // no such ticker
-    }
-    const cik = resolved.cik;
-    const cikNoZeros = dezero(cik);
+    let resolvedCik = cik.trim();
+    let resolvedIssuer = issuerQuery.trim();
 
-    // 2) Pull submissions and filter Form 4 in date window
-    const subs = await getSubmissions(cik);
-    const recent = subs?.filings?.recent;
-    if (!recent) {
-      return NextResponse.json({ ok: true, data: [] });
+    // If symbol given → resolve to CIK
+    if (symbol && !resolvedCik) {
+      const hit = await getCikFromSymbol(symbol);
+      if (!hit) return err("Could not resolve symbol to CIK", 404);
+      resolvedCik = hit.cik;
+      if (!resolvedIssuer) resolvedIssuer = hit.name;
     }
 
-    const forms: string[] = recent.form || [];
-    const accs: string[] = recent.accessionNumber || [];
-    const prims: string[] = recent.primaryDocument || [];
-    const filed: string[] = recent.filingDate || [];
-    const coName: string = subs?.name || resolved.name || symbol;
-
-    const startMs = Date.parse(start);
-    const endMs = Date.parse(end);
-
-    const candidates: { acc: string; xml: string | null; filedAt: string }[] = [];
-
-    // Collect candidate filings + ensure we know the XML filename
-    for (let i = 0; i < forms.length; i++) {
-      if (forms[i] !== "4") continue;
-      const filedAt = filed[i];
-      const ts = Date.parse(filedAt);
-      if (Number.isFinite(startMs) && ts < startMs) continue;
-      if (Number.isFinite(endMs) && ts > endMs) continue;
-
-      const acc = accs[i];
-      let xml = prims[i] || null;
-
-      const accFlat = flatAcc(acc);
-      const baseUrl = `https://www.sec.gov/Archives/edgar/data/${cikNoZeros}/${accFlat}/`;
-
-      // make sure we have an xml doc (primaryDocument might be HTML)
-      if (!xml || !/\.xml$/i.test(xml)) {
-        xml = await findXmlDoc(cikNoZeros, accFlat);
+    // If only issuer name given (no symbol/cik) → naive lookup via SEC ticker map title match
+    if (!symbol && !resolvedCik && resolvedIssuer) {
+      try {
+        const url = "https://www.sec.gov/files/company_tickers.json";
+        type Row = { cik: number; ticker: string; title: string };
+        const data = await fetchJSON<Record<string, Row>>(url);
+        const hit = Object.values(data).find((r) =>
+          r?.title?.toLowerCase().includes(resolvedIssuer.toLowerCase())
+        );
+        if (hit) {
+          resolvedCik = String(hit.cik).padStart(10, "0");
+        }
+      } catch {
+        // ignore; we’ll proceed without CIK (will fail below if necessary)
       }
-
-      candidates.push({ acc, xml, filedAt });
     }
 
-    // 3) Download & parse each XML
-    const allRows: UiRow[] = [];
-    for (const c of candidates) {
-      if (!c.xml) {
-        // no XML found; push a basic row w/ index.htm link
-        const accFlat = flatAcc(c.acc);
-        allRows.push({
-          id: `${cik}-${c.acc}-0`,
-          insider: "—",
-          issuer: coName,
-          symbol,
-          filedAt: normalizeDate(c.filedAt),
-          type: undefined,
-          beneficialShares: undefined,
-          price: undefined,
-          valueUSD: undefined,
-          amount: undefined,
-          docUrl: `https://www.sec.gov/Archives/edgar/data/${cikNoZeros}/${accFlat}/index.htm`,
-          title: "Form 4",
-          cik,
-          accessionNumber: c.acc,
-          primaryDocument: "index.htm",
+    if (!resolvedCik) {
+      return err("Unable to resolve a CIK from your query.", 404);
+    }
+
+    // Pull recent Form 4 filings for this CIK
+    const filings = await getRecentForm4ForCik(resolvedCik);
+
+    // Date filtering (use filingDate)
+    const startDate = asDate(startStr);
+    const endDate = asDate(endStr);
+    const filteredByDate = filings.filter((f) => {
+      const d = asDate(f.filingDate);
+      if (!d) return false;
+      if (startDate && d < startDate) return false;
+      if (endDate && d > endDate) return false;
+      return true;
+    });
+
+    // Pagination first, then we’ll fetch/parse details for the current page
+    const total = filteredByDate.length;
+    const offset = (page - 1) * perPage;
+    const pageSlice = filteredByDate.slice(offset, offset + perPage);
+
+    // Fetch + parse XML for each page item
+    const details = await Promise.all(
+      pageSlice.map((f) =>
+        parseForm4Details({
+          cik: resolvedCik,
+          accessionNumber: f.accessionNumber,
+          primaryDoc: f.primaryDoc,
+        }).catch(() => null)
+      )
+    );
+
+    // Flatten out transactions and apply A/D filter
+    const actionMode: "ALL" | "A" | "D" =
+      actionRaw === "A" || actionRaw === "D" ? (actionRaw as any) : "ALL";
+
+    type Row = {
+      insider: string;
+      issuer: string;
+      symbol?: string;
+      filedAt: string;
+      action: "A" | "D" | "—";
+      shares?: number;
+      price?: number;
+      value?: number;
+      ownedFollowing?: number; // Beneficially Owned Shares after tx
+      formUrl: string;
+      indexUrl: string;
+      accessionNumber: string;
+    };
+
+    const rows: Row[] = [];
+    for (let i = 0; i < pageSlice.length; i++) {
+      const f = pageSlice[i];
+      const d = details[i];
+      if (!d) continue;
+
+      const filedAt = f.filingDate || f.reportDate || "—";
+      const issuer = d.issuer || "—";
+      const symbolFromXml = d.symbol || f.symbol;
+      const insider = d.insider || "—";
+
+      // If no transactions table, at least push one row with links
+      if (!d.transactions || d.transactions.length === 0) {
+        rows.push({
+          insider,
+          issuer,
+          symbol: symbolFromXml,
+          filedAt,
+          action: "—",
+          formUrl: d.formUrl,
+          indexUrl: d.indexUrl,
+          accessionNumber: f.accessionNumber,
         });
         continue;
       }
 
-      const accFlat = flatAcc(c.acc);
-      const baseUrl = `https://www.sec.gov/Archives/edgar/data/${cikNoZeros}/${accFlat}/`;
-      const xmlUrl = `${baseUrl}${c.xml}`;
+      for (const tx of d.transactions) {
+        if (actionMode !== "ALL" && tx.action !== actionMode) continue;
+        const value =
+          typeof tx.shares === "number" && typeof tx.price === "number"
+            ? tx.shares * tx.price
+            : undefined;
 
-      const res = await fetch(xmlUrl, { headers: UA, cache: "no-store" });
-      if (!res.ok) {
-        // fallback to index.htm row
-        allRows.push({
-          id: `${cik}-${c.acc}-0`,
-          insider: "—",
-          issuer: coName,
-          symbol,
-          filedAt: normalizeDate(c.filedAt),
-          type: undefined,
-          beneficialShares: undefined,
-          price: undefined,
-          valueUSD: undefined,
-          amount: undefined,
-          docUrl: `${baseUrl}index.htm`,
-          title: "Form 4",
-          cik,
-          accessionNumber: c.acc,
-          primaryDocument: "index.htm",
+        rows.push({
+          insider,
+          issuer,
+          symbol: symbolFromXml,
+          filedAt,
+          action: tx.action,
+          shares: tx.shares,
+          price: tx.price,
+          value,
+          ownedFollowing: tx.ownedFollowing,
+          formUrl: d.formUrl,
+          indexUrl: d.indexUrl,
+          accessionNumber: f.accessionNumber,
         });
-        continue;
       }
-      const xml = await res.text();
-      const rows = parseForm4XmlToRows(xml, {
-        symbol,
-        issuer: coName,
-        cik,
-        accessionNumber: c.acc,
-        filedAt: c.filedAt,
-        baseUrl,
-        xmlName: c.xml,
-      });
-      allRows.push(...rows);
     }
 
-    // 4) filter by A/D if requested
-    const filtered = (type === "ALL") ? allRows : allRows.filter(r => r.type === type);
-
-    return NextResponse.json({ ok: true, data: filtered });
+    return json({
+      ok: true,
+      query: {
+        symbol: symbol || null,
+        cik: resolvedCik,
+        issuer: resolvedIssuer || null,
+        start: startStr || null,
+        end: endStr || null,
+        action: actionMode,
+        page,
+        perPage,
+      },
+      total,
+      count: rows.length,
+      data: rows,
+    });
   } catch (e: any) {
-    console.error("Insider route error:", e);
-    return NextResponse.json({ ok: false, error: e?.message || "Internal error" }, { status: 500 });
+    return err(e?.message || "Unexpected server error", 500);
   }
 }
