@@ -8,9 +8,10 @@ type Row = {
   insiderName: string;
   tradeDate: string;
   transactionType: "Buy" | "Sell" | "A" | "D" | "Unknown";
-  shares: number | null;
+  txnShares: number | null;      // Securities Acquired (A) or Disposed Of (D)
   price?: number | null;
   valueUSD?: number | null;
+  ownedAfter?: number | null;    // Beneficially Owned Shares
   source: "FMP" | "Finnhub" | "SEC";
   filingUrl?: string;
   indexUrl?: string;
@@ -116,7 +117,10 @@ export default function InsiderTape() {
       <div className="space-y-3">
         {rows.map((r, idx) => {
           const isBuy = r.transactionType === "Buy";
-          const accent = isBuy ? "bg-emerald-100 text-emerald-800" : r.transactionType === "Sell" ? "bg-rose-100 text-rose-800" : "bg-gray-100 text-gray-700";
+          const accent =
+            isBuy ? "bg-emerald-100 text-emerald-800"
+                  : r.transactionType === "Sell" ? "bg-rose-100 text-rose-800"
+                  : "bg-gray-100 text-gray-700";
           const badge = isBuy ? "Buy" : r.transactionType === "Sell" ? "Sell" : r.transactionType;
           const link = r.filingUrl || r.indexUrl;
 
@@ -135,18 +139,22 @@ export default function InsiderTape() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-4 text-right">
+                <div className="grid grid-cols-4 gap-4 text-right">
                   <div>
-                    <div className="text-xs text-gray-500">Shares</div>
-                    <div className="font-medium">{r.shares ?? "—"}</div>
+                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Securities (A/D)</div>
+                    <div className="font-medium">{r.txnShares ?? "—"}</div>
                   </div>
                   <div>
-                    <div className="text-xs text-gray-500">Price</div>
+                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Price</div>
                     <div className="font-medium">{r.price != null ? `$${r.price.toLocaleString()}` : "—"}</div>
                   </div>
                   <div>
-                    <div className="text-xs text-gray-500">Value</div>
+                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Value</div>
                     <div className="font-semibold">{r.valueUSD != null ? `$${r.valueUSD.toLocaleString()}` : "—"}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Beneficially Owned Shares</div>
+                    <div className="font-medium">{r.ownedAfter != null ? r.ownedAfter.toLocaleString() : "—"}</div>
                   </div>
                 </div>
 
