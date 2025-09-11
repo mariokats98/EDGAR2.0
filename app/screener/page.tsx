@@ -2,7 +2,10 @@
 "use client";
 
 import { useState } from "react";
-import InsiderTape from "../../components/InsiderTape";
+// If InsiderTape.tsx is in app/components/InsiderTape.tsx use this:
+import InsiderTape from "../components/InsiderTape";
+// If you actually put it at /components/InsiderTape.tsx instead, then use:
+// import InsiderTape from "../../components/InsiderTape";
 
 export default function ScreenerPage() {
   const today = new Date().toISOString().slice(0, 10);
@@ -66,13 +69,13 @@ export default function ScreenerPage() {
         </div>
       </div>
 
-      {/* InsiderTape */}
+      {/* Insider transactions list */}
       <InsiderTape
         symbol={symbol}
         start={start}
         end={end}
         txnType={txnType}
-        queryKey={Date.now()} // ensures re-fetch on filter change
+        queryKey={`${symbol}-${start}-${end}-${txnType}`}
       />
     </main>
   );
