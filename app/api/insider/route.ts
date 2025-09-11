@@ -10,13 +10,13 @@ type InsiderRow = {
   insiderName: string;
   tradeDate: string; // YYYY-MM-DD
   transactionType: "Buy" | "Sell" | "A" | "D" | "Unknown";
-  txnShares: number | null;             // Securities Acquired (A) or Disposed Of (D) — Form 4 transaction amount
-  price?: number | null;                // Price per share in that transaction
-  valueUSD?: number | null;             // txnShares * price (if both present)
-  ownedAfter?: number | null;           // Beneficially Owned Shares following the transaction (postTransactionAmounts)
+  txnShares: number | null;      // Securities Acquired (A) or Disposed Of (D)
+  price?: number | null;         // Price per share
+  valueUSD?: number | null;      // txnShares * price
+  ownedAfter?: number | null;    // Beneficially Owned Shares (postTransactionAmounts)
   source: "FMP" | "Finnhub" | "SEC";
-  filingUrl?: string;                   // direct doc (XML/HTML) if available, else index
-  indexUrl?: string;                    // SEC index page (backup)
+  filingUrl?: string;            // direct doc xml/html
+  indexUrl?: string;             // index page
   cik?: string;
 };
 
@@ -49,9 +49,8 @@ function calcValue(shares: number | null, price: number | null) {
 function toTxn(letter?: string | null): InsiderRow["transactionType"] {
   if (!letter) return "Unknown";
   const x = letter.toUpperCase();
-  // Map common Form 4 codes into Buy/Sell buckets
-  if (x === "P" || x === "A") return "Buy";   // Purchase/Acquisition
-  if (x === "S" || x === "D") return "Sell";  // Sale/Disposition
+  if (x === "P" || x === "A") return "Buy";
+  if (x === "S" || x === "D") return "Sell";
   return (["A","D"].includes(x) ? (x as "A" | "D") : "Unknown");
 }
 function matchesSide(txn: InsiderRow["transactionType"], side: Side) {
@@ -62,9 +61,8 @@ function matchesSide(txn: InsiderRow["transactionType"], side: Side) {
 }
 function withinRange(dateISO: string, start?: string, end?: string) {
   if (!dateISO) return false;
-  const d = dateISO;
-  if (start && d < start) return false;
-  if (end && d > end) return false;
+  if (start && dateISO < start) return false;
+  if (end && dateISO > end) return false;
   return true;
 }
 
@@ -82,10 +80,8 @@ async function fetchFromFMP(symbol?: string, start?: string, end?: string, side:
   const rows: any[] = await r.json();
   if (!Array.isArray(rows)) return [];
 
-  const mapped: InsiderRow[] = rows.map((x) => {
-    // This is transaction amount (A or D)
+  return rows.map((x) => {
     const txnShares = safeNum(x.securitiesTransacted ?? x.sharesNumber ?? x.shares);
-    // Try vendor price/total; back compute if needed
     let price = safeNum(x.price);
     let total = safeNum(x.finalPrice ?? x.value ?? x.transactionValue);
     if (price == null && total != null && txnShares != null && txnShares > 0) {
@@ -101,7 +97,7 @@ async function fetchFromFMP(symbol?: string, start?: string, end?: string, side:
       txnShares,
       price,
       valueUSD: calcValue(txnShares, price) ?? total ?? null,
-      ownedAfter: null, // FMP typically does not expose postTransactionAmounts
+      ownedAfter: null,
       source: "FMP",
       filingUrl: x.link || undefined,
       cik: x.cik || x.ownerCik || undefined,
@@ -110,8 +106,6 @@ async function fetchFromFMP(symbol?: string, start?: string, end?: string, side:
   })
   .filter((r) => r.tradeDate && withinRange(r.tradeDate, start, end) && matchesSide(r.transactionType, side))
   .slice(0, limit);
-
-  return mapped;
 }
 
 /* ------------------ Finnhub ------------------ */
@@ -140,7 +134,7 @@ async function fetchFromFinnhub(symbol?: string, start?: string, end?: string, s
       txnShares,
       price,
       valueUSD: calcValue(txnShares, price) ?? total ?? null,
-      ownedAfter: null, // Finnhub does not provide owned-after
+      ownedAfter: null,
       source: "Finnhub",
       cik: x.cik || undefined,
     };
@@ -150,7 +144,7 @@ async function fetchFromFinnhub(symbol?: string, start?: string, end?: string, s
     .filter((r) => r.tradeDate && withinRange(r.tradeDate, start, end) && matchesSide(r.transactionType, side))
     .slice(0, limit);
 
-  // Enrich with SEC link (best-effort) using any CIK we get
+  // Optionally enrich with SEC link if any CIK present
   const firstWithCik = rows.find((r) => r.cik);
   if (firstWithCik?.cik) {
     try {
@@ -169,7 +163,7 @@ async function fetchFromFinnhub(symbol?: string, start?: string, end?: string, s
           if (forms[i] !== "4") continue;
           const accession = acc[i];
           const prim = primaryDoc[i];
-          const date = fdates[i];
+          const date = toISO(fdates[i]);
           if (!accession || !date) continue;
           const accessionNoDashes = accession.replace(/-/g, "");
           const direct = prim
@@ -190,9 +184,9 @@ async function fetchFromFinnhub(symbol?: string, start?: string, end?: string, s
   return rows;
 }
 
-/* ------------------ SEC (Form 4 XML) ------------------ */
+/* ------------------ SEC (Form 4) helpers ------------------ */
 function pickFirstTxn(xml: string) {
-  // Prefer non-derivative, then derivative
+  // prefer non-derivative transaction block
   const blocks =
     xml.match(/<nonDerivativeTransaction>[\s\S]*?<\/nonDerivativeTransaction>/gi) ||
     xml.match(/<derivativeTransaction>[\s\S]*?<\/derivativeTransaction>/gi) ||
@@ -200,12 +194,12 @@ function pickFirstTxn(xml: string) {
 
   for (const block of blocks) {
     const date = block.match(/<transactionDate>\s*<value>([^<]+)<\/value>/i)?.[1];
-    const code = block.match(/<transactionAcquiredDisposedCode>\s*<value>([^<]+)<\/value>/i)?.[1]; // A/D/P/S
+    const code = block.match(/<transactionAcquiredDisposedCode>\s*<value>([^<]+)<\/value>/i)?.[1];
     const shares = safeNum(block.match(/<transactionShares>\s*<value>([^<]+)<\/value>/i)?.[1]);
     const price = safeNum(block.match(/<transactionPricePerShare>\s*<value>([^<]+)<\/value>/i)?.[1]);
-
-    // "Owned after" may be outside the transaction block (postTransactionAmounts…)
-    const ownedAfter = safeNum(xml.match(/<postTransactionAmounts>[\s\S]*?<sharesOwnedFollowingTransaction>\s*<value>([^<]+)<\/value>/i)?.[1]);
+    const ownedAfter = safeNum(
+      xml.match(/<postTransactionAmounts>[\s\S]*?<sharesOwnedFollowingTransaction>\s*<value>([^<]+)<\/value>/i)?.[1]
+    );
 
     if (shares != null) {
       return {
@@ -217,12 +211,36 @@ function pickFirstTxn(xml: string) {
       };
     }
   }
-  // If not found, try only "owned after"
-  const ownedAfter = safeNum(xml.match(/<postTransactionAmounts>[\s\S]*?<sharesOwnedFollowingTransaction>\s*<value>([^<]+)<\/value>/i)?.[1]);
+
+  // fallback: owned-after only
+  const ownedAfter = safeNum(
+    xml.match(/<postTransactionAmounts>[\s\S]*?<sharesOwnedFollowingTransaction>\s*<value>([^<]+)<\/value>/i)?.[1]
+  );
   if (ownedAfter != null) {
     return { date: "", code: undefined, txnShares: null, price: null, ownedAfter };
   }
   return null;
+}
+
+// If primary doc isn't XML, scrape the index page for the first .xml link
+async function findXmlFromIndex(indexUrl: string): Promise<string | null> {
+  try {
+    const r = await fetch(indexUrl, { headers: UA_HEADERS, cache: "no-store" });
+    if (!r.ok) return null;
+    const html = await r.text();
+    const m = html.match(/href="([^"]+\.xml)"/i) || html.match(/>([^<]+\.xml)</i);
+    if (!m) return null;
+
+    let href = m[1] || m[0];
+    href = href.replace(/^href=|>|<|"|'|\s/gi, "");
+    if (href.startsWith("http")) return href;
+
+    // build absolute path from indexUrl
+    const base = indexUrl.replace(/[^/]+$/, "");
+    return base + href.replace(/^\.?\//, "");
+  } catch {
+    return null;
+  }
 }
 
 async function fetchFromSEC(cik: string, start?: string, end?: string, side: Side = "all", limit = 50): Promise<InsiderRow[]> {
@@ -239,8 +257,7 @@ async function fetchFromSEC(cik: string, start?: string, end?: string, side: Sid
   const acc: string[] = recent.accessionNumber || [];
   const dates: string[] = recent.filingDate || [];
   const primaryDoc: string[] = recent.primaryDocument || [];
-  const tickers: string[] = data?.tickers || [];
-  const symbol = tickers[0] || "";
+  const symbol = (data?.tickers || [])[0] || "";
 
   const out: InsiderRow[] = [];
 
@@ -252,13 +269,19 @@ async function fetchFromSEC(cik: string, start?: string, end?: string, side: Sid
 
     const accession = acc[i];
     if (!accession) continue;
-
     const accessionNoDashes = accession.replace(/-/g, "");
     const prim = primaryDoc[i];
+
     const indexUrl = `https://www.sec.gov/Archives/edgar/data/${Number(padded)}/${accessionNoDashes}/${accession}-index.htm`;
-    const directDoc = prim
+    let directDoc = prim
       ? `https://www.sec.gov/Archives/edgar/data/${Number(padded)}/${accessionNoDashes}/${prim}`
       : indexUrl;
+
+    // If not XML, try to discover xml from index page
+    if (!/\.xml$/i.test(directDoc)) {
+      const xmlGuess = await findXmlFromIndex(indexUrl);
+      if (xmlGuess) directDoc = xmlGuess;
+    }
 
     let txnShares: number | null = null;
     let price: number | null = null;
@@ -267,7 +290,7 @@ async function fetchFromSEC(cik: string, start?: string, end?: string, side: Sid
     let txnDateISO: string | undefined;
 
     try {
-      if (directDoc.endsWith(".xml")) {
+      if (/\.xml$/i.test(directDoc)) {
         const rx = await fetch(directDoc, { headers: UA_HEADERS, cache: "no-store" });
         if (rx.ok) {
           const xml = await rx.text();
@@ -314,8 +337,8 @@ export async function GET(req: NextRequest) {
     const symbol = searchParams.get("symbol")?.trim().toUpperCase();
     const cik = searchParams.get("cik")?.trim();
     const limit = Math.min(Math.max(Number(searchParams.get("limit") || 50), 1), 200);
-    const start = searchParams.get("start")?.trim() || undefined; // YYYY-MM-DD
-    const end = searchParams.get("end")?.trim() || undefined;     // YYYY-MM-DD
+    const start = searchParams.get("start")?.trim() || undefined;
+    const end = searchParams.get("end")?.trim() || undefined;
     const sideParam = (searchParams.get("side")?.trim().toLowerCase() || "all") as Side;
     const side: Side = sideParam === "buy" || sideParam === "sell" ? sideParam : "all";
 
