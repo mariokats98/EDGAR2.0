@@ -3,205 +3,186 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type Row = {
-  symbol: string;
-  insiderName: string;
-  tradeDate: string;
-  transactionType: "Buy" | "Sell" | "A" | "D" | "Unknown";
-  txnShares: number | null;
-  price?: number | null;
-  valueUSD?: number | null;
-  ownedAfter?: number | null;
-  source: "FMP" | "Finnhub" | "SEC";
-  filingUrl?: string;
-  indexUrl?: string;
-  cik?: string;
+type InsiderRow = {
+  insider: string;          // e.g., "SMITH JOHN A"
+  issuer: string;           // e.g., "NVIDIA CORP"
+  symbol?: string;          // e.g., "NVDA"
+  filedAt: string;          // e.g., "2025-08-08"
+  txnType: "A" | "D" | string; // 'A' (acquired) or 'D' (disposed) per Form 4
+  qty?: number | null;      // securities acquired/disposed in this line
+  price?: number | null;    // per-share price for this line
+  ownedAfter?: number | null; // Beneficially Owned Shares after the txn
+  link?: string;            // direct Form 4 document/link
+  // optional extras you might have
+  title?: string;           // insider title
+  relationship?: string;    // officer/director/10% etc.
 };
 
-export default function InsiderTape() {
-  const [symbol, setSymbol] = useState<string>("");
-  const [cik, setCik] = useState<string>(""); // optional
-  const [start, setStart] = useState<string>(() => {
-    const d = new Date();
-    d.setMonth(d.getMonth() - 3);
-    return d.toISOString().slice(0, 10);
-  });
-  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
-  const [side, setSide] = useState<"all" | "buy" | "sell">("all");
-  const [limit, setLimit] = useState<number>(50);
+type Props = {
+  symbol?: string;
+  cik?: string;
+  start: string; // YYYY-MM-DD
+  end: string;   // YYYY-MM-DD
+  txnType?: "ALL" | "A" | "D";
+  /** a key that can be bumped to force re-fetch */
+  queryKey?: number;
+};
 
+function n(v?: number | null) {
+  if (v === null || v === undefined || Number.isNaN(v)) return null;
+  return v;
+}
+
+function fmtNum(v?: number | null) {
+  const x = n(v);
+  if (x === null) return "—";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(x);
+}
+
+function fmtValue(q?: number | null, p?: number | null) {
+  const qty = n(q);
+  const price = n(p);
+  if (qty === null || price === null) return "—";
+  const val = qty * price;
+  return "$" + new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(val);
+}
+
+function pillColor(txn: string) {
+  if (txn === "A") return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
+  if (txn === "D") return "bg-rose-50 text-rose-700 ring-1 ring-rose-200";
+  return "bg-gray-100 text-gray-700";
+}
+
+export default function InsiderTape({ symbol, cik, start, end, txnType = "ALL", queryKey = 0 }: Props) {
   const [loading, setLoading] = useState(false);
-  const [rows, setRows] = useState<Row[]>([]);
+  const [rows, setRows] = useState<InsiderRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [metaTried, setMetaTried] = useState<string[] | null>(null);
 
-  const query = useMemo(() => {
-    const sp = new URLSearchParams();
-    if (symbol.trim()) sp.set("symbol", symbol.trim().toUpperCase());
-    if (cik.trim()) sp.set("cik", cik.trim());
-    sp.set("start", start);
-    sp.set("end", end);
-    sp.set("side", side);
-    sp.set("limit", String(limit));
-    return `/api/insider?${sp.toString()}`;
-  }, [symbol, cik, start, end, side, limit]);
-
-  async function load() {
-    setLoading(true);
-    setError(null);
-    setRows([]);
-    setMetaTried(null);
-    try {
-      const r = await fetch(query, { cache: "no-store" });
-      const j = await r.json();
-      if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
-      setRows(Array.isArray(j?.data) ? j.data : []);
-      setMetaTried(Array.isArray(j?.tried) ? j.tried : null);
-    } catch (e: any) {
-      setError(e?.message || "Unexpected error");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const qs = useMemo(() => {
+    const u = new URLSearchParams();
+    if (symbol && symbol.trim()) u.set("symbol", symbol.trim());
+    if (cik && cik.trim()) u.set("cik", cik.trim());
+    if (start) u.set("start", start);
+    if (end) u.set("end", end);
+    if (txnType && txnType !== "ALL") u.set("txnType", txnType);
+    return u.toString();
+  }, [symbol, cik, start, end, txnType]);
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    let cancelled = false;
+    async function go() {
+      setLoading(true);
+      setError(null);
+      try {
+        // Adjust this path if your insider route is named differently
+        const url = `/api/insider?${qs}`;
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok) {
+          const t = await r.text().catch(() => "");
+          throw new Error(`Fetch failed (${r.status}) ${t || ""}`.trim());
+        }
+        const j = await r.json();
+        let data: InsiderRow[] = Array.isArray(j?.data) ? j.data : Array.isArray(j) ? j : [];
+
+        // Defensive normalization
+        data = data.map((d) => ({
+          insider: d.insider ?? d.reportingOwner ?? "—",
+          issuer: d.issuer ?? d.issuerName ?? "—",
+          symbol: d.symbol ?? d.ticker ?? undefined,
+          filedAt: d.filedAt ?? d.date ?? "—",
+          txnType: (d.txnType ?? d.transactionCode ?? "").toUpperCase(),
+          qty: d.qty ?? d.amount ?? d.shares ?? null,
+          price: d.price ?? d.transactionPrice ?? null,
+          ownedAfter: d.ownedAfter ?? d.beneficiallyOwnedAfter ?? null,
+          link: d.link ?? d.documentUrl ?? d.form4Url ?? undefined,
+          title: d.title,
+          relationship: d.relationship,
+        }));
+
+        if (!cancelled) setRows(data);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load insider data");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    go();
+    return () => {
+      cancelled = true;
+    };
+  }, [qs, queryKey]);
 
   return (
-    <section className="space-y-4">
-      {/* Controls */}
-      <div className="rounded-2xl border bg-white p-4">
-        <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_1fr_1fr_auto] items-end">
-          <div>
-            <div className="text-sm text-gray-700 mb-1">Symbol (optional)</div>
-            <input
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value)}
-              placeholder="e.g., NVDA"
-              className="w-full border rounded-md px-3 py-2"
-            />
-          </div>
-          <div>
-            <div className="text-sm text-gray-700 mb-1">CIK (optional)</div>
-            <input
-              value={cik}
-              onChange={(e) => setCik(e.target.value)}
-              placeholder="e.g., 0000320193"
-              className="w-full border rounded-md px-3 py-2"
-            />
-          </div>
-          <div>
-            <div className="text-sm text-gray-700 mb-1">Start</div>
-            <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="w-full border rounded-md px-3 py-2" />
-          </div>
-          <div>
-            <div className="text-sm text-gray-700 mb-1">End</div>
-            <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="w-full border rounded-md px-3 py-2" />
-          </div>
-          <div>
-            <div className="text-sm text-gray-700 mb-1">Side</div>
-            <select value={side} onChange={(e) => setSide(e.target.value as any)} className="w-full border rounded-md px-3 py-2">
-              <option value="all">All</option>
-              <option value="buy">Buy only</option>
-              <option value="sell">Sell only</option>
-            </select>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={load}
-              className="h-[42px] px-4 rounded-md bg-black text-white text-sm hover:opacity-90"
-              disabled={loading}
-            >
-              {loading ? "Loading…" : "Refresh"}
-            </button>
-          </div>
+    <section className="rounded-2xl border bg-white p-4">
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-gray-600">
+          {loading ? "Loading insider activity…" : `${rows.length} trade${rows.length === 1 ? "" : "s"} found`}
         </div>
-
-        {metaTried && (
-          <div className="mt-2 text-xs text-gray-500">
-            Sources tried: {metaTried.join(" → ")}{!metaTried.length ? " (none)" : ""}
-          </div>
-        )}
-        {!process.env.NEXT_PUBLIC_FMP && !process.env.NEXT_PUBLIC_FINNHUB && (
-          <div className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 inline-block">
-            Tip: Enter a CIK to use the SEC fallback if vendor APIs are not configured.
-          </div>
-        )}
+        {error && <div className="text-sm text-rose-600">Error: {error}</div>}
       </div>
 
-      {/* Errors */}
-      {error && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
-
-      {/* List */}
-      <div className="space-y-3">
-        {rows.map((r, idx) => {
-          const isBuy = r.transactionType === "Buy";
-          const accent =
-            isBuy ? "bg-emerald-100 text-emerald-800"
-                  : r.transactionType === "Sell" ? "bg-rose-100 text-rose-800"
-                  : "bg-gray-100 text-gray-700";
-          const badge = isBuy ? "Buy" : r.transactionType === "Sell" ? "Sell" : r.transactionType;
-          const link = r.filingUrl || r.indexUrl;
-
-          return (
-            <article key={idx} className="rounded-xl border bg-white p-4">
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-2">
-                    <div className={`text-xs rounded-full px-2 py-0.5 ${accent}`}>{badge}</div>
-                    <div className="text-xs text-gray-500">{r.tradeDate}</div>
-                  </div>
-                  <div className="text-sm text-gray-600">{r.insiderName}</div>
-                  <div className="text-base font-semibold">
-                    {r.symbol}{" "}
-                    <span className="text-sm font-normal text-gray-500">• {r.source}</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-4 gap-4 text-right">
-                  <div>
-                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Securities (A/D)</div>
-                    <div className="font-medium">{r.txnShares ?? "—"}</div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Price</div>
-                    <div className="font-medium">{r.price != null ? `$${r.price.toLocaleString()}` : "—"}</div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Value</div>
-                    <div className="font-semibold">{r.valueUSD != null ? `$${r.valueUSD.toLocaleString()}` : "—"}</div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Beneficially Owned Shares</div>
-                    <div className="font-medium">{r.ownedAfter != null ? r.ownedAfter.toLocaleString() : "—"}</div>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {link && (
-                    <a
-                      href={link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center rounded-full bg-black text-white px-3 py-1.5 text-sm hover:opacity-90"
-                    >
-                      Open Filing
-                    </a>
-                  )}
-                </div>
-              </div>
-            </article>
-          );
-        })}
+      <div className="mt-3 overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="text-left text-gray-500">
+              <th className="px-3 py-2 font-medium">Date</th>
+              <th className="px-3 py-2 font-medium">Insider</th>
+              <th className="px-3 py-2 font-medium">Issuer</th>
+              <th className="px-3 py-2 font-medium">Symbol</th>
+              <th className="px-3 py-2 font-medium">Txn</th>
+              <th className="px-3 py-2 font-medium">Qty (A/D)</th>
+              <th className="px-3 py-2 font-medium">Price</th>
+              <th className="px-3 py-2 font-medium">Value</th>
+              <th className="px-3 py-2 font-medium">Owned After</th>
+              <th className="px-3 py-2 font-medium">Filing</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const valueStr = fmtValue(r.qty ?? null, r.price ?? null);
+              const txn = (r.txnType || "").toUpperCase();
+              return (
+                <tr key={i} className="border-t">
+                  <td className="px-3 py-2 whitespace-nowrap">{r.filedAt || "—"}</td>
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-gray-900">{r.insider || "—"}</div>
+                    {r.title || r.relationship ? (
+                      <div className="text-xs text-gray-500">{r.title || r.relationship}</div>
+                    ) : null}
+                  </td>
+                  <td className="px-3 py-2">{r.issuer || "—"}</td>
+                  <td className="px-3 py-2 font-mono">{r.symbol || "—"}</td>
+                  <td className="px-3 py-2">
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ${pillColor(txn)}`}>
+                      {txn === "A" ? "Buy (A)" : txn === "D" ? "Sell (D)" : txn || "—"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right">{fmtNum(r.qty)}</td>
+                  <td className="px-3 py-2 text-right">{r.price != null ? "$" + fmtNum(r.price) : "—"}</td>
+                  <td className="px-3 py-2 text-right">{valueStr}</td>
+                  <td className="px-3 py-2 text-right">{fmtNum(r.ownedAfter)}</td>
+                  <td className="px-3 py-2">
+                    {r.link ? (
+                      <a
+                        href={r.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        Form 4 →
+                      </a>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
 
         {!loading && !error && rows.length === 0 && (
-          <div className="text-sm text-gray-600">No trades found for the current filters.</div>
+          <div className="py-8 text-center text-sm text-gray-500">No insider trades found for your filters.</div>
         )}
       </div>
     </section>
