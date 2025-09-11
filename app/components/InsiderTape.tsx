@@ -8,15 +8,15 @@ type InsiderRow = {
   companyName?: string;
   insiderName: string;
   insiderTitle?: string;
-  tradeDate: string;              // ISO or YYYY-MM-DD
+  tradeDate: string;
   transactionType: "Buy" | "Sell" | string;
   shares: number;
   price?: number;
-  value?: number;                 // shares * price if not given
+  value?: number;
   cik?: string;
-  form?: string;                  // e.g. "4"
-  accessionNumber?: string;       // for EDGAR link building
-  filingUrl?: string;             // optional if API returns it
+  form?: string;
+  accessionNumber?: string;
+  filingUrl?: string;
 };
 
 type ApiResult = {
@@ -46,13 +46,7 @@ function toMoney(v?: number | null) {
 }
 
 function edgarDocLink(row: InsiderRow): string | null {
-  // Priority: explicit filingUrl from API
   if (row.filingUrl) return row.filingUrl;
-
-  // Fallback: build from CIK + accession if present
-  // Example:
-  // https://www.sec.gov/Archives/edgar/data/{cik no leading zeros}/{accession w/o dashes}/{primary}.pdf
-  // We don’t know primary here; link to index instead:
   if (row.cik && row.accessionNumber) {
     const cikNoLeading = row.cik.replace(/^0+/, "");
     const accNoDashes = row.accessionNumber.replace(/-/g, "");
@@ -91,9 +85,7 @@ export default function InsiderTape({
       });
       if (symbol.trim()) params.set("symbol", symbol.trim().toUpperCase());
 
-      // Your backend endpoint (already in your project)
       const url = `/api/insider?${params.toString()}`;
-
       const r = await fetch(url, { cache: "no-store" });
       const j = (await r.json()) as Partial<ApiResult>;
       if (!r.ok || !j || j.ok === false) {
@@ -111,13 +103,11 @@ export default function InsiderTape({
     }
   }
 
-  // refetch on inputs change
   useEffect(() => {
     fetchInsiders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, page, perPage]);
 
-  // go to page handler
   function goToPage(raw: string) {
     const p = parseInt(raw, 10);
     if (!Number.isFinite(p)) return;
@@ -172,23 +162,15 @@ export default function InsiderTape({
         </div>
       </div>
 
-      {/* Meta / summary */}
+      {/* Meta */}
       <div className="mt-4 text-sm text-gray-600 flex flex-wrap items-center gap-2">
         <span>
           {loading
             ? "Loading…"
-            : `${total.toLocaleString()} trade${
-                total === 1 ? "" : "s"
-              } found`}
+            : `${total.toLocaleString()} trade${total === 1 ? "" : "s"} found`}
         </span>
-        {!!total && (
-          <span className="text-gray-400">•</span>
-        )}
-        {!!total && (
-          <span>
-            Page {page} of {totalPages}
-          </span>
-        )}
+        {!!total && <span className="text-gray-400">•</span>}
+        {!!total && <span>Page {page} of {totalPages}</span>}
       </div>
 
       {/* Error */}
@@ -202,19 +184,18 @@ export default function InsiderTape({
       <div className="mt-4 grid gap-3">
         {rows.map((r, idx) => {
           const isBuy = String(r.transactionType).toLowerCase().includes("buy");
-          const badge =
-            isBuy ? (
-              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
-                BUY
-              </span>
-            ) : (
-              <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 ring-1 ring-red-200">
-                SELL
-              </span>
-            );
+          const badge = isBuy ? (
+            <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
+              BUY
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 ring-1 ring-red-200">
+              SELL
+            </span>
+          );
 
-        const link = edgarDocLink(r);
-        const value = r.value ?? (r.shares && r.price ? r.shares * r.price : undefined);
+          const link = edgarDocLink(r);
+          const value = r.value ?? (r.shares && r.price ? r.shares * r.price : undefined);
 
           return (
             <article
@@ -307,7 +288,6 @@ export default function InsiderTape({
           </button>
         </div>
 
-        {/* Jump to page */}
         <div className="flex items-center gap-2 text-sm">
           <span className="text-gray-600">Go to</span>
           <input
