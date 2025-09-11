@@ -1,6 +1,8 @@
 // app/page.tsx
 "use client";
 
+import NewsletterForm from "./components/NewsletterForm";
+
 export default function HomePage() {
   return (
     <main className="min-h-screen bg-gradient-to-b from-white via-slate-50 to-slate-100">
@@ -44,11 +46,7 @@ export default function HomePage() {
               fill="none"
               stroke="currentColor"
             >
-              <path
-                strokeWidth="2"
-                strokeLinecap="round"
-                d="M7 17L17 7M9 7h8v8"
-              />
+              <path strokeWidth="2" strokeLinecap="round" d="M7 17L17 7M9 7h8v8" />
             </svg>
           </a>
           <a
@@ -73,8 +71,8 @@ export default function HomePage() {
 
         {/* Small helper line */}
         <p className="mt-3 text-xs text-gray-500">
-          Tip: Use the pages’ search bars to type a ticker, company, or CIK
-          (e.g., <span className="font-mono">NVDA</span>).
+          Tip: Use the pages’ search bars to type a ticker, company, or CIK (e.g.,{" "}
+          <span className="font-mono">NVDA</span>).
         </p>
       </section>
 
@@ -88,17 +86,12 @@ export default function HomePage() {
           >
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold">EDGAR Filings</h3>
-              <span className="text-xs rounded-full bg-gray-100 px-2 py-1 text-gray-700">
-                SEC
-              </span>
+              <span className="text-xs rounded-full bg-gray-100 px-2 py-1 text-gray-700">SEC</span>
             </div>
             <p className="mt-2 text-sm text-gray-600">
-              Search 8-K, 10-Q, 10-K, S-1, 13D/G, 6-K and more. Filter by dates,
-              form types, and reporting persons.
+              Search 8-K, 10-Q, 10-K, S-1, 13D/G, 6-K and more. Filter by dates, form types, and reporting persons.
             </p>
-            <div className="mt-4 text-sm text-blue-600 group-hover:underline">
-              Open EDGAR →
-            </div>
+            <div className="mt-4 text-sm text-blue-600 group-hover:underline">Open EDGAR →</div>
           </a>
 
           {/* BLS */}
@@ -108,17 +101,12 @@ export default function HomePage() {
           >
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold">BLS Dashboard</h3>
-              <span className="text-xs rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">
-                Economy
-              </span>
+              <span className="text-xs rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">Economy</span>
             </div>
             <p className="mt-2 text-sm text-gray-600">
-              Track CPI, Unemployment, Payrolls and more. View latest prints,
-              trends, and release calendars.
+              Track CPI, Unemployment, Payrolls and more. View latest prints, trends, and release calendars.
             </p>
-            <div className="mt-4 text-sm text-blue-600 group-hover:underline">
-              Open BLS →
-            </div>
+            <div className="mt-4 text-sm text-blue-600 group-hover:underline">Open BLS →</div>
           </a>
 
           {/* FRED */}
@@ -128,17 +116,12 @@ export default function HomePage() {
           >
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold">FRED Benchmarks</h3>
-              <span className="text-xs rounded-full bg-indigo-50 px-2 py-1 text-indigo-700">
-                Rates
-              </span>
+              <span className="text-xs rounded-full bg-indigo-50 px-2 py-1 text-indigo-700">Rates</span>
             </div>
             <p className="mt-2 text-sm text-gray-600">
-              Explore U.S. interest rates, yield curves, and macro benchmarks.
-              Filter by series and date ranges.
+              Explore U.S. interest rates, yield curves, and macro benchmarks. Filter by series and date ranges.
             </p>
-            <div className="mt-4 text-sm text-blue-600 group-hover:underline">
-              Open FRED →
-            </div>
+            <div className="mt-4 text-sm text-blue-600 group-hover:underline">Open FRED →</div>
           </a>
 
           {/* Screener */}
@@ -148,17 +131,12 @@ export default function HomePage() {
           >
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold">Stock Screener</h3>
-              <span className="text-xs rounded-full bg-purple-50 px-2 py-1 text-purple-700">
-                Markets
-              </span>
+              <span className="text-xs rounded-full bg-purple-50 px-2 py-1 text-purple-700">Markets</span>
             </div>
             <p className="mt-2 text-sm text-gray-600">
-              Filter by price action, volume, market cap, sector, and more.
-              Click a row for a live chart.
+              Filter by price action, volume, market cap, sector, and more. Click a row for a live chart.
             </p>
-            <div className="mt-4 text-sm text-blue-600 group-hover:underline">
-              Open Screener →
-            </div>
+            <div className="mt-4 text-sm text-blue-600 group-hover:underline">Open Screener →</div>
           </a>
         </div>
 
@@ -176,12 +154,9 @@ export default function HomePage() {
       {/* CTA strip */}
       <section className="mx-auto max-w-6xl px-4 pb-14">
         <div className="rounded-2xl border bg-white/80 backdrop-blur p-6 text-center shadow-sm">
-          <h4 className="text-lg font-semibold text-gray-900">
-            Ready to research faster?
-          </h4>
+          <h4 className="text-lg font-semibold text-gray-900">Ready to research faster?</h4>
           <p className="mt-1 text-sm text-gray-600">
-            Jump straight into filings, macro prints, or benchmarks—no setup
-            required.
+            Jump straight into filings, macro prints, or benchmarks—no setup required.
           </p>
           <div className="mt-4 flex flex-wrap justify-center gap-3">
             <a
@@ -199,33 +174,22 @@ export default function HomePage() {
           </div>
         </div>
       </section>
-import NewsletterForm from "../components/NewsletterForm";
-
-export default function HomePage() {
-  return (
-    <main>
-      {/* ... your existing homepage sections ... */}
 
       {/* Newsletter Signup */}
       <section className="bg-slate-50 py-12 text-center">
-        <h2 className="text-xl font-semibold text-gray-900">
-          Stay updated with Herevna
-        </h2>
+        <h2 className="text-xl font-semibold text-gray-900">Stay updated with Herevna</h2>
         <p className="text-gray-600 text-sm mt-1">
           Get the latest filings, economic updates, and news straight to your inbox.
         </p>
-        <NewsletterForm />
+        <div className="mt-4">
+          <NewsletterForm />
+        </div>
       </section>
 
-      {/* footer remains the same */}
-    </main>
-  );
-}
-      {/* Footer note */}
+      {/* Footer */}
       <footer className="border-t bg-white">
         <div className="mx-auto max-w-6xl px-4 py-6 text-center text-xs text-gray-500">
-          This site republishes SEC EDGAR filings, BLS data, and FRED data. ©{" "}
-          {new Date().getFullYear()} Herevna.io
+          This site republishes SEC EDGAR filings, BLS data, and FRED data. © {new Date().getFullYear()} Herevna.io
         </div>
       </footer>
     </main>
