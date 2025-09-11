@@ -1,139 +1,257 @@
 // app/api/insider/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-/**
- * Insider name suggestions using the SEC Search API.
- * We query the public search index for forms 3/4/5 and extract reporter names.
- *
- * Query: GET /api/insider?q=<name fragment>
- *
- * Response shape:
- * {
- *   suggestions: Array<{ name: string; hint?: string }>
- * }
- */
+export const runtime = "nodejs"; // allow standard fetch & headers
 
-const UA =
-  process.env.SEC_USER_AGENT ||
-  "Herevna/1.0 (contact@herevna.io)"; // <-- make sure this matches what you set on Vercel
+type InsiderRow = {
+  symbol: string;
+  insiderName: string;
+  tradeDate: string;             // YYYY-MM-DD
+  transactionType: "Buy" | "Sell" | "A" | "D" | "Unknown";
+  shares: number | null;
+  price?: number | null;
+  valueUSD?: number | null;      // shares * price if available
+  source: "FMP" | "Finnhub" | "SEC";
+  filingUrl?: string;            // for SEC / vendor links
+  cik?: string;
+};
 
-const BASE = "https://efts.sec.gov/LATEST/search-index";
+function j(data: any, init?: ResponseInit) {
+  return NextResponse.json(data, init);
+}
+function bad(message: string, status = 400) {
+  return j({ ok: false, error: message }, { status });
+}
+function ok(data: InsiderRow[], fallbackUsed: string[]) {
+  return j({
+    ok: true,
+    count: data.length,
+    fallbacksTried: fallbackUsed,
+    data,
+  });
+}
 
-function uniq<T>(arr: T[], key: (x: T) => string): T[] {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const item of arr) {
-    const k = key(item);
-    if (!seen.has(k)) {
-      seen.add(k);
-      out.push(item);
+// ----- helpers -----
+function toISO(d?: string | null) {
+  if (!d) return "";
+  // already like YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss
+  const m = d.match(/^\d{4}-\d{2}-\d{2}/);
+  if (m) return m[0];
+  // some vendors use YYYYMMDD
+  const m2 = d.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m2) return `${m2[1]}-${m2[2]}-${m2[3]}`;
+  return d;
+}
+function toTxn(letter?: string | null): InsiderRow["transactionType"] {
+  if (!letter) return "Unknown";
+  const x = letter.toUpperCase();
+  if (x === "P" || x === "A") return "Buy";  // Purchase/Acquisition
+  if (x === "S" || x === "D") return "Sell"; // Sale/Disposition
+  return "Unknown";
+}
+function safeNum(n: any): number | null {
+  if (n === null || n === undefined) return null;
+  const v = Number(n);
+  return Number.isFinite(v) ? v : null;
+}
+
+// ----- 1) FMP -----
+async function fetchFromFMP(symbol?: string, limit = 50): Promise<InsiderRow[]> {
+  const apiKey = process.env.FMP_API_KEY;
+  if (!apiKey) return [];
+
+  // Symbol-specific feed; fall back to recent market feed if no symbol
+  const url = symbol
+    ? `https://financialmodelingprep.com/api/v4/insider-trading?symbol=${encodeURIComponent(
+        symbol
+      )}&limit=${limit}&apikey=${apiKey}`
+    : `https://financialmodelingprep.com/api/v4/insider-trading?limit=${limit}&apikey=${apiKey}`;
+
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`FMP fetch failed (${r.status})`);
+  const rows: any[] = await r.json();
+  if (!Array.isArray(rows)) return [];
+
+  const mapped: InsiderRow[] = rows.map((x) => {
+    // FMP fields vary; commonly:
+    // x.symbol, x.transactionDate, x.reportingName, x.securitiesTransacted, x.price, x.acquisitionOrDisposition ('A'|'D'), x.link
+    const shares = safeNum(x.securitiesTransacted ?? x.sharesNumber);
+    const price = safeNum(x.price);
+    const valueUSD =
+      shares !== null && price !== null ? Number((shares * price).toFixed(2)) : null;
+
+    let txn: InsiderRow["transactionType"] = "Unknown";
+    if (x.acquisitionOrDisposition) {
+      txn = toTxn(String(x.acquisitionOrDisposition));
+    } else if (x.transactionType) {
+      txn = toTxn(String(x.transactionType));
     }
+
+    return {
+      symbol: x.symbol ?? "",
+      insiderName: x.reportingName ?? x.ownerCik ?? "Unknown",
+      tradeDate: toISO(x.transactionDate ?? x.filingDate),
+      transactionType: txn,
+      shares,
+      price,
+      valueUSD,
+      source: "FMP",
+      filingUrl: x.link || undefined,
+      cik: x.cik || x.ownerCik || undefined,
+    };
+  });
+
+  return mapped.slice(0, limit);
+}
+
+// ----- 2) Finnhub -----
+async function fetchFromFinnhub(symbol?: string, limit = 50): Promise<InsiderRow[]> {
+  const token = process.env.FINNHUB_API_KEY;
+  if (!token || !symbol) return [];
+
+  const url = `https://finnhub.io/api/v1/stock/insider-transactions?symbol=${encodeURIComponent(
+    symbol
+  )}&token=${token}`;
+
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`Finnhub fetch failed (${r.status})`);
+  const data: any = await r.json();
+
+  const arr: any[] = Array.isArray(data?.data) ? data.data : [];
+  const mapped: InsiderRow[] = arr.map((x) => {
+    const shares = safeNum(x.share);
+    const price = safeNum(x.price);
+    const valueUSD =
+      shares !== null && price !== null ? Number((shares * price).toFixed(2)) : null;
+
+    return {
+      symbol: x.symbol ?? symbol ?? "",
+      insiderName: x.name ?? "Unknown",
+      tradeDate: toISO(x.transactionDate ?? x.filingDate ?? x.time),
+      transactionType: toTxn(x.transaction), // Finnhub uses 'P'/'S'
+      shares,
+      price,
+      valueUSD,
+      source: "Finnhub",
+      filingUrl: undefined, // Finnhub doesn’t provide direct links for each row
+      cik: x.cik || undefined,
+    };
+  });
+
+  // Finnhub often returns many; trim
+  return mapped.slice(0, limit);
+}
+
+// ----- 3) SEC (Form 4 lightweight) -----
+// We only attempt SEC if a CIK is provided.
+// This provides quick links to recent Form 4s when feeds are empty.
+async function fetchFromSEC(cik: string, limit = 50): Promise<InsiderRow[]> {
+  if (!cik) return [];
+  const padded = cik.replace(/\D/g, "").padStart(10, "0");
+
+  const url = `https://data.sec.gov/submissions/CIK${padded}.json`;
+  const r = await fetch(url, {
+    headers: {
+      "User-Agent": "Herevna.io (contact@herevna.io)",
+      "Accept-Encoding": "gzip, deflate",
+    },
+    cache: "no-store",
+  });
+
+  if (!r.ok) throw new Error(`SEC fetch failed (${r.status})`);
+  const data: any = await r.json();
+
+  const recent = data?.filings?.recent || {};
+  const forms: string[] = recent.form || [];
+  const acc: string[] = recent.accessionNumber || [];
+  const dates: string[] = recent.filingDate || [];
+  const tickers: string[] = data?.tickers || [];
+  const symbol = tickers[0] || "";
+
+  const out: InsiderRow[] = [];
+  for (let i = 0; i < forms.length; i++) {
+    if (forms[i] !== "4") continue; // only Form 4 for insider trades
+    const accession = acc[i];
+    if (!accession) continue;
+
+    const accessionNoDashes = accession.replace(/-/g, "");
+    const filingUrl = `https://www.sec.gov/Archives/edgar/data/${Number(
+      padded
+    )}/${accessionNoDashes}/${accession}-index.htm`;
+
+    out.push({
+      symbol,
+      insiderName: "See Form 4 (details inside)",
+      tradeDate: toISO(dates[i]),
+      transactionType: "Unknown", // would require parsing primary doc XML for precise P/S
+      shares: null,
+      price: null,
+      valueUSD: null,
+      source: "SEC",
+      filingUrl,
+      cik: padded,
+    });
+
+    if (out.length >= limit) break;
   }
+
   return out;
 }
 
-export async function GET(req: Request) {
+// ----- API handler -----
+export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const q = (searchParams.get("q") || "").trim();
+    const symbol = searchParams.get("symbol")?.trim().toUpperCase();
+    const cik = searchParams.get("cik")?.trim(); // numeric as string (no 0x), we’ll pad inside SEC fn
+    const limit = Math.min(Math.max(Number(searchParams.get("limit") || 50), 1), 200);
 
-    // Fast guardrails
-    if (!q || q.length < 2) {
-      return NextResponse.json({ suggestions: [] });
+    const tried: string[] = [];
+    let results: InsiderRow[] = [];
+
+    // 1) FMP
+    try {
+      tried.push("FMP");
+      const r1 = await fetchFromFMP(symbol, limit);
+      if (r1.length) {
+        results = r1;
+        return ok(results, tried);
+      }
+    } catch (e) {
+      // swallow and continue
     }
 
-    // We’ll search ownership-related filings (Forms 3/4/5) and try to surface the reporting person names.
-    // The SEC search endpoint supports "keys" and filters; we bias to ownership results.
-    // Docs are not official; this is a pragmatic integration many apps use.
-    const params = new URLSearchParams({
-      // Try to bias to reporter name. Quoting helps reduce noise.
-      keys: `"${q}"`,
-      // Keep the result size modest—this is just for typeahead suggestions.
-      size: "50",
-      // Restrict to ownership forms
-      formTypes: "3,4,5",
-      // Categories commonly used: 'ownership', 'company', 'full'
-      category: "ownership",
-      // Most recent first
-      sort: "date-desc",
-    });
-
-    const url = `${BASE}?${params.toString()}`;
-
-    const r = await fetch(url, {
-      headers: {
-        "User-Agent": UA,
-        Accept: "application/json",
-      },
-      // SEC responds better when no-cache or no-store is used server-side for fresh results
-      cache: "no-store",
-    });
-
-    if (!r.ok) {
-      return NextResponse.json(
-        { error: `SEC search failed (${r.status})`, suggestions: [] },
-        { status: 502 }
-      );
-    }
-
-    const j = await r.json().catch(() => ({} as any));
-    // The shape typically looks like { hits: { hits: [{ _source: { ... }}, ...]}}
-    const hits: any[] = j?.hits?.hits || [];
-
-    // Try several common fields where reporter/insider names show up.
-    // Because the SEC index is not perfectly standardized, we defensively collect names.
-    const candidates: { name: string; hint?: string }[] = [];
-
-    for (const h of hits) {
-      const src = h?._source || {};
-      // Possible places a name might appear:
-      const maybeNames: string[] = [];
-
-      // 1) Some records include "reportingOwner" / "reportingOwners" style fields
-      if (Array.isArray(src.reportingOwners)) {
-        for (const ro of src.reportingOwners) {
-          if (typeof ro?.name === "string") maybeNames.push(ro.name);
-          if (typeof ro?.ownerName === "string") maybeNames.push(ro.ownerName);
+    // 2) Finnhub (only if we have a symbol; Finnhub requires it)
+    try {
+      if (symbol) {
+        tried.push("Finnhub");
+        const r2 = await fetchFromFinnhub(symbol, limit);
+        if (r2.length) {
+          results = r2;
+          return ok(results, tried);
         }
       }
-
-      // 2) Free-text form fields sometimes include reporter names (less reliable)
-      if (typeof src.reporting_owner === "string") maybeNames.push(src.reporting_owner);
-      if (typeof src.owner === "string") maybeNames.push(src.owner);
-
-      // 3) Title/description fallback (last resort)
-      if (typeof src.display_names === "string") maybeNames.push(src.display_names);
-      if (typeof src.documentDescription === "string") maybeNames.push(src.documentDescription);
-
-      // Normalize and pick decent-looking person-like strings
-      for (let raw of maybeNames) {
-        raw = String(raw).trim();
-        // Quick sanity filter: prefer items that look like "First Last" (at least 2 words, letters)
-        if (raw && /\b[a-zA-Z'.-]+\s+[a-zA-Z'.-]+\b/.test(raw)) {
-          // Build a small hint (issuer or ticker) if present
-          const hintParts: string[] = [];
-          if (typeof src.ticker === "string") hintParts.push(src.ticker);
-          if (typeof src.display_name === "string") hintParts.push(src.display_name);
-          const hint = hintParts.length ? hintParts.join(" • ") : undefined;
-
-          candidates.push({ name: raw, hint });
-        }
-      }
+    } catch (e) {
+      // swallow and continue
     }
 
-    const suggestions = uniq(
-      candidates.map((c) => ({
-        name: c.name.toUpperCase(), // normalize display a bit
-        hint: c.hint,
-      })),
-      (x) => x.name + "|" + (x.hint || "")
-    ).slice(0, 20); // trim
+    // 3) SEC (only if caller provided a CIK — avoids brittle symbol→CIK lookups here)
+    try {
+      if (cik) {
+        tried.push("SEC");
+        const r3 = await fetchFromSEC(cik, limit);
+        if (r3.length) {
+          results = r3;
+          return ok(results, tried);
+        }
+      }
+    } catch (e) {
+      // swallow and continue
+    }
 
-    return NextResponse.json({ suggestions });
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message || "Unexpected error", suggestions: [] },
-      { status: 500 }
-    );
+    // no data anywhere
+    return ok([], tried);
+  } catch (err: any) {
+    return bad(err?.message || "Unexpected error", 500);
   }
 }
