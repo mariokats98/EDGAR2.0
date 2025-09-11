@@ -1,403 +1,306 @@
 // app/api/insider/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic"; // no caching
 export const runtime = "nodejs";
 
-type Side = "buy" | "sell" | "all";
+const FMP_KEY = process.env.FMP_API_KEY;
+const FINNHUB_KEY = process.env.FINNHUB_API_KEY;
 
-type InsiderRow = {
-  symbol: string;
-  insiderName: string;
-  tradeDate: string; // YYYY-MM-DD
-  transactionType: "Buy" | "Sell" | "A" | "D" | "Unknown";
-  txnShares: number | null;      // Securities Acquired (A) or Disposed (D)
-  price?: number | null;         // price per share
-  valueUSD?: number | null;      // txnShares * price
-  ownedAfter?: number | null;    // Beneficially Owned Shares (post)
-  source: "FMP" | "Finnhub" | "SEC";
-  filingUrl?: string;            // direct doc (xml/html)
-  indexUrl?: string;             // index page
-  cik?: string;
+type UiRow = {
+  id: string;
+  insider: string;
+  issuer: string;
+  symbol?: string;
+  filedAt: string;
+  type?: "A" | "D";
+  beneficialShares?: number; // post-transaction
+  price?: number;
+  valueUSD?: number;
+  docUrl?: string;
+  title?: string;
+  cik?: string | number;
+  accessionNumber?: string;
+  primaryDocument?: string;
 };
 
-function j(data: any, init?: ResponseInit) { return NextResponse.json(data, init); }
-function bad(message: string, status = 400) { return j({ ok: false, error: message }, { status }); }
-function ok(data: InsiderRow[], meta: any = {}) { return j({ ok: true, count: data.length, ...meta, data }); }
-
-const UA_HEADERS = {
-  "User-Agent": "Herevna.io (contact@herevna.io)",
-  "Accept-Encoding": "gzip, deflate",
-};
-
-function toISO(d?: string | null) {
-  if (!d) return "";
-  const m = d.match(/^\d{4}-\d{2}-\d{2}/);
-  if (m) return m[0];
-  const m2 = d.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (m2) return `${m2[1]}-${m2[2]}-${m2[3]}`;
-  return d;
-}
-function safeNum(n: any): number | null {
-  if (n === null || n === undefined) return null;
-  const v = Number(String(n).replace(/[, ]/g, ""));
-  return Number.isFinite(v) ? v : null;
-}
-function calcValue(shares: number | null, price: number | null) {
-  if (shares == null || price == null) return null;
-  return Number((shares * price).toFixed(2));
-}
-function toTxn(letter?: string | null): InsiderRow["transactionType"] {
-  if (!letter) return "Unknown";
-  const x = letter.toUpperCase();
-  if (x === "P" || x === "A") return "Buy";
-  if (x === "S" || x === "D") return "Sell";
-  return (["A","D"].includes(x) ? (x as "A" | "D") : "Unknown");
-}
-function matchesSide(txn: InsiderRow["transactionType"], side: Side) {
-  if (side === "all") return true;
-  if (side === "buy") return txn === "Buy";
-  if (side === "sell") return txn === "Sell";
-  return true;
-}
-function withinRange(dateISO: string, start?: string, end?: string) {
-  if (!dateISO) return false;
-  if (start && dateISO < start) return false;
-  if (end && dateISO > end) return false;
-  return true;
+function parseNum(n: any): number | undefined {
+  if (n == null) return undefined;
+  if (typeof n === "number") return Number.isFinite(n) ? n : undefined;
+  if (typeof n === "string") {
+    const v = Number(n.replace(/[$, ]/g, ""));
+    return Number.isFinite(v) ? v : undefined;
+  }
+  return undefined;
 }
 
-/* ------------------ FMP ------------------ */
-async function fetchFromFMP(symbol?: string, start?: string, end?: string, side: Side = "all", limit = 50): Promise<InsiderRow[]> {
-  const apiKey = process.env.FMP_API_KEY || process.env.NEXT_PUBLIC_FMP;
-  if (!apiKey) return [];
-  const url = symbol
-    ? `https://financialmodelingprep.com/api/v4/insider-trading?symbol=${encodeURIComponent(symbol)}&limit=${limit}&apikey=${apiKey}`
-    : `https://financialmodelingprep.com/api/v4/insider-trading?limit=${limit}&apikey=${apiKey}`;
-  const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) throw new Error(`FMP fetch failed (${r.status})`);
-  const rows: any[] = await r.json();
-  if (!Array.isArray(rows)) return [];
-  return rows.map((x) => {
-    const txnShares = safeNum(x.securitiesTransacted ?? x.sharesNumber ?? x.shares);
-    let price = safeNum(x.price);
-    let total = safeNum(x.finalPrice ?? x.value ?? x.transactionValue);
-    if (price == null && total != null && txnShares != null && txnShares > 0) {
-      price = Number((total / txnShares).toFixed(4));
+function val(n?: number, p?: number) {
+  return n != null && p != null ? n * p : undefined;
+}
+
+function normalizeDate(s?: string) {
+  // prefer YYYY-MM-DD
+  if (!s) return "—";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  // try to cut timestamps to YYYY-MM-DD
+  const m = s.match(/^\d{4}-\d{2}-\d{2}/);
+  return m ? m[0] : s;
+}
+
+function okSymbol(sym?: string) {
+  if (!sym) return undefined;
+  return sym.toUpperCase().trim();
+}
+
+/* --------- FMP normalizer (v4/insider-trading) ----------
+   Example fields from FMP:
+   - symbol, filIngDate, transactionDate, acquisitionOrDisposition ("A"/"D")
+   - securityName, reportingCik, reportingName, transactionPrice, transactionShares,
+     sharesOwnedFollowingTransaction, link (filing URL)
+--------------------------------------------------------- */
+function normalizeFmp(items: any[] = []): UiRow[] {
+  return items.map((d: any, i: number): UiRow => {
+    const symbol = okSymbol(d.symbol);
+    const type = d.acquisitionOrDisposition === "A" || d.acquisitionOrDisposition === "D" ? d.acquisitionOrDisposition : undefined;
+    const price = parseNum(d.transactionPrice);
+    const qty = parseNum(d.transactionShares);
+    const beneficial = parseNum(d.sharesOwnedFollowingTransaction);
+
+    // use filingDate or transactionDate for “filedAt”
+    const filedAt = normalizeDate(d.filingDate || d.transactionDate);
+
+    // try to shape an SEC URL if missing
+    let docUrl: string | undefined = d.link;
+    const cik = d.reportingCik ?? d.cik;
+    const acc = d.accessionNumber ?? d.accession;
+    const primaryDoc = d.primaryDocument ?? d.primary;
+
+    if (!docUrl && cik && acc) {
+      const noZeros = String(cik).replace(/^0+/, "");
+      const flatAcc = String(acc).replace(/-/g, "");
+      docUrl = `https://www.sec.gov/Archives/edgar/data/${noZeros}/${flatAcc}/${primaryDoc || "index.htm"}`;
     }
-    const txn = toTxn(String(x.acquisitionOrDisposition ?? x.transactionType ?? ""));
-    return {
-      symbol: x.symbol ?? "",
-      insiderName: x.reportingName ?? x.insiderName ?? x.ownerCik ?? "Unknown",
-      tradeDate: toISO(x.transactionDate ?? x.filingDate),
-      transactionType: txn,
-      txnShares,
-      price,
-      valueUSD: calcValue(txnShares, price) ?? total ?? null,
-      ownedAfter: null,
-      source: "FMP",
-      filingUrl: x.link || undefined,
-      cik: x.cik || x.ownerCik || undefined,
-    } as InsiderRow;
-  })
-  .filter((r) => r.tradeDate && withinRange(r.tradeDate, start, end) && matchesSide(r.transactionType, side))
-  .slice(0, limit);
-}
 
-/* ------------------ Finnhub ------------------ */
-async function fetchFromFinnhub(symbol?: string, start?: string, end?: string, side: Side = "all", limit = 50): Promise<InsiderRow[]> {
-  const token = process.env.FINNHUB_API_KEY || process.env.NEXT_PUBLIC_FINNHUB;
-  if (!token || !symbol) return [];
-  const url = `https://finnhub.io/api/v1/stock/insider-transactions?symbol=${encodeURIComponent(symbol)}&token=${token}`;
-  const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) throw new Error(`Finnhub fetch failed (${r.status})`);
-  const data: any = await r.json();
-  let rows: InsiderRow[] = (Array.isArray(data?.data) ? data.data : []).map((x: any) => {
-    const txnShares = safeNum(x.share);
-    let price = safeNum(x.price);
-    let total = safeNum(x.transactionValue);
-    if (price == null && total != null && txnShares != null && txnShares > 0) {
-      price = Number((total / txnShares).toFixed(4));
-    }
     return {
-      symbol: x.symbol ?? symbol ?? "",
-      insiderName: x.name ?? "Unknown",
-      tradeDate: toISO(x.transactionDate ?? x.filingDate ?? x.time),
-      transactionType: toTxn(x.transaction), // P / S / A / D
-      txnShares,
+      id: d.id || d.accessionNumber || `${symbol || "FMP"}-${i}`,
+      insider: d.reportingName || d.ownerName || "—",
+      issuer: d.issuerName || d.companyName || d.issuer || symbol || "—",
+      symbol,
+      filedAt,
+      type,
+      beneficialShares: beneficial,
       price,
-      valueUSD: calcValue(txnShares, price) ?? total ?? null,
-      ownedAfter: null,
-      source: "Finnhub",
-      cik: x.cik || undefined,
+      valueUSD: val(qty, price),
+      docUrl,
+      title: d.securityName || undefined,
+      cik,
+      accessionNumber: acc,
+      primaryDocument: primaryDoc,
     };
   });
-  rows = rows
-    .filter((r) => r.tradeDate && withinRange(r.tradeDate, start, end) && matchesSide(r.transactionType, side))
-    .slice(0, limit);
-  return rows;
 }
 
-/* ------------------ SEC helpers ------------------ */
-function pickFirstTxn(xml: string) {
-  const blocks =
-    xml.match(/<nonDerivativeTransaction>[\s\S]*?<\/nonDerivativeTransaction>/gi) ||
-    xml.match(/<derivativeTransaction>[\s\S]*?<\/derivativeTransaction>/gi) ||
-    [];
-  for (const block of blocks) {
-    const date = block.match(/<transactionDate>\s*<value>([^<]+)<\/value>/i)?.[1];
-    const code = block.match(/<transactionAcquiredDisposedCode>\s*<value>([^<]+)<\/value>/i)?.[1];
-    const shares = safeNum(block.match(/<transactionShares>\s*<value>([^<]+)<\/value>/i)?.[1]);
-    const price = safeNum(block.match(/<transactionPricePerShare>\s*<value>([^<]+)<\/value>/i)?.[1]);
-    const ownedAfter = safeNum(
-      xml.match(/<postTransactionAmounts>[\s\S]*?<sharesOwnedFollowingTransaction>\s*<value>([^<]+)<\/value>/i)?.[1]
-    );
-    if (shares != null) {
-      return { date: toISO(date || ""), code: code?.trim().toUpperCase(), txnShares: shares, price, ownedAfter };
+/* --------- Finnhub normalizer (stock/insider-transactions) ----------
+   Example fields from Finnhub:
+   - symbol, name, share, change (0 buy, 1 sell not consistent; we’ll rely on transaction type if given),
+     transactionPrice (d.price), transactionDate (d.transactionDate or d.filingDate),
+     filings? not always present; url may be absent
+--------------------------------------------------------------------- */
+function normalizeFinnhub(items: any[] = []): UiRow[] {
+  return items.map((d: any, i: number): UiRow => {
+    const symbol = okSymbol(d.symbol);
+    const price = parseNum(d.price);
+    const qty = parseNum(d.share) ?? parseNum(d.shares);
+    const filedAt = normalizeDate(d.filingDate || d.transactionDate || d.date);
+
+    // Finnhub doesn’t always provide A/D; heuristics (positive shares => A; negative => D)
+    let type: "A" | "D" | undefined = undefined;
+    if (typeof qty === "number") {
+      if (qty > 0) type = "A";
+      if (qty < 0) type = "D";
     }
-  }
-  const ownedAfter = safeNum(
-    xml.match(/<postTransactionAmounts>[\s\S]*?<sharesOwnedFollowingTransaction>\s*<value>([^<]+)<\/value>/i)?.[1]
-  );
-  if (ownedAfter != null) return { date: "", code: undefined, txnShares: null, price: null, ownedAfter };
-  return null;
-}
-async function findXmlFromIndex(indexUrl: string): Promise<string | null> {
-  try {
-    const r = await fetch(indexUrl, { headers: UA_HEADERS, cache: "no-store" });
-    if (!r.ok) return null;
-    const html = await r.text();
-    const m = html.match(/href="([^"]+\.xml)"/i) || html.match(/>([^<]+\.xml)</i);
-    if (!m) return null;
-    let href = (m[1] || m[0]).replace(/^href=|>|<|"|'|\s/gi, "");
-    if (href.startsWith("http")) return href;
-    const base = indexUrl.replace(/[^/]+$/, "");
-    return base + href.replace(/^\.?\//, "");
-  } catch { return null; }
-}
-
-/** NEW: Company-centric Form 4 listing (works with company CIKs) */
-async function fetchForm4ByCompanyCIK_BrowseEdgar(
-  cik: string,
-  start?: string,
-  end?: string,
-  side: Side = "all",
-  limit = 50
-): Promise<InsiderRow[]> {
-  const padded = cik.replace(/\D/g, "").padStart(10, "0");
-  const feed = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${padded}&type=4&owner=only&count=${Math.max(
-    100,
-    limit * 2
-  )}&output=atom`;
-  const rf = await fetch(feed, { headers: UA_HEADERS, cache: "no-store" });
-  if (!rf.ok) throw new Error(`SEC browse-edgar feed failed (${rf.status})`);
-  const xml = await rf.text();
-
-  // Extract entries (very loose parsing to avoid DOM dependencies)
-  const entries = xml.split("<entry>").slice(1).map((chunk) => `<entry>${chunk}`);
-  const out: InsiderRow[] = [];
-
-  for (const entry of entries) {
-    const title = entry.match(/<title>([^<]+)<\/title>/i)?.[1] || "";
-    const updated = entry.match(/<updated>([^<]+)<\/updated>/i)?.[1] || "";
-    const linkHref =
-      entry.match(/<link[^>]+href="([^"]+)"/i)?.[1] ||
-      entry.match(/<link>([^<]+)<\/link>/i)?.[1] ||
-      "";
-    const symbol = (title.match(/\(([^)]+)\)/)?.[1] || "").trim(); // often includes (SYMBOL)
-    const filingDate = toISO(updated || "");
-
-    if (!filingDate || !withinRange(filingDate, start, end)) continue;
-
-    // build index page if link points to /data/ path
-    const indexUrl = linkHref.includes("-index.htm") ? linkHref : linkHref.replace(/[^/]+$/, (m) => `${m}-index.htm`);
-
-    // Find a concrete XML
-    let directDoc = await findXmlFromIndex(indexUrl);
-    if (!directDoc) directDoc = indexUrl; // fallback to index
-
-    // Parse Form 4 XML for shares/price/ownedAfter
-    let txnShares: number | null = null;
-    let price: number | null = null;
-    let ownedAfter: number | null = null;
-    let txnLetter: string | undefined;
-
-    try {
-      if (/\.xml$/i.test(directDoc)) {
-        const rx = await fetch(directDoc, { headers: UA_HEADERS, cache: "no-store" });
-        if (rx.ok) {
-          const xmlDoc = await rx.text();
-          const t = pickFirstTxn(xmlDoc);
-          if (t) {
-            txnShares = t.txnShares;
-            price = t.price ?? null;
-            ownedAfter = t.ownedAfter ?? null;
-            txnLetter = t.code;
-          }
-        }
-      }
-    } catch {}
-
-    const transactionType = toTxn(txnLetter);
-    if (!matchesSide(transactionType, side)) continue;
-
-    out.push({
-      symbol: symbol || "",                  // may be empty if not in title
-      insiderName: "See Form 4 (details inside)",
-      tradeDate: filingDate,
-      transactionType,
-      txnShares,
-      price,
-      valueUSD: calcValue(txnShares, price),
-      ownedAfter,
-      source: "SEC",
-      filingUrl: directDoc,
-      indexUrl,
-      cik: padded,
-    });
-
-    if (out.length >= limit) break;
-  }
-
-  return out;
-}
-
-/** Owner-centric SEC fallback (works when you pass an insider CIK, e.g., Warren Buffett) */
-async function fetchFromSEC_OwnerSubmissions(
-  cik: string,
-  start?: string,
-  end?: string,
-  side: Side = "all",
-  limit = 50
-): Promise<InsiderRow[]> {
-  const padded = cik.replace(/\D/g, "").padStart(10, "0");
-  const subUrl = `https://data.sec.gov/submissions/CIK${padded}.json`;
-  const r = await fetch(subUrl, { headers: UA_HEADERS, cache: "no-store" });
-  if (!r.ok) throw new Error(`SEC fetch failed (${r.status})`);
-  const data: any = await r.json();
-
-  const recent = data?.filings?.recent || {};
-  const forms: string[] = recent.form || [];
-  const acc: string[] = recent.accessionNumber || [];
-  const dates: string[] = recent.filingDate || [];
-  const primaryDoc: string[] = recent.primaryDocument || [];
-  const symbol = (data?.tickers || [])[0] || "";
-
-  const out: InsiderRow[] = [];
-
-  for (let i = 0; i < forms.length; i++) {
-    if (forms[i] !== "4") continue;
-    const filingDate = toISO(dates[i]);
-    if (!filingDate || !withinRange(filingDate, start, end)) continue;
-    const accession = acc[i];
-    if (!accession) continue;
-    const accessionNoDashes = accession.replace(/-/g, "");
-    const prim = primaryDoc[i];
-    const indexUrl = `https://www.sec.gov/Archives/edgar/data/${Number(padded)}/${accessionNoDashes}/${accession}-index.htm`;
-    let directDoc = prim
-      ? `https://www.sec.gov/Archives/edgar/data/${Number(padded)}/${accessionNoDashes}/${prim}`
-      : indexUrl;
-
-    if (!/\.xml$/i.test(directDoc)) {
-      const xmlGuess = await findXmlFromIndex(indexUrl);
-      if (xmlGuess) directDoc = xmlGuess;
+    if (d.transactionType === "A" || d.transactionType === "D") {
+      type = d.transactionType;
     }
 
-    let txnShares: number | null = null;
-    let price: number | null = null;
-    let ownedAfter: number | null = null;
-    let txnLetter: string | undefined;
-
-    try {
-      if (/\.xml$/i.test(directDoc)) {
-        const rx = await fetch(directDoc, { headers: UA_HEADERS, cache: "no-store" });
-        if (rx.ok) {
-          const xml = await rx.text();
-          const t = pickFirstTxn(xml);
-          if (t) {
-            txnShares = t.txnShares;
-            price = t.price ?? null;
-            ownedAfter = t.ownedAfter ?? null;
-            txnLetter = t.code;
-          }
-        }
-      }
-    } catch {}
-
-    const transactionType = toTxn(txnLetter);
-    if (!matchesSide(transactionType, side)) continue;
-
-    out.push({
+    return {
+      id: d.id || `${symbol || "FINN"}-${i}`,
+      insider: d.name || d.owner || "—",
+      issuer: d.company || symbol || "—",
       symbol,
-      insiderName: "See Form 4 (details inside)",
-      tradeDate: filingDate,
-      transactionType,
-      txnShares,
+      filedAt,
+      type,
+      beneficialShares: parseNum(d.ownedFollowing) ?? parseNum(d.sharesOwnedFollowingTransaction),
       price,
-      valueUSD: calcValue(txnShares, price),
-      ownedAfter,
-      source: "SEC",
-      filingUrl: directDoc,
-      indexUrl,
-      cik: padded,
-    });
-
-    if (out.length >= limit) break;
-  }
-
-  return out;
+      valueUSD: val(Math.abs(qty ?? 0), price),
+      docUrl: d.url || d.link || undefined,
+      title: d.title || d.position || undefined,
+    };
+  });
 }
 
-/* ------------------ Handler ------------------ */
-export async function GET(req: NextRequest) {
+/* --------- SEC fallback (submissions JSON) ----------
+   Only to provide basic filing links (price/qty not guaranteed).
+   We’ll fetch the company’s submissions and filter form “4”.
+----------------------------------------------------- */
+async function secFallback(symbol: string, start: string, end: string): Promise<UiRow[]> {
   try {
-    const { searchParams } = new URL(req.url);
-    const rawSymbol = searchParams.get("symbol")?.trim();
-    const symbol = rawSymbol ? rawSymbol.toUpperCase() : undefined; // handles BRK.A etc.
-    const cik = searchParams.get("cik")?.trim();
-    const limit = Math.min(Math.max(Number(searchParams.get("limit") || 50), 1), 200);
-    const start = searchParams.get("start")?.trim() || undefined;
-    const end = searchParams.get("end")?.trim() || undefined;
-    const sideParam = (searchParams.get("side")?.trim().toLowerCase() || "all") as Side;
-    const side: Side = sideParam === "buy" || sideParam === "sell" ? sideParam : "all";
+    // 1) Resolve ticker->CIK (via SEC ticker file)
+    const tRes = await fetch("https://www.sec.gov/files/company_tickers_exchange.json", {
+      headers: { "User-Agent": "herevna.io (contact@herevna.io)" },
+    });
+    if (!tRes.ok) return [];
+    const tJson: any = await tRes.json();
+    // find matching symbol
+    const entry = Object.values(tJson as any[]).find(
+      (r: any) => (r?.ticker || "").toUpperCase() === symbol
+    ) as any | undefined;
+    if (!entry?.cik) return [];
+    const cik = String(entry.cik).padStart(10, "0");
 
-    const tried: string[] = [];
+    // 2) Pull submissions
+    const sRes = await fetch(`https://www.sec.gov/submissions/CIK${cik}.json`, {
+      headers: { "User-Agent": "herevna.io (contact@herevna.io)" },
+    });
+    if (!sRes.ok) return [];
+    const sJson: any = await sRes.json();
+    const f = sJson?.filings?.recent;
+    if (!f) return [];
 
-    // 1) FMP
-    try {
-      tried.push("FMP");
-      const r1 = await fetchFromFMP(symbol, start, end, side, limit);
-      if (r1.length) return ok(r1, { tried });
-    } catch {}
+    const forms: string[] = f.form || [];
+    const accs: string[] = f.accessionNumber || [];
+    const prims: string[] = f.primaryDocument || [];
+    const filed: string[] = f.filingDate || [];
+    const issuers: string[] = f.companyName || [];
 
-    // 2) Finnhub
-    try {
-      if (symbol) {
-        tried.push("Finnhub");
-        const r2 = await fetchFromFinnhub(symbol, start, end, side, limit);
-        if (r2.length) return ok(r2, { tried });
+    const startMs = Date.parse(start);
+    const endMs = Date.parse(end);
+
+    const rows: UiRow[] = [];
+    for (let i = 0; i < forms.length; i++) {
+      if (forms[i] !== "4") continue;
+      const filedAt = filed[i];
+      const ts = Date.parse(filedAt);
+      if (Number.isFinite(startMs) && ts < startMs) continue;
+      if (Number.isFinite(endMs) && ts > endMs) continue;
+
+      const acc = accs[i];
+      const primaryDoc = prims[i] || "index.htm";
+      const noZeros = cik.replace(/^0+/, "");
+      const flatAcc = String(acc).replace(/-/g, "");
+      const docUrl = `https://www.sec.gov/Archives/edgar/data/${noZeros}/${flatAcc}/${primaryDoc}`;
+
+      rows.push({
+        id: `${symbol}-SEC-${i}`,
+        insider: "—",
+        issuer: issuers[i] || symbol,
+        symbol,
+        filedAt,
+        type: undefined,
+        beneficialShares: undefined,
+        price: undefined,
+        valueUSD: undefined,
+        docUrl,
+        title: "Form 4 (fallback)",
+        cik,
+        accessionNumber: acc,
+        primaryDocument: primaryDoc,
+      });
+    }
+    return rows;
+  } catch (e) {
+    console.error("SEC fallback error:", e);
+    return [];
+  }
+}
+
+export async function GET(req: Request) {
+  try {
+    const url = new URL(req.url);
+    const symbol = okSymbol(url.searchParams.get("symbol") || "");
+    const start = url.searchParams.get("start") || "2024-01-01";
+    const end = url.searchParams.get("end") || new Date().toISOString().slice(0, 10);
+    const type = (url.searchParams.get("type") || "ALL").toUpperCase() as "ALL" | "A" | "D";
+
+    if (!symbol) {
+      return NextResponse.json({ ok: false, error: "Missing symbol" }, { status: 400 });
+    }
+
+    // If no keys, return a mock so the UI isn't empty (helps diagnose wiring)
+    if (!FMP_KEY && !FINNHUB_KEY) {
+      const mock: UiRow[] = [
+        {
+          id: "mock-1",
+          insider: "Sample Insider",
+          issuer: symbol,
+          symbol,
+          filedAt: start,
+          type: "D",
+          beneficialShares: 120000,
+          price: 125.5,
+          valueUSD: 125.5 * 1000,
+          docUrl: "https://www.sec.gov/Archives/edgar/data/0000000000/0000000000-25-000001/index.htm",
+          title: "Common Stock",
+        },
+      ];
+      return NextResponse.json({ ok: true, data: mock });
+    }
+
+    let rows: UiRow[] = [];
+
+    // 1) FMP first
+    if (FMP_KEY) {
+      try {
+        const fmpURL = new URL("https://financialmodelingprep.com/api/v4/insider-trading");
+        fmpURL.searchParams.set("symbol", symbol);
+        fmpURL.searchParams.set("from", start);
+        fmpURL.searchParams.set("to", end);
+        fmpURL.searchParams.set("apikey", FMP_KEY);
+
+        const fmpRes = await fetch(fmpURL.toString(), { cache: "no-store" });
+        if (!fmpRes.ok) throw new Error(`FMP failed: ${fmpRes.status}`);
+        const fmpJson = (await fmpRes.json()) as any[];
+        const fmpRows = normalizeFmp(Array.isArray(fmpJson) ? fmpJson : []);
+        rows = fmpRows;
+      } catch (e) {
+        console.error("FMP fetch error:", e);
       }
-    } catch {}
+    }
 
-    // 3) SEC owner-centric (when you pass an insider CIK, e.g., 0001186387)
-    try {
-      if (cik) {
-        tried.push("SEC-owner");
-        const r3 = await fetchFromSEC_OwnerSubmissions(cik, start, end, side, limit);
-        if (r3.length) return ok(r3, { tried });
+    // 2) Finnhub fallback if needed
+    if (rows.length === 0 && FINNHUB_KEY) {
+      try {
+        const fhURL = new URL("https://finnhub.io/api/v1/stock/insider-transactions");
+        fhURL.searchParams.set("symbol", symbol);
+        fhURL.searchParams.set("from", start);
+        fhURL.searchParams.set("to", end);
+        fhURL.searchParams.set("token", FINNHUB_KEY);
+
+        const fhRes = await fetch(fhURL.toString(), { cache: "no-store" });
+        if (!fhRes.ok) throw new Error(`Finnhub failed: ${fhRes.status}`);
+        const fhJson = await fhRes.json();
+        const list = Array.isArray(fhJson?.data) ? fhJson.data : Array.isArray(fhJson?.transactions) ? fhJson.transactions : [];
+        const fhRows = normalizeFinnhub(list);
+        rows = fhRows;
+      } catch (e) {
+        console.error("Finnhub fetch error:", e);
       }
-    } catch {}
+    }
 
-    // 4) SEC company-centric via browse-edgar Atom (works with company CIKs for Form 4)
-    try {
-      if (cik) {
-        tried.push("SEC-company");
-        const r4 = await fetchForm4ByCompanyCIK_BrowseEdgar(cik, start, end, side, limit);
-        if (r4.length) return ok(r4, { tried });
-      }
-    } catch {}
+    // 3) SEC submissions fallback (links only)
+    if (rows.length === 0) {
+      const secRows = await secFallback(symbol, start, end);
+      rows = secRows;
+    }
 
-    return ok([], { tried });
-  } catch (err: any) {
-    return bad(err?.message || "Unexpected error", 500);
+    // Final filter by A/D (if requested)
+    if (type === "A" || type === "D") {
+      rows = rows.filter((r) => r.type === type);
+    }
+
+    return NextResponse.json({ ok: true, data: rows });
+  } catch (e: any) {
+    console.error("Insider API fatal error:", e);
+    return NextResponse.json({ ok: false, error: e?.message || "Internal error" }, { status: 500 });
   }
 }
