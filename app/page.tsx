@@ -26,8 +26,8 @@ export default function HomePage() {
         </h1>
 
         <p className="mt-4 text-base sm:text-lg text-gray-600 max-w-2xl mx-auto">
-          Streamlined SEC filings, economic releases, and market insights—built
-          for speed, clarity, and real work.
+          Streamlined SEC filings, economic releases, and market insights. Built
+          for speed, clarity, and easy research.
         </p>
 
         {/* Quick actions */}
