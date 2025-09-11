@@ -1,15 +1,21 @@
 // app/api/insider/route.ts
-/* eslint-disable @typescript-eslint/no-explicit-any */
+// @ts-nocheck
+/* Robust Form 4 insider-tape API for Herevna
+   - Query by ?symbol=NVDA or ?cik=0000320193 or ?issuer=Apple
+   - Optional: start=YYYY-MM-DD, end=YYYY-MM-DD, action=A|D|ALL, page, perPage
+   - Returns shares, A/D, price, value (shares*price), beneficially owned after, and EDGAR links.
+*/
 
-export const runtime = "nodejs"; // we need Node for string/XML parsing
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 
-// ---------- small helpers ----------
-function json(data: any, init?: ResponseInit) {
+// ---------- helpers ----------
+function json(data, init) {
   return NextResponse.json(data, init);
 }
-function err(message: string, status = 400) {
+function err(message, status = 400) {
   return json({ error: message }, { status });
 }
 
@@ -17,34 +23,25 @@ const SEC_UA =
   process.env.SEC_USER_AGENT ||
   "herevna.ai/1.0 (admin@herevna.io; +https://herevna.io)";
 
-/** Fetch JSON from SEC with required headers + no-store caching */
-async function fetchJSON<T = any>(url: string): Promise<T> {
+async function fetchJSON(url) {
   const r = await fetch(url, {
-    headers: {
-      "user-agent": SEC_UA,
-      accept: "application/json",
-    },
+    headers: { "user-agent": SEC_UA, accept: "application/json" },
     cache: "no-store",
   });
   if (!r.ok) throw new Error(`Fetch failed ${r.status} for ${url}`);
-  return (await r.json()) as T;
+  return await r.json();
 }
 
-/** Fetch text (for XML/HTML) from SEC with required headers */
-async function fetchTEXT(url: string): Promise<string> {
+async function fetchTEXT(url) {
   const r = await fetch(url, {
-    headers: {
-      "user-agent": SEC_UA,
-      accept: "text/plain, text/xml, application/xml, */*",
-    },
+    headers: { "user-agent": SEC_UA, accept: "*/*" },
     cache: "no-store",
   });
   if (!r.ok) throw new Error(`Fetch failed ${r.status} for ${url}`);
   return await r.text();
 }
 
-/** Parse YYYY-MM-DD from string; returns null if invalid */
-function asDate(s?: string | null): Date | null {
+function asDate(s) {
   if (!s) return null;
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!m) return null;
@@ -52,115 +49,100 @@ function asDate(s?: string | null): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-/** Strip leading zeros from a CIK for /Archives path */
-function cikNoLeadingZeros(cik: string) {
+function cikNoLeadingZeros(cik) {
   return String(parseInt(cik, 10));
 }
-
-/** Remove dashes from an accession number for /Archives dir */
-function accessionNoDashes(acc: string) {
+function accessionNoDashes(acc) {
   return acc.replace(/-/g, "");
 }
 
-/** Extract all occurrences of <tag>...</tag> from xml string */
-function extractAll(xml: string, tag: string): string[] {
+function extractAll(xml, tag) {
   const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi");
-  const out: string[] = [];
-  let m: RegExpExecArray | null;
+  const out = [];
+  let m;
   while ((m = re.exec(xml))) out.push(m[1].trim());
   return out;
 }
-
-/** Extract first <tag>value</tag> as string (or undefined) */
-function extractOne(xml: string, tag: string): string | undefined {
+function extractOne(xml, tag) {
   const m = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
   return m ? m[1].trim() : undefined;
 }
 
-/** Resolve stock symbol -> CIK + company name via SEC map */
-async function getCikFromSymbol(
-  rawSymbol: string
-): Promise<{ cik: string; name: string } | null> {
-  const symbol = (rawSymbol || "").trim().toUpperCase();
+// Dedicated, accurate grabs for Form 4 (Table 1) fields inside a transaction block:
+function grabShares(blk) {
+  const m = blk.match(/<transactionShares[^>]*>[\s\S]*?<value>(.*?)<\/value>/i);
+  return m ? Number(m[1].replace(/[, ]/g, "")) : undefined;
+}
+function grabAD(blk) {
+  // A or D is nested:
+  const m = blk.match(
+    /<transactionAcquiredDisposedCode[^>]*>[\s\S]*?<value>([AD])<\/value>/i
+  );
+  return m ? (m[1].toUpperCase() === "A" ? "A" : "D") : "—";
+}
+function grabPrice(blk) {
+  const m = blk.match(
+    /<transactionPricePerShare[^>]*>[\s\S]*?<value>(.*?)<\/value>/i
+  );
+  return m ? Number(m[1].replace(/[, ]/g, "")) : undefined;
+}
+function grabOwnedFollowing(blk) {
+  const m = blk.match(
+    /<postTransactionAmounts[^>]*>[\s\S]*?<sharesOwnedFollowingTransaction[^>]*>[\s\S]*?<value>(.*?)<\/value>/i
+  );
+  return m ? Number(m[1].replace(/[, ]/g, "")) : undefined;
+}
+
+// ---------- SEC lookups ----------
+async function getCikFromSymbol(raw) {
+  const symbol = (raw || "").trim().toUpperCase();
   if (!symbol) return null;
-
   const url = "https://www.sec.gov/files/company_tickers.json";
-  type SecTickerRow = { cik: number; ticker: string; title: string };
-  const data = (await fetchJSON<Record<string, SecTickerRow>>(url)) || {};
-
-  const hit: SecTickerRow | undefined = Object.values(data).find(
+  const data = await fetchJSON(url); // { "0": {cik,ticker,title}, ... }
+  const hit = Object.values(data).find(
     (r) => r?.ticker?.toUpperCase() === symbol
   );
   if (!hit) return null;
-
-  return {
-    cik: String(hit.cik).padStart(10, "0"),
-    name: hit.title,
-  };
+  return { cik: String(hit.cik).padStart(10, "0"), name: hit.title };
 }
 
-/** Pull recent Form 4 filings for a CIK from SEC submissions JSON */
-async function getRecentForm4ForCik(cik: string) {
+async function getRecentForm4ForCik(cik) {
   const padded = cik.padStart(10, "0");
   const url = `https://data.sec.gov/submissions/CIK${padded}.json`;
-
-  const sub = await fetchJSON<any>(url);
+  const sub = await fetchJSON(url);
   const recent = sub?.filings?.recent;
   if (!recent) return [];
 
-  // Build arrays aligned by index
-  const forms: string[] = recent.form || [];
-  const accs: string[] = recent.accessionNumber || [];
-  const reportDates: string[] = recent.reportDate || [];
-  const fileDates: string[] = recent.filingDate || [];
-  const primaryDocs: string[] = recent.primaryDocument || [];
-  const symbols: string[] = recent.ticker || []; // sometimes present
-
-  const out: {
-    form: string;
-    accessionNumber: string;
-    reportDate?: string;
-    filingDate: string;
-    primaryDoc?: string;
-    symbol?: string;
-  }[] = [];
-
+  const out = [];
+  const forms = recent.form || [];
   for (let i = 0; i < forms.length; i++) {
     if (forms[i] === "4") {
       out.push({
         form: forms[i],
-        accessionNumber: accs[i],
-        reportDate: reportDates[i],
-        filingDate: fileDates[i],
-        primaryDoc: primaryDocs[i],
-        symbol: symbols[i],
+        accessionNumber: recent.accessionNumber?.[i],
+        reportDate: recent.reportDate?.[i],
+        filingDate: recent.filingDate?.[i],
+        primaryDoc: recent.primaryDocument?.[i],
+        symbol: recent.ticker?.[i],
       });
     }
   }
   return out;
 }
 
-/** Given a filing (Form 4), download & parse the XML for Table 1 (non-derivative transactions) */
-async function parseForm4Details(params: {
-  cik: string;
-  accessionNumber: string;
-  primaryDoc?: string;
-}) {
-  const { cik, accessionNumber, primaryDoc } = params;
-  // Construct archive path
+async function parseForm4Details({ cik, accessionNumber, primaryDoc }) {
   const cikNo0 = cikNoLeadingZeros(cik);
   const accDir = accessionNoDashes(accessionNumber);
 
-  // If primaryDoc ends with .xml we can use it; otherwise try standard form4.xml
   const candidates = [
     primaryDoc,
     "form4.xml",
     "primary_doc.xml",
     "ownership.xml",
-  ].filter(Boolean) as string[];
+  ].filter(Boolean);
 
-  let xmlText: string | null = null;
-  let used: string | undefined;
+  let xmlText = null;
+  let used;
 
   for (const cand of candidates) {
     const url = `https://www.sec.gov/Archives/edgar/data/${cikNo0}/${accDir}/${cand}`;
@@ -171,20 +153,16 @@ async function parseForm4Details(params: {
         used = cand;
         break;
       }
-    } catch {
-      // try next candidate
-    }
+    } catch {}
   }
 
   if (!xmlText) {
-    // last resort: index to find xml name
-    const indexUrl = `https://www.sec.gov/Archives/edgar/data/${cikNo0}/${accDir}/index.json`;
+    // try index.json to locate xml
     try {
-      const idx = await fetchJSON<{ directory: { item: { name: string }[] } }>(
-        indexUrl
-      );
+      const indexUrl = `https://www.sec.gov/Archives/edgar/data/${cikNo0}/${accDir}/index.json`;
+      const idx = await fetchJSON(indexUrl);
       const guess = idx?.directory?.item?.find((it) =>
-        it.name.toLowerCase().endsWith(".xml")
+        String(it.name || "").toLowerCase().endsWith(".xml")
       );
       if (guess) {
         const alt = `https://www.sec.gov/Archives/edgar/data/${cikNo0}/${accDir}/${guess.name}`;
@@ -194,109 +172,54 @@ async function parseForm4Details(params: {
           used = guess.name;
         }
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 
   if (!xmlText) return null;
 
-  // Parse issuer + reporting owner
   const issuerName =
-    extractOne(xmlText, "issuerName") || extractOne(xmlText, "issuerNameText");
-  const issuerTradingSymbol =
+    extractOne(xmlText, "issuerName") ||
+    extractOne(xmlText, "issuerNameText") ||
+    "—";
+  const issuerSymbol =
     extractOne(xmlText, "issuerTradingSymbol") ||
-    extractOne(xmlText, "issuerSymbol");
+    extractOne(xmlText, "issuerSymbol") ||
+    undefined;
 
-  const reportingOwners = extractAll(xmlText, "reportingOwner");
-  const firstOwner = reportingOwners[0] || "";
+  const firstOwner = extractAll(xmlText, "reportingOwner")[0] || "";
   const insiderName =
     extractOne(firstOwner, "rptOwnerName") ||
     extractOne(firstOwner, "reportingOwnerName") ||
     "—";
 
-  // Table 1 non-derivative transactions (can be multiple)
   const txBlocks = extractAll(xmlText, "nonDerivativeTransaction");
-
-  type TxRow = {
-    action: "A" | "D" | "—";
-    shares?: number;
-    price?: number;
-    ownedFollowing?: number;
-  };
-
-  const rows: TxRow[] = txBlocks.map((blk) => {
-    const shares =
-      extractOne(blk, "transactionShares") ||
-      extractOne(blk, "transactionAmounts") ||
-      undefined;
-
-    const sharesVal = Number(
-      extractOne(blk, "value") ||
-        extractOne(blk, "transactionShares") ||
-        "NaN"
-    );
-
-    const ad =
-      extractOne(blk, "transactionAcquiredDisposedCode") ||
-      extractOne(blk, "transactionAcquiredDisposed") ||
-      extractOne(blk, "transactionCode") ||
-      "—";
-    const action = (ad.match(/[AD]/i)?.[0]?.toUpperCase() as "A" | "D") || "—";
-
-    const priceVal = Number(
-      extractOne(blk, "transactionPricePerShare") ||
-        extractOne(blk, "pricePerShare") ||
-        "NaN"
-    );
-
-    const ownedFollowingVal = Number(
-      extractOne(blk, "sharesOwnedFollowingTransaction") ||
-        extractOne(blk, "postTransactionAmounts") ||
-        "NaN"
-    );
-
-    return {
-      action,
-      shares: Number.isFinite(sharesVal) ? sharesVal : undefined,
-      price: Number.isFinite(priceVal) ? priceVal : undefined,
-      ownedFollowing: Number.isFinite(ownedFollowingVal)
-        ? ownedFollowingVal
-        : undefined,
-    };
+  const rows = txBlocks.map((blk) => {
+    const shares = grabShares(blk);
+    const action = grabAD(blk);
+    const price = grabPrice(blk);
+    const ownedFollowing = grabOwnedFollowing(blk);
+    return { action, shares, price, ownedFollowing };
   });
 
-  const archiveBase = `https://www.sec.gov/Archives/edgar/data/${cikNo0}/${accDir}`;
+  const base = `https://www.sec.gov/Archives/edgar/data/${cikNo0}/${accDir}`;
   return {
-    issuer: issuerName || "—",
-    symbol: issuerTradingSymbol || undefined,
-    insider: insiderName || "—",
-    formUrl: `${archiveBase}/${used || "form4.xml"}`,
-    indexUrl: `${archiveBase}/index.html`,
+    issuer: issuerName,
+    symbol: issuerSymbol,
+    insider: insiderName,
+    formUrl: `${base}/${used || "form4.xml"}`,
+    indexUrl: `${base}/index.html`,
     transactions: rows,
   };
 }
 
-// ---------- API Route ----------
-/**
- * GET /api/insider?symbol=NVDA
- * GET /api/insider?cik=0000320193
- * GET /api/insider?issuer=Apple
- *
- * Optional:
- *   start=YYYY-MM-DD
- *   end=YYYY-MM-DD
- *   action=A|D|ALL  (default ALL)
- *   page=1 (1-based)
- *   perPage=25
- */
+// ---------- API route ----------
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
 
     const symbol = searchParams.get("symbol") || "";
-    const cik = searchParams.get("cik") || "";
-    const issuerQuery = searchParams.get("issuer") || "";
+    let cik = searchParams.get("cik") || "";
+    let issuerQuery = searchParams.get("issuer") || "";
 
     const startStr = searchParams.get("start") || "";
     const endStr = searchParams.get("end") || "";
@@ -311,45 +234,33 @@ export async function GET(req: NextRequest) {
       return err("Provide symbol, cik, or issuer.");
     }
 
-    let resolvedCik = cik.trim();
-    let resolvedIssuer = issuerQuery.trim();
-
-    // If symbol given → resolve to CIK
-    if (symbol && !resolvedCik) {
+    if (symbol && !cik) {
       const hit = await getCikFromSymbol(symbol);
       if (!hit) return err("Could not resolve symbol to CIK", 404);
-      resolvedCik = hit.cik;
-      if (!resolvedIssuer) resolvedIssuer = hit.name;
+      cik = hit.cik;
+      if (!issuerQuery) issuerQuery = hit.name;
     }
 
-    // If only issuer name given (no symbol/cik) → naive lookup via SEC ticker map title match
-    if (!symbol && !resolvedCik && resolvedIssuer) {
+    if (!symbol && !cik && issuerQuery) {
       try {
         const url = "https://www.sec.gov/files/company_tickers.json";
-        type Row = { cik: number; ticker: string; title: string };
-        const data = await fetchJSON<Record<string, Row>>(url);
+        const data = await fetchJSON(url);
         const hit = Object.values(data).find((r) =>
-          r?.title?.toLowerCase().includes(resolvedIssuer.toLowerCase())
+          (r.title || "").toLowerCase().includes(issuerQuery.toLowerCase())
         );
-        if (hit) {
-          resolvedCik = String(hit.cik).padStart(10, "0");
-        }
-      } catch {
-        // ignore; we’ll proceed without CIK (will fail below if necessary)
-      }
+        if (hit) cik = String(hit.cik).padStart(10, "0");
+      } catch {}
     }
 
-    if (!resolvedCik) {
-      return err("Unable to resolve a CIK from your query.", 404);
-    }
+    if (!cik) return err("Unable to resolve a CIK from your query.", 404);
 
-    // Pull recent Form 4 filings for this CIK
-    const filings = await getRecentForm4ForCik(resolvedCik);
+    // fetch recent Form 4 list for that CIK
+    const filings = await getRecentForm4ForCik(cik);
 
-    // Date filtering (use filingDate)
+    // date filter (filingDate)
     const startDate = asDate(startStr);
     const endDate = asDate(endStr);
-    const filteredByDate = filings.filter((f) => {
+    const byDate = filings.filter((f) => {
       const d = asDate(f.filingDate);
       if (!d) return false;
       if (startDate && d < startDate) return false;
@@ -357,58 +268,38 @@ export async function GET(req: NextRequest) {
       return true;
     });
 
-    // Pagination first, then we’ll fetch/parse details for the current page
-    const total = filteredByDate.length;
+    const total = byDate.length;
     const offset = (page - 1) * perPage;
-    const pageSlice = filteredByDate.slice(offset, offset + perPage);
+    const slice = byDate.slice(offset, offset + perPage);
 
-    // Fetch + parse XML for each page item
     const details = await Promise.all(
-      pageSlice.map((f) =>
+      slice.map((f) =>
         parseForm4Details({
-          cik: resolvedCik,
+          cik,
           accessionNumber: f.accessionNumber,
           primaryDoc: f.primaryDoc,
         }).catch(() => null)
       )
     );
 
-    // Flatten out transactions and apply A/D filter
-    const actionMode: "ALL" | "A" | "D" =
-      actionRaw === "A" || actionRaw === "D" ? (actionRaw as any) : "ALL";
+    const actionMode = actionRaw === "A" || actionRaw === "D" ? actionRaw : "ALL";
 
-    type Row = {
-      insider: string;
-      issuer: string;
-      symbol?: string;
-      filedAt: string;
-      action: "A" | "D" | "—";
-      shares?: number;
-      price?: number;
-      value?: number;
-      ownedFollowing?: number; // Beneficially Owned Shares after tx
-      formUrl: string;
-      indexUrl: string;
-      accessionNumber: string;
-    };
-
-    const rows: Row[] = [];
-    for (let i = 0; i < pageSlice.length; i++) {
-      const f = pageSlice[i];
+    const rows = [];
+    for (let i = 0; i < slice.length; i++) {
+      const f = slice[i];
       const d = details[i];
       if (!d) continue;
 
       const filedAt = f.filingDate || f.reportDate || "—";
       const issuer = d.issuer || "—";
-      const symbolFromXml = d.symbol || f.symbol;
+      const sy = d.symbol || f.symbol;
       const insider = d.insider || "—";
 
-      // If no transactions table, at least push one row with links
       if (!d.transactions || d.transactions.length === 0) {
         rows.push({
           insider,
           issuer,
-          symbol: symbolFromXml,
+          symbol: sy,
           filedAt,
           action: "—",
           formUrl: d.formUrl,
@@ -428,13 +319,13 @@ export async function GET(req: NextRequest) {
         rows.push({
           insider,
           issuer,
-          symbol: symbolFromXml,
+          symbol: sy,
           filedAt,
-          action: tx.action,
-          shares: tx.shares,
-          price: tx.price,
-          value,
-          ownedFollowing: tx.ownedFollowing,
+          action: tx.action, // "A" or "D"
+          shares: tx.shares, // "Securities Acquired (A) or Disposed Of (D)" -> Amount
+          price: tx.price, // Price/Share
+          value, // shares*price
+          ownedFollowing: tx.ownedFollowing, // "Beneficially Owned Following"
           formUrl: d.formUrl,
           indexUrl: d.indexUrl,
           accessionNumber: f.accessionNumber,
@@ -446,8 +337,8 @@ export async function GET(req: NextRequest) {
       ok: true,
       query: {
         symbol: symbol || null,
-        cik: resolvedCik,
-        issuer: resolvedIssuer || null,
+        cik,
+        issuer: issuerQuery || null,
         start: startStr || null,
         end: endStr || null,
         action: actionMode,
@@ -458,7 +349,7 @@ export async function GET(req: NextRequest) {
       count: rows.length,
       data: rows,
     });
-  } catch (e: any) {
+  } catch (e) {
     return err(e?.message || "Unexpected server error", 500);
   }
 }
