@@ -199,7 +199,28 @@ export default function HomePage() {
           </div>
         </div>
       </section>
+import NewsletterForm from "../components/NewsletterForm";
 
+export default function HomePage() {
+  return (
+    <main>
+      {/* ... your existing homepage sections ... */}
+
+      {/* Newsletter Signup */}
+      <section className="bg-slate-50 py-12 text-center">
+        <h2 className="text-xl font-semibold text-gray-900">
+          Stay updated with Herevna
+        </h2>
+        <p className="text-gray-600 text-sm mt-1">
+          Get the latest filings, economic updates, and news straight to your inbox.
+        </p>
+        <NewsletterForm />
+      </section>
+
+      {/* footer remains the same */}
+    </main>
+  );
+}
       {/* Footer note */}
       <footer className="border-t bg-white">
         <div className="mx-auto max-w-6xl px-4 py-6 text-center text-xs text-gray-500">
