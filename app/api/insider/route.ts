@@ -4,17 +4,19 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 type Side = "buy" | "sell" | "all";
+
 type InsiderRow = {
   symbol: string;
   insiderName: string;
-  tradeDate: string;             // YYYY-MM-DD
+  tradeDate: string; // YYYY-MM-DD
   transactionType: "Buy" | "Sell" | "A" | "D" | "Unknown";
-  shares: number | null;
-  price?: number | null;
-  valueUSD?: number | null;
+  txnShares: number | null;             // Securities Acquired (A) or Disposed Of (D) — Form 4 transaction amount
+  price?: number | null;                // Price per share in that transaction
+  valueUSD?: number | null;             // txnShares * price (if both present)
+  ownedAfter?: number | null;           // Beneficially Owned Shares following the transaction (postTransactionAmounts)
   source: "FMP" | "Finnhub" | "SEC";
-  filingUrl?: string;            // direct doc if available, else index
-  indexUrl?: string;             // SEC index page (backup)
+  filingUrl?: string;                   // direct doc (XML/HTML) if available, else index
+  indexUrl?: string;                    // SEC index page (backup)
   cik?: string;
 };
 
@@ -37,19 +39,20 @@ function toISO(d?: string | null) {
 }
 function safeNum(n: any): number | null {
   if (n === null || n === undefined) return null;
-  const v = Number(n);
+  const v = Number(String(n).replace(/[, ]/g, ""));
   return Number.isFinite(v) ? v : null;
 }
-function valueUSD(shares: number | null, price: number | null) {
+function calcValue(shares: number | null, price: number | null) {
   if (shares == null || price == null) return null;
   return Number((shares * price).toFixed(2));
 }
 function toTxn(letter?: string | null): InsiderRow["transactionType"] {
   if (!letter) return "Unknown";
   const x = letter.toUpperCase();
+  // Map common Form 4 codes into Buy/Sell buckets
   if (x === "P" || x === "A") return "Buy";   // Purchase/Acquisition
   if (x === "S" || x === "D") return "Sell";  // Sale/Disposition
-  return (x === "A" || x === "D") ? (x as "A" | "D") : "Unknown";
+  return (["A","D"].includes(x) ? (x as "A" | "D") : "Unknown");
 }
 function matchesSide(txn: InsiderRow["transactionType"], side: Side) {
   if (side === "all") return true;
@@ -65,7 +68,7 @@ function withinRange(dateISO: string, start?: string, end?: string) {
   return true;
 }
 
-/** ---------  FMP  --------- */
+/* ------------------ FMP ------------------ */
 async function fetchFromFMP(symbol?: string, start?: string, end?: string, side: Side = "all", limit = 50): Promise<InsiderRow[]> {
   const apiKey = process.env.FMP_API_KEY;
   if (!apiKey) return [];
@@ -80,12 +83,13 @@ async function fetchFromFMP(symbol?: string, start?: string, end?: string, side:
   if (!Array.isArray(rows)) return [];
 
   const mapped: InsiderRow[] = rows.map((x) => {
-    // Try multiple vendor fields
-    const shares = safeNum(x.securitiesTransacted ?? x.sharesNumber);
+    // This is transaction amount (A or D)
+    const txnShares = safeNum(x.securitiesTransacted ?? x.sharesNumber ?? x.shares);
+    // Try vendor price/total; back compute if needed
     let price = safeNum(x.price);
     let total = safeNum(x.finalPrice ?? x.value ?? x.transactionValue);
-    if (price == null && total != null && shares != null && shares > 0) {
-      price = Number((total / shares).toFixed(4));
+    if (price == null && total != null && txnShares != null && txnShares > 0) {
+      price = Number((total / txnShares).toFixed(4));
     }
     const txn = toTxn(String(x.acquisitionOrDisposition ?? x.transactionType ?? ""));
 
@@ -94,9 +98,10 @@ async function fetchFromFMP(symbol?: string, start?: string, end?: string, side:
       insiderName: x.reportingName ?? x.insiderName ?? x.ownerCik ?? "Unknown",
       tradeDate: toISO(x.transactionDate ?? x.filingDate),
       transactionType: txn,
-      shares,
+      txnShares,
       price,
-      valueUSD: valueUSD(shares, price) ?? total ?? null,
+      valueUSD: calcValue(txnShares, price) ?? total ?? null,
+      ownedAfter: null, // FMP typically does not expose postTransactionAmounts
       source: "FMP",
       filingUrl: x.link || undefined,
       cik: x.cik || x.ownerCik || undefined,
@@ -109,7 +114,7 @@ async function fetchFromFMP(symbol?: string, start?: string, end?: string, side:
   return mapped;
 }
 
-/** ---------  Finnhub  --------- */
+/* ------------------ Finnhub ------------------ */
 async function fetchFromFinnhub(symbol?: string, start?: string, end?: string, side: Side = "all", limit = 50): Promise<InsiderRow[]> {
   const token = process.env.FINNHUB_API_KEY;
   if (!token || !symbol) return [];
@@ -120,21 +125,22 @@ async function fetchFromFinnhub(symbol?: string, start?: string, end?: string, s
   const data: any = await r.json();
 
   let rows: InsiderRow[] = (Array.isArray(data?.data) ? data.data : []).map((x: any) => {
-    const shares = safeNum(x.share);
+    const txnShares = safeNum(x.share);
     let price = safeNum(x.price);
     let total = safeNum(x.transactionValue);
-    if (price == null && total != null && shares != null && shares > 0) {
-      price = Number((total / shares).toFixed(4));
+    if (price == null && total != null && txnShares != null && txnShares > 0) {
+      price = Number((total / txnShares).toFixed(4));
     }
 
     return {
       symbol: x.symbol ?? symbol ?? "",
       insiderName: x.name ?? "Unknown",
       tradeDate: toISO(x.transactionDate ?? x.filingDate ?? x.time),
-      transactionType: toTxn(x.transaction), // "P" / "S"
-      shares,
+      transactionType: toTxn(x.transaction), // "P" / "S" / "A" / "D"
+      txnShares,
       price,
-      valueUSD: valueUSD(shares, price) ?? total ?? null,
+      valueUSD: calcValue(txnShares, price) ?? total ?? null,
+      ownedAfter: null, // Finnhub does not provide owned-after
       source: "Finnhub",
       cik: x.cik || undefined,
     };
@@ -144,7 +150,7 @@ async function fetchFromFinnhub(symbol?: string, start?: string, end?: string, s
     .filter((r) => r.tradeDate && withinRange(r.tradeDate, start, end) && matchesSide(r.transactionType, side))
     .slice(0, limit);
 
-  // Optional: SEC-link enrichment via CIK + date
+  // Enrich with SEC link (best-effort) using any CIK we get
   const firstWithCik = rows.find((r) => r.cik);
   if (firstWithCik?.cik) {
     try {
@@ -172,12 +178,11 @@ async function fetchFromFinnhub(symbol?: string, start?: string, end?: string, s
           byDate[date] = direct;
         }
 
-        rows = rows.map((row) => {
-          if (!row.filingUrl && row.tradeDate && byDate[row.tradeDate]) {
-            return { ...row, filingUrl: byDate[row.tradeDate] };
-          }
-          return row;
-        });
+        rows = rows.map((row) =>
+          (!row.filingUrl && row.tradeDate && byDate[row.tradeDate])
+            ? { ...row, filingUrl: byDate[row.tradeDate] }
+            : row
+        );
       }
     } catch {}
   }
@@ -185,12 +190,9 @@ async function fetchFromFinnhub(symbol?: string, start?: string, end?: string, s
   return rows;
 }
 
-/** ---------  SEC (Form 4)  ---------
- * Robust XML parse: selects first non-derivative transaction with price/shares,
- * captures date, acquiredDisposed code, price, shares, then computes valueUSD.
- */
+/* ------------------ SEC (Form 4 XML) ------------------ */
 function pickFirstTxn(xml: string) {
-  // prefer nonDerivativeTransaction, fall back to derivativeTransaction
+  // Prefer non-derivative, then derivative
   const blocks =
     xml.match(/<nonDerivativeTransaction>[\s\S]*?<\/nonDerivativeTransaction>/gi) ||
     xml.match(/<derivativeTransaction>[\s\S]*?<\/derivativeTransaction>/gi) ||
@@ -198,17 +200,27 @@ function pickFirstTxn(xml: string) {
 
   for (const block of blocks) {
     const date = block.match(/<transactionDate>\s*<value>([^<]+)<\/value>/i)?.[1];
-    const code = block.match(/<transactionAcquiredDisposedCode>\s*<value>([^<]+)<\/value>/i)?.[1]; // P/S/A/D
+    const code = block.match(/<transactionAcquiredDisposedCode>\s*<value>([^<]+)<\/value>/i)?.[1]; // A/D/P/S
     const shares = safeNum(block.match(/<transactionShares>\s*<value>([^<]+)<\/value>/i)?.[1]);
     const price = safeNum(block.match(/<transactionPricePerShare>\s*<value>([^<]+)<\/value>/i)?.[1]);
-    if (shares != null && (price != null || code)) {
+
+    // "Owned after" may be outside the transaction block (postTransactionAmounts…)
+    const ownedAfter = safeNum(xml.match(/<postTransactionAmounts>[\s\S]*?<sharesOwnedFollowingTransaction>\s*<value>([^<]+)<\/value>/i)?.[1]);
+
+    if (shares != null) {
       return {
         date: toISO(date || ""),
         code: code?.trim().toUpperCase() || undefined,
-        shares,
+        txnShares: shares,
         price,
+        ownedAfter,
       };
     }
+  }
+  // If not found, try only "owned after"
+  const ownedAfter = safeNum(xml.match(/<postTransactionAmounts>[\s\S]*?<sharesOwnedFollowingTransaction>\s*<value>([^<]+)<\/value>/i)?.[1]);
+  if (ownedAfter != null) {
+    return { date: "", code: undefined, txnShares: null, price: null, ownedAfter };
   }
   return null;
 }
@@ -248,9 +260,9 @@ async function fetchFromSEC(cik: string, start?: string, end?: string, side: Sid
       ? `https://www.sec.gov/Archives/edgar/data/${Number(padded)}/${accessionNoDashes}/${prim}`
       : indexUrl;
 
-    // Try to parse XML for first txn
-    let shares: number | null = null;
+    let txnShares: number | null = null;
     let price: number | null = null;
+    let ownedAfter: number | null = null;
     let txnLetter: string | undefined;
     let txnDateISO: string | undefined;
 
@@ -261,8 +273,9 @@ async function fetchFromSEC(cik: string, start?: string, end?: string, side: Sid
           const xml = await rx.text();
           const t = pickFirstTxn(xml);
           if (t) {
-            shares = t.shares;
+            txnShares = t.txnShares;
             price = t.price ?? null;
+            ownedAfter = t.ownedAfter ?? null;
             txnLetter = t.code;
             txnDateISO = t.date || filingDate;
           }
@@ -278,9 +291,10 @@ async function fetchFromSEC(cik: string, start?: string, end?: string, side: Sid
       insiderName: "See Form 4 (details inside)",
       tradeDate: txnDateISO || filingDate,
       transactionType,
-      shares,
+      txnShares,
       price,
-      valueUSD: valueUSD(shares, price),
+      valueUSD: calcValue(txnShares, price),
+      ownedAfter,
       source: "SEC",
       filingUrl: directDoc,
       indexUrl,
@@ -293,7 +307,7 @@ async function fetchFromSEC(cik: string, start?: string, end?: string, side: Sid
   return out;
 }
 
-/** ---------  Handler  --------- */
+/* ------------------ Handler ------------------ */
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -306,7 +320,6 @@ export async function GET(req: NextRequest) {
     const side: Side = sideParam === "buy" || sideParam === "sell" ? sideParam : "all";
 
     const tried: string[] = [];
-    let results: InsiderRow[] = [];
 
     // FMP
     try {
@@ -324,7 +337,7 @@ export async function GET(req: NextRequest) {
       }
     } catch {}
 
-    // SEC
+    // SEC — when CIK provided
     try {
       if (cik) {
         tried.push("SEC");
