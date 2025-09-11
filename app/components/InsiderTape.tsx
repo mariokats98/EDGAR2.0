@@ -8,10 +8,10 @@ type Row = {
   insiderName: string;
   tradeDate: string;
   transactionType: "Buy" | "Sell" | "A" | "D" | "Unknown";
-  txnShares: number | null;      // Securities Acquired (A) or Disposed Of (D)
+  txnShares: number | null;
   price?: number | null;
   valueUSD?: number | null;
-  ownedAfter?: number | null;    // Beneficially Owned Shares
+  ownedAfter?: number | null;
   source: "FMP" | "Finnhub" | "SEC";
   filingUrl?: string;
   indexUrl?: string;
@@ -20,6 +20,7 @@ type Row = {
 
 export default function InsiderTape() {
   const [symbol, setSymbol] = useState<string>("");
+  const [cik, setCik] = useState<string>(""); // optional
   const [start, setStart] = useState<string>(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 3);
@@ -32,26 +33,30 @@ export default function InsiderTape() {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [metaTried, setMetaTried] = useState<string[] | null>(null);
 
   const query = useMemo(() => {
     const sp = new URLSearchParams();
     if (symbol.trim()) sp.set("symbol", symbol.trim().toUpperCase());
+    if (cik.trim()) sp.set("cik", cik.trim());
     sp.set("start", start);
     sp.set("end", end);
     sp.set("side", side);
     sp.set("limit", String(limit));
     return `/api/insider?${sp.toString()}`;
-  }, [symbol, start, end, side, limit]);
+  }, [symbol, cik, start, end, side, limit]);
 
   async function load() {
     setLoading(true);
     setError(null);
     setRows([]);
+    setMetaTried(null);
     try {
       const r = await fetch(query, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
       setRows(Array.isArray(j?.data) ? j.data : []);
+      setMetaTried(Array.isArray(j?.tried) ? j.tried : null);
     } catch (e: any) {
       setError(e?.message || "Unexpected error");
     } finally {
@@ -68,13 +73,22 @@ export default function InsiderTape() {
     <section className="space-y-4">
       {/* Controls */}
       <div className="rounded-2xl border bg-white p-4">
-        <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_1fr_auto] items-end">
+        <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_1fr_1fr_auto] items-end">
           <div>
             <div className="text-sm text-gray-700 mb-1">Symbol (optional)</div>
             <input
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
               placeholder="e.g., NVDA"
+              className="w-full border rounded-md px-3 py-2"
+            />
+          </div>
+          <div>
+            <div className="text-sm text-gray-700 mb-1">CIK (optional)</div>
+            <input
+              value={cik}
+              onChange={(e) => setCik(e.target.value)}
+              placeholder="e.g., 0000320193"
               className="w-full border rounded-md px-3 py-2"
             />
           </div>
@@ -104,9 +118,20 @@ export default function InsiderTape() {
             </button>
           </div>
         </div>
+
+        {metaTried && (
+          <div className="mt-2 text-xs text-gray-500">
+            Sources tried: {metaTried.join(" → ")}{!metaTried.length ? " (none)" : ""}
+          </div>
+        )}
+        {!process.env.NEXT_PUBLIC_FMP && !process.env.NEXT_PUBLIC_FINNHUB && (
+          <div className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 inline-block">
+            Tip: Enter a CIK to use the SEC fallback if vendor APIs are not configured.
+          </div>
+        )}
       </div>
 
-      {/* Status */}
+      {/* Errors */}
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           {error}
