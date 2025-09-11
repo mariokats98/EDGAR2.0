@@ -1,20 +1,9 @@
+// app/components/InsiderTape.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-type Props = {
-  symbol: string;
-  start: string; // YYYY-MM-DD
-  end: string;   // YYYY-MM-DD
-  txnType: "ALL" | "A" | "D";
-  queryKey?: string;
-};
-
-/** Extremely loose shape for whatever an upstream API returns */
-type ApiRowLoose = Record<string, any>;
-
-/** Tight, normalized shape we actually render */
-type UiRow = {
+type Row = {
   id: string;
   insider: string;
   issuer: string;
@@ -24,316 +13,240 @@ type UiRow = {
   beneficialShares?: number;
   price?: number;
   valueUSD?: number;
+  amount?: number;
   docUrl?: string;
   title?: string;
+  cik?: string;
+  accessionNumber?: string;
+  primaryDocument?: string;
 };
 
-function formatNum(n?: number) {
-  if (n == null || Number.isNaN(n)) return "—";
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-}
-function formatMoney(n?: number) {
-  if (n == null || Number.isNaN(n)) return "—";
-  return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-}
+type FetchState =
+  | { loading: true; error?: string | null; data: Row[] }
+  | { loading: false; error?: string | null; data: Row[] };
 
-/**
- * Try hard to normalize rows from a variety of sources:
- *  - SEC 4 filings JSON (nonDerivativeTable, footnotes, reportingOwner, issuer etc.)
- *  - Aggregators (FMP/Finnhub) which may provide flat fields (transactionPrice, transactionShares, etc.)
- */
-function normalizeRow(d: ApiRowLoose, idx: number): UiRow {
-  // Potential keys across sources:
-  const reportingOwner =
-    d.reportingOwner?.name ||
-    d.reporting_owner?.name ||
-    d.ownerName ||
-    d.owner ||
-    d.insider ||
-    d.officerName ||
-    d.directorName;
+const formatInt = (n?: number) =>
+  n == null ? "—" : Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(n);
 
-  const issuerName =
-    d.issuer?.name ||
-    d.issuerName ||
-    d.companyName ||
-    d.company ||
-    d.issuerTradingSymbol ||
-    d.symbol ||
-    d.ticker;
+const formatMoney = (n?: number) =>
+  n == null ? "—" : Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 
-  const symbol =
-    d.symbol ||
-    d.ticker ||
-    d.issuerTradingSymbol ||
-    d.issuer?.ticker;
+const asISO = (d: Date) => d.toISOString().slice(0, 10);
 
-  // Filing date / disclosure date
-  const filedAt =
-    d.filedAt ||
-    d.filed_at ||
-    d.filingDate ||
-    d.date ||
-    d.transactionDate ||
-    d.reportPeriod ||
-    d.periodOfReport ||
-    d.acceptanceDateTime ||
-    d.accepted ||
-    d.createdAt ||
-    "—";
+const today = new Date();
+const defaultStart = asISO(new Date(today.getFullYear(), today.getMonth() - 1, today.getDate())); // last ~30d
+const defaultEnd = asISO(today);
 
-  // Transaction type A/D
-  const type: "A" | "D" | undefined =
-    d.type === "A" || d.type === "D"
-      ? d.type
-      : d.transactionType === "A" || d.transactionType === "D"
-      ? d.transactionType
-      : d.transactionAcquiredDisposedCode?.code === "A" || d.transactionAcquiredDisposedCode?.value === "A"
-      ? "A"
-      : d.transactionAcquiredDisposedCode?.code === "D" || d.transactionAcquiredDisposedCode?.value === "D"
-      ? "D"
-      : undefined;
-
-  // Beneficially owned shares (post-transaction)
-  // Common locations: d.sharesOwnedFollowingTransaction, d.postTransactionAmounts?.sharesOwnedFollowingTransaction?.value, etc.
-  const beneficialSharesRaw =
-    d.sharesOwnedFollowingTransaction ??
-    d.postTransactionAmounts?.sharesOwnedFollowingTransaction?.value ??
-    d.postTransactionAmounts?.sharesOwnedFollowingTransaction ??
-    d.ownedFollowing ?? d.beneficialShares ?? d.shares;
-
-  const beneficialShares =
-    typeof beneficialSharesRaw === "string"
-      ? Number(beneficialSharesRaw.replace(/[, ]/g, ""))
-      : typeof beneficialSharesRaw === "number"
-      ? beneficialSharesRaw
-      : undefined;
-
-  // Transaction shares & price for the line item (used to compute value)
-  const txnSharesRaw =
-    d.transactionShares?.value ??
-    d.transactionShares ??
-    d.sharesTraded ??
-    d.transactionAmountShares ??
-    d.quantity ??
-    d.qty ??
-    d.sharesAcquiredDisposed ??
-    d.amountOfSecuritiesTransacted;
-
-  const txnShares =
-    typeof txnSharesRaw === "string"
-      ? Number(txnSharesRaw.replace(/[, ]/g, ""))
-      : typeof txnSharesRaw === "number"
-      ? txnSharesRaw
-      : undefined;
-
-  const txnPriceRaw =
-    d.transactionPricePerShare?.value ??
-    d.transactionPricePerShare ??
-    d.price ??
-    d.executionPrice ??
-    d.transactionPrice;
-
-  const price =
-    typeof txnPriceRaw === "string"
-      ? Number(txnPriceRaw.replace(/[$, ]/g, ""))
-      : typeof txnPriceRaw === "number"
-      ? txnPriceRaw
-      : undefined;
-
-  const valueUSD =
-    typeof txnShares === "number" && typeof price === "number"
-      ? txnShares * price
-      : undefined;
-
-  // Doc / filing URL candidates
-  const docUrl =
-    d.docUrl ||
-    d.documentUrl ||
-    d.link ||
-    d.filingUrl ||
-    d.secUrl ||
-    d.primaryDocumentUrl ||
-    (d.accessionNumber && d.cik
-      ? `https://www.sec.gov/Archives/edgar/data/${String(d.cik).replace(/^0+/, "")}/${String(d.accessionNumber).replace(/-/g, "")}/${d.primaryDocument || "index.htm"}`
-      : undefined);
-
-  const title =
-    d.title ||
-    d.securityTitle?.value ||
-    d.securityTitle ||
-    d.derivativeSecurityTitle?.value ||
-    d.derivativeSecurityTitle ||
-    undefined;
-
-  return {
-    id: d.id || d.accessionNumber || `${symbol || issuerName || "row"}-${idx}`,
-    insider: reportingOwner || "—",
-    issuer: issuerName || "—",
-    symbol: symbol || undefined,
-    filedAt: filedAt || "—",
-    type,
-    beneficialShares,
-    price,
-    valueUSD,
-    docUrl,
-    title,
-  };
+function classNames(...xs: Array<string | false | null | undefined>) {
+  return xs.filter(Boolean).join(" ");
 }
 
-export default function InsiderTape({
-  symbol,
-  start,
-  end,
-  txnType,
-  queryKey,
-}: Props) {
-  const [rows, setRows] = useState<UiRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+export default function InsiderTape() {
+  // ------- controls -------
+  const [symbol, setSymbol] = useState<string>("NVDA");
+  const [start, setStart] = useState<string>(defaultStart);
+  const [end, setEnd] = useState<string>(defaultEnd);
+  const [type, setType] = useState<"ALL" | "A" | "D">("ALL");
 
-  const key = useMemo(
-    () => `${symbol}-${start}-${end}-${txnType}-${queryKey || ""}`,
-    [symbol, start, end, txnType, queryKey]
-  );
+  // you can keep a tiny history or a simple cached key
+  const qKey = useMemo(() => JSON.stringify({ symbol, start, end, type }), [symbol, start, end, type]);
 
-  useEffect(() => {
-    let aborted = false;
+  // ------- fetch state -------
+  const [state, setState] = useState<FetchState>({ loading: false, error: null, data: [] });
+  const inFlight = useRef<AbortController | null>(null);
 
-    async function go() {
-      try {
-        setLoading(true);
-        setErr(null);
-        setRows([]);
-
-        // Call your insider API route (which routes to FMP/SEC/etc)
-        const params = new URLSearchParams({
-          start,
-          end,
-          symbol: symbol.trim(),
-        });
-        if (txnType !== "ALL") params.set("type", txnType);
-
-        const res = await fetch(`/api/insider?${params.toString()}`, {
-          cache: "no-store",
-        });
-        const j = (await res.json()) as { ok?: boolean; data?: ApiRowLoose[]; error?: string };
-
-        if (!res.ok || j?.ok === false) {
-          throw new Error(j?.error || `Fetch failed (${res.status})`);
-        }
-
-        const data = Array.isArray(j?.data) ? j!.data! : [];
-
-        // Normalize every incoming row
-        const normalized = data.map((d, i) => normalizeRow(d, i));
-
-        // Final filter by txnType if backend didn't filter
-        const filtered =
-          txnType === "ALL"
-            ? normalized
-            : normalized.filter((r) => r.type === txnType);
-
-        if (!aborted) setRows(filtered);
-      } catch (e: any) {
-        if (!aborted) setErr(e?.message || "Failed to fetch");
-      } finally {
-        if (!aborted) setLoading(false);
-      }
+  async function runFetch() {
+    if (!symbol.trim()) {
+      setState({ loading: false, error: "Enter a ticker symbol.", data: [] });
+      return;
     }
+    inFlight.current?.abort();
+    const ac = new AbortController();
+    inFlight.current = ac;
+    setState({ loading: true, error: null, data: [] });
 
-    go();
-    return () => {
-      aborted = true;
-    };
-  }, [key]);
+    try {
+      const usp = new URLSearchParams({ symbol: symbol.trim().toUpperCase(), start, end, type });
+      const url = `/api/insider?${usp.toString()}`;
+      const res = await fetch(url, { signal: ac.signal, cache: "no-store" });
+      const j = await res.json();
+      if (!res.ok || j?.ok === false) {
+        throw new Error(j?.error || `Request failed (${res.status})`);
+      }
+      setState({ loading: false, error: null, data: (j?.data as Row[]) || [] });
+    } catch (e: any) {
+      if (e?.name === "AbortError") return;
+      setState({ loading: false, error: e?.message || "Fetch error", data: [] });
+    } finally {
+      inFlight.current = null;
+    }
+  }
 
+  // fetch on mount and when key changes (small debounce)
+  useEffect(() => {
+    const t = setTimeout(runFetch, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qKey]);
+
+  // ------- render -------
   return (
-    <section className="rounded-2xl border bg-white">
-      <div className="flex items-center justify-between px-4 py-3 border-b">
-        <h2 className="text-base font-semibold">
-          Insider Transactions {symbol ? `• ${symbol}` : ""}
-        </h2>
-        <div className="text-xs text-gray-500">
-          {loading ? "Loading…" : `${rows.length} result${rows.length === 1 ? "" : "s"}`}
+    <section className="mx-auto max-w-6xl px-4 py-6">
+      <header className="mb-4">
+        <h1 className="text-xl font-semibold">Insider Transactions</h1>
+        <p className="text-gray-600 text-sm">Form 4 line items parsed from SEC XML.</p>
+      </header>
+
+      {/* Controls */}
+      <div className="rounded-2xl border bg-white p-4">
+        <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto]">
+          <div>
+            <div className="text-sm text-gray-700 mb-1">Ticker</div>
+            <input
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+              placeholder="e.g., NVDA"
+              className="w-full border rounded-md px-3 py-2"
+              spellCheck={false}
+            />
+          </div>
+
+          <div>
+            <div className="text-sm text-gray-700 mb-1">Start</div>
+            <input
+              type="date"
+              value={start}
+              max={end}
+              onChange={(e) => setStart(e.target.value)}
+              className="w-full border rounded-md px-3 py-2"
+            />
+          </div>
+
+          <div>
+            <div className="text-sm text-gray-700 mb-1">End</div>
+            <input
+              type="date"
+              value={end}
+              min={start}
+              onChange={(e) => setEnd(e.target.value)}
+              className="w-full border rounded-md px-3 py-2"
+            />
+          </div>
+
+          <div>
+            <div className="text-sm text-gray-700 mb-1">Type</div>
+            <select
+              value={type}
+              onChange={(e) => setType(e.target.value as any)}
+              className="w-full border rounded-md px-3 py-2"
+              title="A = Acquired, D = Disposed, ALL = both"
+            >
+              <option value="ALL">All</option>
+              <option value="A">Buy (A)</option>
+              <option value="D">Sell (D)</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            onClick={runFetch}
+            disabled={state.loading}
+            className="px-4 py-2 rounded-md bg-black text-white text-sm disabled:opacity-60"
+          >
+            {state.loading ? "Loading…" : "Refresh"}
+          </button>
+          {state.error && <div className="text-sm text-red-600">{state.error}</div>}
         </div>
       </div>
 
-      {err && (
-        <div className="px-4 py-3 text-sm text-red-700 bg-red-50 border-b">
-          {err}
-        </div>
-      )}
+      {/* Summary */}
+      <div className="mt-4 text-sm text-gray-600">
+        {state.loading
+          ? "Loading…"
+          : `${state.data.length} transaction${state.data.length === 1 ? "" : "s"} found`}
+      </div>
 
-      <div className="divide-y">
-        {/* Header row */}
-        <div className="grid grid-cols-[1.5fr_1fr_.8fr_.8fr_.8fr_.8fr_auto] gap-3 px-4 py-2 text-xs font-medium text-gray-500">
-          <div>Insider</div>
-          <div>Issuer</div>
-          <div>Type</div>
-          <div>Beneficially Owned Shares</div>
-          <div>Price</div>
-          <div>Value</div>
-          <div>Link</div>
-        </div>
-
-        {/* Data rows */}
-        {rows.length === 0 && !loading ? (
-          <div className="px-4 py-6 text-sm text-gray-600">No trades found.</div>
-        ) : (
-          rows.map((r) => (
+      {/* List */}
+      <div className="mt-3 grid gap-3">
+        {state.data.map((r) => {
+          const isBuy = r.type === "A";
+          const isSell = r.type === "D";
+          return (
             <article
               key={r.id}
-              className="grid grid-cols-[1.5fr_1fr_.8fr_.8fr_.8fr_.8fr_auto] gap-3 px-4 py-3 items-center"
+              className="rounded-xl border bg-white p-4 hover:shadow-sm transition"
             >
-              <div className="min-w-0">
-                <div className="truncate font-medium">{r.insider}</div>
-                {r.title && (
-                  <div className="truncate text-xs text-gray-500">{r.title}</div>
-                )}
-              </div>
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                {/* Left */}
+                <div className="min-w-0">
+                  <div className="text-sm text-gray-600">
+                    {r.insider || "—"} • {r.issuer || "—"} {r.symbol ? `(${r.symbol})` : ""}
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-2 text-sm">
+                    <span
+                      className={classNames(
+                        "inline-flex items-center rounded-full px-2 py-0.5 border text-xs",
+                        isBuy && "border-emerald-600 text-emerald-700 bg-emerald-50",
+                        isSell && "border-rose-600 text-rose-700 bg-rose-50",
+                        !isBuy && !isSell && "border-gray-300 text-gray-700 bg-gray-50"
+                      )}
+                      title="A = Acquired, D = Disposed"
+                    >
+                      {r.type ?? "—"}
+                    </span>
+                    <span className="text-gray-500">Filed</span>
+                    <span className="font-medium">{r.filedAt || "—"}</span>
+                    {r.title && (
+                      <>
+                        <span className="text-gray-300">•</span>
+                        <span className="text-gray-500">Security</span>
+                        <span className="font-medium">{r.title}</span>
+                      </>
+                    )}
+                  </div>
 
-              <div className="min-w-0">
-                <div className="truncate">{r.issuer}</div>
-                <div className="text-xs text-gray-500">
-                  {r.symbol || "—"} • {r.filedAt || "—"}
+                  {/* Numbers row */}
+                  <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                    <div>
+                      <div className="text-gray-500">Amount (shares)</div>
+                      <div className="font-medium">{formatInt(r.amount)}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500">Price ($)</div>
+                      <div className="font-medium">{r.price == null ? "—" : formatMoney(r.price)}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500">Value ($)</div>
+                      <div className="font-medium">{formatMoney(r.valueUSD)}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500">Beneficially Owned</div>
+                      <div className="font-medium">{formatInt(r.beneficialShares)}</div>
+                    </div>
+                  </div>
                 </div>
-              </div>
 
-              <div>
-                <span
-                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border ${
-                    r.type === "A"
-                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                      : r.type === "D"
-                      ? "bg-rose-50 text-rose-700 border-rose-200"
-                      : "bg-gray-50 text-gray-700 border-gray-200"
-                  }`}
-                >
-                  {r.type ?? "—"}
-                </span>
-              </div>
-
-              <div className="tabular-nums">{formatNum(r.beneficialShares)}</div>
-              <div className="tabular-nums">{r.price != null ? `$${formatNum(r.price)}` : "—"}</div>
-              <div className="tabular-nums">{formatMoney(r.valueUSD)}</div>
-
-              <div className="text-right">
-                {r.docUrl ? (
+                {/* Right */}
+                <div className="flex items-center gap-2 shrink-0">
                   <a
-                    href={r.docUrl}
+                    href={r.docUrl || "#"}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center rounded-full bg-black text-white px-3 py-1.5 text-xs hover:opacity-90"
+                    className="inline-flex items-center rounded-full bg-black text-white px-3 py-1.5 text-sm hover:opacity-90 disabled:opacity-50"
                   >
-                    Open
+                    Open SEC Doc
                   </a>
-                ) : (
-                  <span className="text-xs text-gray-400">—</span>
-                )}
+                </div>
               </div>
             </article>
-          ))
+          );
+        })}
+
+        {!state.loading && state.data.length === 0 && !state.error && (
+          <div className="text-sm text-gray-600">
+            No transactions found for this window. Try a different symbol or widen the dates.
+          </div>
         )}
       </div>
     </section>
