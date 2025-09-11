@@ -1,4 +1,4 @@
-// components/NewsletterForm.tsx
+// app/components/NewsletterForm.tsx
 "use client";
 
 import { useState } from "react";
@@ -10,21 +10,19 @@ export default function NewsletterForm() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setStatus("loading");
-
     try {
       const res = await fetch("/api/newsletter/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
       });
-
       if (res.ok) {
         setStatus("success");
         setEmail("");
       } else {
         setStatus("error");
       }
-    } catch (err) {
+    } catch {
       setStatus("error");
     }
   }
@@ -46,12 +44,8 @@ export default function NewsletterForm() {
       >
         {status === "loading" ? "..." : "Subscribe"}
       </button>
-      {status === "success" && (
-        <p className="ml-3 text-green-600 text-sm">Subscribed!</p>
-      )}
-      {status === "error" && (
-        <p className="ml-3 text-red-600 text-sm">Error. Try again.</p>
-      )}
+      {status === "success" && <p className="ml-3 text-green-600 text-sm">Subscribed!</p>}
+      {status === "error" && <p className="ml-3 text-red-600 text-sm">Error. Try again.</p>}
     </form>
   );
 }
