@@ -33,7 +33,7 @@ export default function Header() {
             <NavLink href="/fred" label="FRED" />
             <NavLink href="/news" label="News" />
             <NavLink href="/screener" label="Screener" />
-            <NavLink href="/game" label="Guessonomics" />
+            <NavLink href="/game" label="Puzzle" />
 
             {/* AI CTA (your animated gradient stays as-is) */}
             <a
@@ -67,7 +67,7 @@ export default function Header() {
             <MobileLink href="/fred" label="FRED" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/news" label="News" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/screener" label="Screener" onClick={() => setMobileOpen(false)} />
-            <MobileLink href="/game" label="Guessonomics" onClick={() => setMobileOpen(false)} />
+            <MobileLink href="/game" label="Puzzle" onClick={() => setMobileOpen(false)} />
             <a
               href="/ai"
               onClick={() => setMobileOpen(false)}
