@@ -14,7 +14,7 @@ export default function HomePage() {
       <section className="mx-auto max-w-6xl px-4 pt-16 pb-10 text-center">
         <span className="inline-flex items-center gap-2 rounded-full border bg-white/70 backdrop-blur px-3 py-1 text-xs text-gray-700 shadow-sm">
           <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-          Live data • SEC • BLS • FRED
+          EDGAR • BLS • FRED • NEWS • AND MORE!
         </span>
 
         <h1 className="mt-4 text-3xl sm:text-5xl md:text-6xl font-extrabold tracking-tight text-gray-900">
