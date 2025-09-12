@@ -1,18 +1,9 @@
 // app/components/InsiderTape.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-// ---- types ----
 export type TxnFilter = "ALL" | "A" | "D";
-
-export type InsiderTapeProps = {
-  symbol: string;
-  start: string;
-  end: string;
-  txnType: TxnFilter;
-  queryKey?: string; // optional cache-buster
-};
 
 type Row = {
   source: "fmp" | "sec";
@@ -24,8 +15,6 @@ type Row = {
   filedAt?: string;
   transDate?: string;
   txnType?: "A" | "D";
-  transactionCode?: string;   // raw Form 4 code (P, S, A, D, M, G, F…)
-  transactionText?: string;   // human text if available
   shares?: number;
   price?: number;
   value?: number;
@@ -34,61 +23,34 @@ type Row = {
   indexUrl?: string;
 };
 
-// ---- helpers ----
-function pillColor(type?: "A" | "D") {
-  return type === "A"
-    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-    : type === "D"
-    ? "bg-rose-50 text-rose-700 ring-rose-200"
-    : "bg-gray-50 text-gray-700 ring-gray-200";
-}
+export default function InsiderTape() {
+  // ------- filters -------
+  const [symbol, setSymbol] = useState<string>("NVDA");
+  const [start, setStart] = useState<string>(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return d.toISOString().slice(0, 10);
+  });
+  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [txnType, setTxnType] = useState<TxnFilter>("ALL");
+  const [q, setQ] = useState<string>(""); // free-text filter for insider/issuer
 
-// Map raw Form 4 code to A/D (fallback if API didn’t set txnType)
-function mapCodeToAD(code?: string): "A" | "D" | undefined {
-  if (!code) return undefined;
-  const c = code.trim().toUpperCase();
-
-  // Common rules:
-  // P (open market purchase), A (grant/award), M (option exercise) → A (acquire)
-  // S (sale), F (withholding for taxes), G (gift – generally disposition) → D
-  if (/^(P|A|M)$/.test(c)) return "A";
-  if (/^(S|F|G)$/.test(c)) return "D";
-
-  // Codes like C, X, H, I, J… are ambiguous → leave undefined
-  return undefined;
-}
-
-// ---- component ----
-export default function InsiderTape({
-  symbol,
-  start,
-  end,
-  txnType,
-  queryKey,
-}: InsiderTapeProps) {
-  // pagination + quick filter
+  // ------- pagination -------
   const [page, setPage] = useState<number>(1);
   const [perPage, setPerPage] = useState<number>(25);
-  const [q, setQ] = useState<string>("");
 
-  // data state
+  // ------- data state -------
   const [loading, setLoading] = useState<boolean>(false);
   const [rows, setRows] = useState<Row[]>([]);
-  const [meta, setMeta] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [meta, setMeta] = useState<any>(null);
 
-  // reset page when inputs change
+  // refetch when filters change (except page/perPage which also refetch)
   useEffect(() => {
     setPage(1);
   }, [symbol, start, end, txnType]);
 
-  // fetcher
   async function fetchTape() {
-    if (!symbol) {
-      setRows([]);
-      setMeta(null);
-      return;
-    }
     setLoading(true);
     setError(null);
     try {
@@ -100,36 +62,25 @@ export default function InsiderTape({
         page: String(page),
         perPage: String(perPage),
       });
-      if (queryKey) params.set("_", queryKey);
-
-      const res = await fetch(`/api/insider?${params.toString()}`, { cache: "no-store" });
-      const json = await res.json();
-      if (!res.ok || json?.ok === false) throw new Error(json?.error || "Fetch failed");
-
-      // Normalize rows: ensure txnType is filled from Code if missing
-      const normalized: Row[] = (Array.isArray(json.rows) ? json.rows : []).map((r: Row) => {
-        const derived = r.txnType ?? mapCodeToAD(r.transactionCode);
-        return { ...r, txnType: derived };
-      });
-
-      setRows(normalized);
-      setMeta(json.meta || null);
+      const url = `/api/insider?${params.toString()}`;
+      const r = await fetch(url, { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
+      setRows(Array.isArray(j.rows) ? j.rows : []);
+      setMeta(j.meta || null);
     } catch (e: any) {
       setError(e?.message || "Unexpected error");
-      setRows([]);
-      setMeta(null);
     } finally {
       setLoading(false);
     }
   }
 
-  // refetch on deps
   useEffect(() => {
     fetchTape();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, start, end, txnType, page, perPage, queryKey]);
+  }, [symbol, start, end, txnType, page, perPage]);
 
-  // client-side quick filter
+  // client-side quick search
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows;
@@ -139,58 +90,97 @@ export default function InsiderTape({
     });
   }, [rows, q]);
 
-  // ---- render ----
+  function pillColor(type?: "A" | "D") {
+    return type === "A"
+      ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+      : type === "D"
+      ? "bg-rose-50 text-rose-700 ring-rose-200"
+      : "bg-gray-50 text-gray-700 ring-gray-200";
+  }
+
   return (
     <section className="rounded-2xl border bg-white p-4 md:p-5">
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="text-xs text-gray-600">
-          Source: <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span>{" "}
-          • {filtered.length} trade{filtered.length === 1 ? "" : "s"} shown
-          {meta?.count !== undefined ? ` (fetched: ${meta.count})` : ""}
+      {/* Filters */}
+      <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_repeat(2,1fr)_auto_auto_auto]">
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Symbol</div>
+          <input
+            value={symbol}
+            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+            placeholder="e.g., NVDA"
+            className="w-full rounded-md border px-3 py-2"
+          />
         </div>
-        <div className="ml-auto flex items-end gap-2">
-          <div>
-            <div className="mb-1 text-xs text-gray-700">Quick filter</div>
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Filter insider/issuer/symbol"
-              className="w-48 rounded-md border px-3 py-2 text-sm"
-            />
-          </div>
-          <div>
-            <div className="mb-1 text-xs text-gray-700">Per page</div>
-            <select
-              value={perPage}
-              onChange={(e) => setPerPage(parseInt(e.target.value))}
-              className="w-28 rounded-md border px-3 py-2 text-sm"
-            >
-              <option value={25}>25</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-            </select>
-          </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Start</div>
+          <input
+            type="date"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            className="w-full rounded-md border px-3 py-2"
+          />
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">End</div>
+          <input
+            type="date"
+            value={end}
+            onChange={(e) => setEnd(e.target.value)}
+            className="w-full rounded-md border px-3 py-2"
+          />
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Type</div>
+          <select
+            value={txnType}
+            onChange={(e) => setTxnType(e.target.value as TxnFilter)}
+            className="w-full rounded-md border px-3 py-2"
+          >
+            <option value="ALL">All</option>
+            <option value="A">Acquired (A)</option>
+            <option value="D">Disposed (D)</option>
+          </select>
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Filter text</div>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Filter by insider/issuer"
+            className="w-full rounded-md border px-3 py-2"
+          />
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Per page</div>
+          <select
+            value={perPage}
+            onChange={(e) => setPerPage(parseInt(e.target.value))}
+            className="w-full rounded-md border px-3 py-2"
+          >
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
+        </div>
+        <div className="flex items-end">
           <button
             onClick={fetchTape}
             disabled={loading}
-            className="rounded-md bg-black px-3 py-1.5 text-xs text-white disabled:opacity-60"
+            className="w-full md:w-auto rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
           >
             {loading ? "Loading…" : "Refresh"}
           </button>
         </div>
       </div>
 
-      <p className="mt-2 text-xs text-gray-500">
-        <span className="font-medium">A/D</span>: A = Acquired (e.g., P / A / M), D = Disposed (e.g., S / F / G).&nbsp;
-        “Code” shows the raw Form&nbsp;4 code. If a code is ambiguous, A/D may be blank.
-      </p>
+      {/* Summary */}
+      <div className="mt-3 text-xs text-gray-600">
+        Source: <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span>{" "}
+        • {filtered.length} trade{filtered.length === 1 ? "" : "s"} shown
+        {meta?.count !== undefined ? ` (fetched: ${meta.count})` : ""}
+      </div>
 
-      {error && (
-        <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-          {error}
-        </div>
-      )}
-
+      {/* Table */}
       <div className="mt-4 overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
@@ -199,7 +189,6 @@ export default function InsiderTape({
               <th className="px-3 py-2 text-left">Insider</th>
               <th className="px-3 py-2 text-left">Issuer / Symbol</th>
               <th className="px-3 py-2 text-left">A/D</th>
-              <th className="px-3 py-2 text-left">Code</th>
               <th className="px-3 py-2 text-right">Shares</th>
               <th className="px-3 py-2 text-right">Price</th>
               <th className="px-3 py-2 text-right">Value</th>
@@ -214,12 +203,7 @@ export default function InsiderTape({
                 (typeof r.shares === "number" && typeof r.price === "number"
                   ? r.shares * r.price
                   : undefined);
-
-              const showPrice =
-                typeof r.price === "number" && r.price > 0
-                  ? `$${r.price.toFixed(2)}`
-                  : "—";
-
+              const adClass = pillColor(r.txnType);
               return (
                 <tr key={`${r.symbol}-${r.filedAt}-${i}`} className="border-b">
                   <td className="px-3 py-2 whitespace-nowrap">
@@ -237,30 +221,16 @@ export default function InsiderTape({
                     <div className="text-gray-500 text-xs">{r.symbol ?? r.cik ?? "—"}</div>
                   </td>
                   <td className="px-3 py-2">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${pillColor(
-                        r.txnType
-                      )}`}
-                    >
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adClass}`}>
                       {r.txnType ?? "—"}
                     </span>
-                  </td>
-                  <td className="px-3 py-2">
-                    {r.transactionCode ? (
-                      <span
-                        title={r.transactionText || ""}
-                        className="text-xs font-mono text-gray-700"
-                      >
-                        {r.transactionCode}
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
                   </td>
                   <td className="px-3 py-2 text-right">
                     {typeof r.shares === "number" ? r.shares.toLocaleString() : "—"}
                   </td>
-                  <td className="px-3 py-2 text-right">{showPrice}</td>
+                  <td className="px-3 py-2 text-right">
+                    {typeof r.price === "number" ? `$${r.price.toFixed(2)}` : "—"}
+                  </td>
                   <td className="px-3 py-2 text-right">
                     {typeof value === "number" ? `$${value.toLocaleString()}` : "—"}
                   </td>
@@ -296,7 +266,7 @@ export default function InsiderTape({
 
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-3 py-6 text-center text-gray-500">
+                <td colSpan={9} className="px-3 py-6 text-center text-gray-500">
                   No trades found for these filters.
                 </td>
               </tr>
@@ -305,6 +275,7 @@ export default function InsiderTape({
         </table>
       </div>
 
+      {/* Pagination */}
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <button
           className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
