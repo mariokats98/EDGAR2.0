@@ -7,8 +7,8 @@ export type TxnFilter = "ALL" | "A" | "D";
 
 type Row = {
   source: "fmp" | "sec";
-  table?: "I" | "II";        // NEW: Table I or II
-  security?: string;         // NEW: Security title (RSU, Option, Common Stock, etc.)
+  table?: "I" | "II";        // Table I or II
+  security?: string;         // Security title (RSU, Option, Common, etc.)
   insider: string;
   insiderTitle?: string;
   issuer: string;
@@ -27,7 +27,7 @@ type Row = {
 
 export default function InsiderTape() {
   // ------- filters -------
-  const [symbol, setSymbol] = useState<string>(""); // start EMPTY per your request
+  const [symbol, setSymbol] = useState<string>(""); // start empty
   const [start, setStart] = useState<string>(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
@@ -35,7 +35,7 @@ export default function InsiderTape() {
   });
   const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
-  const [q, setQ] = useState<string>(""); // free-text filter for insider/issuer
+  const [q, setQ] = useState<string>(""); // free-text filter
 
   // ------- pagination -------
   const [page, setPage] = useState<number>(1);
@@ -47,13 +47,11 @@ export default function InsiderTape() {
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<any>(null);
 
-  // reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
   }, [symbol, start, end, txnType]);
 
   async function fetchTape() {
-    // don’t fetch until user enters a ticker
     if (!symbol.trim()) {
       setRows([]);
       setMeta(null);
@@ -71,14 +69,15 @@ export default function InsiderTape() {
         page: String(page),
         perPage: String(perPage),
       });
-      const url = `/api/insider?${params.toString()}`;
-      const r = await fetch(url, { cache: "no-store" });
+      const r = await fetch(`/api/insider?${params.toString()}`, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
       setRows(Array.isArray(j.rows) ? j.rows : []);
       setMeta(j.meta || null);
     } catch (e: any) {
       setError(e?.message || "Unexpected error");
+      setRows([]);
+      setMeta(null);
     } finally {
       setLoading(false);
     }
@@ -89,7 +88,6 @@ export default function InsiderTape() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, start, end, txnType, page, perPage]);
 
-  // client-side quick search
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows;
@@ -155,7 +153,7 @@ export default function InsiderTape() {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Filter by insider/issuer/security"
+            placeholder="Filter by insider / issuer / security"
             className="w-full rounded-md border px-3 py-2"
           />
         </div>
@@ -208,8 +206,8 @@ export default function InsiderTape() {
               <th className="px-3 py-2 text-left">Date (File / Txn)</th>
               <th className="px-3 py-2 text-left">Insider</th>
               <th className="px-3 py-2 text-left">Issuer / Symbol</th>
-              <th className="px-3 py-2 text-left">Security</th>  {/* NEW */}
-              <th className="px-3 py-2 text-left">Table</th>     {/* NEW */}
+              <th className="px-3 py-2 text-left">Security</th>
+              <th className="px-3 py-2 text-left">Table</th>
               <th className="px-3 py-2 text-left">A/D</th>
               <th className="px-3 py-2 text-right">Shares</th>
               <th className="px-3 py-2 text-right">Price</th>
@@ -243,12 +241,8 @@ export default function InsiderTape() {
                     <div className="text-gray-900">{r.issuer}</div>
                     <div className="text-gray-500 text-xs">{r.symbol ?? r.cik ?? "—"}</div>
                   </td>
-                  <td className="px-3 py-2">
-                    {r.security ?? "—"}
-                  </td>
-                  <td className="px-3 py-2">
-                    {r.table ?? "—"}
-                  </td>
+                  <td className="px-3 py-2">{r.security ?? "—"}</td>
+                  <td className="px-3 py-2">{r.table ?? "—"}</td>
                   <td className="px-3 py-2">
                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adClass}`}>
                       {r.txnType ?? "—"}
@@ -330,6 +324,12 @@ export default function InsiderTape() {
           Next →
         </button>
       </div>
+
+      {error && (
+        <div className="mt-3 text-xs text-rose-600">
+          ⚠ {error}
+        </div>
+      )}
     </section>
   );
 }
