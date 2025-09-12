@@ -1,22 +1,20 @@
 // app/components/InsiderTape.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-// Props expected by the parent page
-type InsiderTapeProps = {
-  symbol?: string;
-  start?: string;   // YYYY-MM-DD
-  end?: string;     // YYYY-MM-DD
-  txnType?: "ALL" | "A" | "D";
-  queryKey?: string; // used to trigger re-fetch on parent changes
+export type TxnFilter = "ALL" | "A" | "D";
+
+export type InsiderTapeProps = {
+  symbol: string;
+  start: string;
+  end: string;
+  txnType: TxnFilter;
+  queryKey: string; // forces refetch when parent filters change
 };
 
-// Row shape coming back from /api/insider
 type Row = {
   source: "fmp" | "sec";
-  table?: "I" | "II";
-  security?: string;
   insider: string;
   insiderTitle?: string;
   issuer: string;
@@ -24,85 +22,62 @@ type Row = {
   cik?: string;
   filedAt?: string;
   transDate?: string;
-  txnType?: "A" | "D" | "—";
+  txnType?: "A" | "D";
   shares?: number;
   price?: number;
   value?: number;
   ownedAfter?: number;
+  security?: string; // optional (if provided)
+  table?: "I" | "II"; // optional (if provided)
   formUrl?: string;
   indexUrl?: string;
 };
 
-const InsiderTape: React.FC<InsiderTapeProps> = ({
-  symbol: symbolProp,
-  start: startProp,
-  end: endProp,
-  txnType: txnTypeProp,
+export default function InsiderTape({
+  symbol,
+  start,
+  end,
+  txnType,
   queryKey,
-}) => {
-  // ------- filters (initialize from props; user can edit in-place) -------
-  const [symbol, setSymbol] = useState<string>(symbolProp?.toUpperCase?.() || "");
-  const [start, setStart] = useState<string>(() => {
-    if (startProp) return startProp;
-    const d = new Date();
-    d.setMonth(d.getMonth() - 1);
-    return d.toISOString().slice(0, 10);
-  });
-  const [end, setEnd] = useState<string>(endProp || new Date().toISOString().slice(0, 10));
-  const [txnType, setTxnType] = useState<"ALL" | "A" | "D">(txnTypeProp || "ALL");
-  const [q, setQ] = useState<string>(""); // free-text filter for insider/issuer/security
-
-  // ------- pagination -------
+}: InsiderTapeProps) {
+  // local-only helpers: text filter, pagination
+  const [q, setQ] = useState<string>("");
   const [page, setPage] = useState<number>(1);
   const [perPage, setPerPage] = useState<number>(25);
 
-  // ------- data state -------
+  // data state
   const [loading, setLoading] = useState<boolean>(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<any>(null);
 
-  // When parent props change, sync and reset page
-  useEffect(() => {
-    if (symbolProp !== undefined) setSymbol(symbolProp.toUpperCase?.() || "");
-    if (startProp) setStart(startProp);
-    if (endProp) setEnd(endProp);
-    if (txnTypeProp) setTxnType(txnTypeProp);
-    setPage(1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbolProp, startProp, endProp, txnTypeProp, queryKey]);
-
-  // Reset to page 1 when local filters change
+  // reset pagination on upstream changes
   useEffect(() => {
     setPage(1);
-  }, [symbol, start, end, txnType]);
+  }, [queryKey]);
 
   async function fetchTape() {
-    if (!symbol.trim()) {
-      setRows([]);
-      setMeta(null);
-      return;
-    }
+    if (!symbol) return;
     setLoading(true);
     setError(null);
     try {
       const params = new URLSearchParams({
-        symbol: symbol.trim(),
+        symbol,
         start,
         end,
         txnType,
         page: String(page),
         perPage: String(perPage),
       });
-      const r = await fetch(`/api/insider?${params.toString()}`, { cache: "no-store" });
+      const r = await fetch(`/api/insider?${params.toString()}`, {
+        cache: "no-store",
+      });
       const j = await r.json();
       if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
       setRows(Array.isArray(j.rows) ? j.rows : []);
       setMeta(j.meta || null);
     } catch (e: any) {
       setError(e?.message || "Unexpected error");
-      setRows([]);
-      setMeta(null);
     } finally {
       setLoading(false);
     }
@@ -111,9 +86,9 @@ const InsiderTape: React.FC<InsiderTapeProps> = ({
   useEffect(() => {
     fetchTape();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, start, end, txnType, page, perPage]);
+  }, [queryKey, page, perPage]);
 
-  // client-side quick search
+  // quick client filter by insider/issuer
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows;
@@ -123,7 +98,7 @@ const InsiderTape: React.FC<InsiderTapeProps> = ({
     });
   }, [rows, q]);
 
-  function pillColor(type?: "A" | "D" | "—") {
+  function pillColor(type?: "A" | "D") {
     return type === "A"
       ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
       : type === "D"
@@ -133,53 +108,14 @@ const InsiderTape: React.FC<InsiderTapeProps> = ({
 
   return (
     <section className="rounded-2xl border bg-white p-4 md:p-5">
-      {/* Filters */}
-      <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_repeat(2,1fr)_auto_auto_auto]">
-        <div>
-          <div className="mb-1 text-xs text-gray-700">Symbol</div>
-          <input
-            value={symbol}
-            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-            placeholder="e.g., AAPL"
-            className="w-full rounded-md border px-3 py-2 placeholder:text-gray-400"
-          />
-        </div>
-        <div>
-          <div className="mb-1 text-xs text-gray-700">Start</div>
-          <input
-            type="date"
-            value={start}
-            onChange={(e) => setStart(e.target.value)}
-            className="w-full rounded-md border px-3 py-2"
-          />
-        </div>
-        <div>
-          <div className="mb-1 text-xs text-gray-700">End</div>
-          <input
-            type="date"
-            value={end}
-            onChange={(e) => setEnd(e.target.value)}
-            className="w-full rounded-md border px-3 py-2"
-          />
-        </div>
-        <div>
-          <div className="mb-1 text-xs text-gray-700">Type</div>
-          <select
-            value={txnType}
-            onChange={(e) => setTxnType(e.target.value as any)}
-            className="w-full rounded-md border px-3 py-2"
-          >
-            <option value="ALL">All</option>
-            <option value="A">Acquired (A) — like “buys/awards”</option>
-            <option value="D">Disposed (D) — like “sells”</option>
-          </select>
-        </div>
+      {/* Local controls (lightweight) */}
+      <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_auto_auto]">
         <div>
           <div className="mb-1 text-xs text-gray-700">Filter text</div>
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Filter by insider / issuer / security"
+            placeholder="Type to filter by insider, issuer, or security"
             className="w-full rounded-md border px-3 py-2"
           />
         </div>
@@ -206,23 +142,18 @@ const InsiderTape: React.FC<InsiderTapeProps> = ({
         </div>
       </div>
 
-      {/* Hint & summary */}
+      {/* Summary */}
       <div className="mt-3 text-xs text-gray-600">
-        {symbol.trim() ? (
-          <>
-            Source: <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span>{" "}
-            • {filtered.length} trade{filtered.length === 1 ? "" : "s"} shown
-            {meta?.count !== undefined ? ` (fetched: ${meta.count})` : ""} •
-            <span className="ml-1 text-gray-500">
-              A = acquired (e.g., buy/award), D = disposed (sell).
-            </span>
-          </>
-        ) : (
-          <span className="text-gray-500">
-            Enter a ticker above to load insider transactions. A = acquired, D = disposed.
-          </span>
-        )}
+        <span className="font-semibold">{symbol}</span> • Source:{" "}
+        <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span> •{" "}
+        {filtered.length} trade{filtered.length === 1 ? "" : "s"} shown
+        {meta?.count !== undefined ? ` (fetched: ${meta.count})` : ""}
       </div>
+      {error && (
+        <div className="mt-2 rounded-md bg-rose-50 p-3 text-rose-700 text-xs">
+          {error}
+        </div>
+      )}
 
       {/* Table */}
       <div className="mt-4 overflow-x-auto">
@@ -232,9 +163,9 @@ const InsiderTape: React.FC<InsiderTapeProps> = ({
               <th className="px-3 py-2 text-left">Date (File / Txn)</th>
               <th className="px-3 py-2 text-left">Insider</th>
               <th className="px-3 py-2 text-left">Issuer / Symbol</th>
+              <th className="px-3 py-2 text-left">A/D</th>
               <th className="px-3 py-2 text-left">Security</th>
               <th className="px-3 py-2 text-left">Table</th>
-              <th className="px-3 py-2 text-left">A/D</th>
               <th className="px-3 py-2 text-right">Shares</th>
               <th className="px-3 py-2 text-right">Price</th>
               <th className="px-3 py-2 text-right">Value</th>
@@ -250,9 +181,8 @@ const InsiderTape: React.FC<InsiderTapeProps> = ({
                   ? r.shares * r.price
                   : undefined);
               const adClass = pillColor(r.txnType);
-
               return (
-                <tr key={`${r.symbol}-${r.filedAt}-${r.security}-${i}`} className="border-b">
+                <tr key={`${r.symbol}-${r.filedAt}-${i}`} className="border-b">
                   <td className="px-3 py-2 whitespace-nowrap">
                     <div className="text-gray-900">{r.filedAt ?? "—"}</div>
                     <div className="text-gray-500 text-xs">{r.transDate ?? "—"}</div>
@@ -265,26 +195,36 @@ const InsiderTape: React.FC<InsiderTapeProps> = ({
                   </td>
                   <td className="px-3 py-2">
                     <div className="text-gray-900">{r.issuer}</div>
-                    <div className="text-gray-500 text-xs">{r.symbol ?? r.cik ?? "—"}</div>
+                    <div className="text-gray-500 text-xs">
+                      {r.symbol ?? r.cik ?? "—"}
+                    </div>
                   </td>
-                  <td className="px-3 py-2">{r.security ?? "—"}</td>
-                  <td className="px-3 py-2">{r.table ?? "—"}</td>
                   <td className="px-3 py-2">
-                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adClass}`}>
+                    <span
+                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adClass}`}
+                    >
                       {r.txnType ?? "—"}
                     </span>
                   </td>
+                  <td className="px-3 py-2">{r.security ?? "—"}</td>
+                  <td className="px-3 py-2">{r.table ?? "—"}</td>
                   <td className="px-3 py-2 text-right">
-                    {typeof r.shares === "number" ? r.shares.toLocaleString() : "—"}
+                    {typeof r.shares === "number"
+                      ? r.shares.toLocaleString()
+                      : "—"}
                   </td>
                   <td className="px-3 py-2 text-right">
                     {typeof r.price === "number" ? `$${r.price.toFixed(2)}` : "—"}
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {typeof value === "number" ? `$${value.toLocaleString()}` : "—"}
+                    {typeof value === "number"
+                      ? `$${value.toLocaleString()}`
+                      : "—"}
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {typeof r.ownedAfter === "number" ? r.ownedAfter.toLocaleString() : "—"}
+                    {typeof r.ownedAfter === "number"
+                      ? r.ownedAfter.toLocaleString()
+                      : "—"}
                   </td>
                   <td className="px-3 py-2">
                     {r.formUrl ? (
@@ -313,18 +253,10 @@ const InsiderTape: React.FC<InsiderTapeProps> = ({
               );
             })}
 
-            {!loading && symbol.trim() && filtered.length === 0 && (
+            {!loading && filtered.length === 0 && (
               <tr>
                 <td colSpan={11} className="px-3 py-6 text-center text-gray-500">
                   No trades found for these filters.
-                </td>
-              </tr>
-            )}
-
-            {!symbol.trim() && (
-              <tr>
-                <td colSpan={11} className="px-3 py-6 text-center text-gray-400">
-                  Enter a ticker above to load insider activity.
                 </td>
               </tr>
             )}
@@ -345,15 +277,11 @@ const InsiderTape: React.FC<InsiderTapeProps> = ({
         <button
           className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
           disabled={loading || rows.length < perPage}
-          onClick={() => setPage((p) => p + 1))}
+          onClick={() => setPage((p) => p + 1)}
         >
           Next →
         </button>
       </div>
-
-      {error && <div className="mt-3 text-xs text-rose-600">⚠ {error}</div>}
     </section>
   );
-};
-
-export default InsiderTape;
+}
