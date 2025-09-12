@@ -1,7 +1,7 @@
 // app/components/StocksDashboard.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 // ---------- types ----------
 type Quote = {
@@ -127,43 +127,67 @@ function MACD(data: number[], fast = 12, slow = 26, signal = 9) {
   return { macd, signal: signalLine, hist };
 }
 
-// tiny SVG line
-function Polyline({
-  series,
-  width,
-  height,
-  stroke,
-  strokeWidth = 2,
-  yPad = 4,
-}: {
-  series: (number | undefined | null)[];
-  width: number;
-  height: number;
-  stroke: string;
-  strokeWidth?: number;
-  yPad?: number;
-}) {
-  const nums = series.map((v) => (typeof v === "number" && isFinite(v) ? v : NaN));
-  const valid = nums.filter((v) => !isNaN(v));
-  if (valid.length < 2) return <svg width={width} height={height} />;
+// ---------- responsive SVG helpers ----------
+function minMaxOfSeries(seriesList: (number | undefined | null)[][]) {
+  let min = +Infinity;
+  let max = -Infinity;
+  for (const s of seriesList) {
+    for (const v of s) {
+      if (typeof v === "number" && isFinite(v)) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+  }
+  if (!isFinite(min) || !isFinite(max)) {
+    min = 0;
+    max = 1;
+  }
+  if (min === max) {
+    // widen a bit so flat series are visible
+    min = min - 1;
+    max = max + 1;
+  }
+  return { min, max };
+}
 
-  const min = Math.min(...valid);
-  const max = Math.max(...valid);
-  const range = max - min || 1;
-  const stepX = width / (nums.length - 1);
+function toPath(
+  series: (number | undefined | null)[],
+  width: number,
+  height: number,
+  yMin: number,
+  yMax: number,
+  yPad = 6
+) {
+  const stepX = series.length > 1 ? width / (series.length - 1) : width;
+  const h = height;
+  const range = yMax - yMin || 1;
 
-  const pts = nums.map((v, i) => {
+  let d = "";
+  for (let i = 0; i < series.length; i++) {
+    const val = series[i];
+    if (typeof val !== "number" || !isFinite(val)) continue;
     const x = i * stepX;
-    const yVal = isNaN(v) ? NaN : height - yPad - ((v - min) / range) * (height - 2 * yPad);
-    const y = isNaN(yVal) ? height - yPad : clamp(yVal, 0, height);
-    return `${x},${y}`;
-  });
+    const y =
+      h - yPad - ((val - yMin) / range) * (h - 2 * yPad); // top-down SVG coords
+    d += (d ? " L " : "M ") + x.toFixed(2) + " " + clamp(y, 0, h).toFixed(2);
+  }
+  return d || "M 0 0";
+}
 
-  return (
-    <svg width={width} height={height}>
-      <polyline fill="none" stroke={stroke} strokeWidth={strokeWidth} points={pts.join(" ")} />
-    </svg>
-  );
+function useContainerWidth(min = 320) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [w, setW] = useState<number>(min);
+  useEffect(() => {
+    if (!ref.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const cr = entries[0]?.contentRect;
+      if (cr?.width) setW(Math.max(min, Math.round(cr.width)));
+    });
+    ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, [min]);
+  return { ref, width: w };
 }
 
 // ---------- component ----------
@@ -226,6 +250,22 @@ export default function StocksDashboard() {
   const ema20 = useMemo(() => EMA(closes, 20), [closes]);
   const rsi14 = useMemo(() => RSI(closes, 14), [closes]);
   const macd = useMemo(() => MACD(closes, 12, 26, 9), [closes]);
+
+  // responsive widths
+  const priceBox = useContainerWidth(360);
+  const rsiBox = useContainerWidth(360);
+  const macdBox = useContainerWidth(360);
+
+  // heights scale with width (keeps proportions consistent)
+  const priceH = Math.max(220, Math.min(520, Math.round(priceBox.width * 0.45)));
+  const rsiH = Math.max(100, Math.min(180, Math.round(rsiBox.width * 0.22)));
+  const macdH = Math.max(120, Math.min(200, Math.round(macdBox.width * 0.25)));
+
+  // y-domain for price chart uses all visible series (close + MAs) to avoid clipping
+  const priceDomain = useMemo(
+    () => minMaxOfSeries([closes, sma20, sma50, ema20]),
+    [closes, sma20, sma50, ema20]
+  );
 
   return (
     <div className="space-y-4">
@@ -304,7 +344,7 @@ export default function StocksDashboard() {
         </div>
 
         <p className="mt-2 text-xs text-gray-500">
-          Tip: Start with liquid tickers (AAPL, MSFT, NVDA). Indicators shown: <b>SMA(20)</b>, <b>SMA(50)</b>, <b>EMA(20)</b>, <b>RSI(14)</b>, <b>MACD(12,26,9)</b>.
+          Tip: Start with liquid tickers (AAPL, MSFT, NVDA). Indicators: <b>SMA(20)</b>, <b>SMA(50)</b>, <b>EMA(20)</b>, <b>RSI(14)</b>, <b>MACD(12,26,9)</b>.
         </p>
 
         {err && (
@@ -358,45 +398,113 @@ export default function StocksDashboard() {
         </section>
       )}
 
-      {/* Charts */}
-      {bars.length > 0 && (
+      {/* -------- Price & MAs (responsive) -------- */}
+      {closes.length > 1 && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          {/* Price + MAs */}
           <div className="text-sm font-medium text-gray-900 mb-2">Price & MAs</div>
-          <div className="rounded-lg border p-3 overflow-x-auto">
-            <div className="min-w-[720px]">
-              <Polyline series={closes} width={720} height={180} stroke="#0f172a" strokeWidth={2} />
-              <div className="-mt-[180px] pointer-events-none">
-                <Polyline series={sma20} width={720} height={180} stroke="#2563eb" strokeWidth={1.5} />
-                <Polyline series={sma50} width={720} height={180} stroke="#7c3aed" strokeWidth={1.5} />
-                <Polyline series={ema20} width={720} height={180} stroke="#10b981" strokeWidth={1.5} />
-              </div>
-            </div>
+          <div ref={priceBox.ref} className="w-full">
+            <svg width={priceBox.width} height={priceH}>
+              {/* grid (horizontal) */}
+              {Array.from({ length: 4 }).map((_, i) => {
+                const y = ((i + 1) / 5) * priceH;
+                return (
+                  <line
+                    key={i}
+                    x1={0}
+                    y1={y}
+                    x2={priceBox.width}
+                    y2={y}
+                    stroke="#e5e7eb"
+                    strokeDasharray="4 4"
+                  />
+                );
+              })}
+              {/* lines */}
+              <path
+                d={toPath(closes, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
+                fill="none"
+                stroke="#0f172a"
+                strokeWidth={2}
+              />
+              <path
+                d={toPath(sma20, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
+                fill="none"
+                stroke="#2563eb"
+                strokeWidth={1.5}
+              />
+              <path
+                d={toPath(sma50, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
+                fill="none"
+                stroke="#7c3aed"
+                strokeWidth={1.5}
+              />
+              <path
+                d={toPath(ema20, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
+                fill="none"
+                stroke="#10b981"
+                strokeWidth={1.5}
+              />
+            </svg>
           </div>
           <div className="mt-2 text-xs text-gray-600">Blue=SMA20, Purple=SMA50, Green=EMA20.</div>
+        </section>
+      )}
 
-          {/* RSI */}
-          <div className="mt-6 text-sm font-medium text-gray-900 mb-2">RSI(14)</div>
-          <div className="rounded-lg border p-3 overflow-x-auto">
-            <div className="min-w-[720px] relative">
-              <Polyline series={rsi14} width={720} height={100} stroke="#374151" strokeWidth={1.5} />
+      {/* -------- RSI (responsive) -------- */}
+      {rsi14.length > 1 && (
+        <section className="rounded-2xl border bg-white p-4 md:p-5">
+          <div className="text-sm font-medium text-gray-900 mb-2">RSI(14)</div>
+          <div ref={rsiBox.ref} className="w-full relative">
+            <svg width={rsiBox.width} height={rsiH}>
               {/* 30/70 guides */}
-              <div className="absolute inset-0 pointer-events-none">
-                <div className="absolute left-0 right-0 top-[30%] border-t border-dashed border-gray-300" />
-                <div className="absolute left-0 right-0 top-[70%] border-t border-dashed border-gray-300" />
-              </div>
-            </div>
+              <line x1={0} y1={rsiH * 0.3} x2={rsiBox.width} y2={rsiH * 0.3} stroke="#d1d5db" strokeDasharray="4 4" />
+              <line x1={0} y1={rsiH * 0.7} x2={rsiBox.width} y2={rsiH * 0.7} stroke="#d1d5db" strokeDasharray="4 4" />
+              {/* RSI path (0..100 scale) */}
+              <path
+                d={toPath(rsi14.map((v) => (isFinite(v) ? v : NaN)), rsiBox.width, rsiH, 0, 100)}
+                fill="none"
+                stroke="#374151"
+                strokeWidth={1.5}
+              />
+            </svg>
           </div>
+        </section>
+      )}
 
-          {/* MACD */}
-          <div className="mt-6 text-sm font-medium text-gray-900 mb-2">MACD(12,26,9)</div>
-          <div className="rounded-lg border p-3 overflow-x-auto">
-            <div className="min-w-[720px]">
-              <Polyline series={macd.macd} width={720} height={120} stroke="#0ea5e9" strokeWidth={1.5} />
-              <div className="-mt-[120px] pointer-events-none">
-                <Polyline series={macd.signal} width={720} height={120} stroke="#ef4444" strokeWidth={1.5} />
-              </div>
-            </div>
+      {/* -------- MACD (responsive) -------- */}
+      {macd.macd.length > 1 && (
+        <section className="rounded-2xl border bg-white p-4 md:p-5">
+          <div className="text-sm font-medium text-gray-900 mb-2">MACD(12,26,9)</div>
+          <div ref={macdBox.ref} className="w-full">
+            {(() => {
+              const domain = minMaxOfSeries([macd.macd, macd.signal]);
+              return (
+                <svg width={macdBox.width} height={macdH}>
+                  {/* zero line */}
+                  <line
+                    x1={0}
+                    y1={macdH / 2}
+                    x2={macdBox.width}
+                    y2={macdH / 2}
+                    stroke="#e5e7eb"
+                    strokeDasharray="4 4"
+                  />
+                  {/* macd & signal */}
+                  <path
+                    d={toPath(macd.macd, macdBox.width, macdH, domain.min, domain.max)}
+                    fill="none"
+                    stroke="#0ea5e9"
+                    strokeWidth={1.5}
+                  />
+                  <path
+                    d={toPath(macd.signal, macdBox.width, macdH, domain.min, domain.max)}
+                    fill="none"
+                    stroke="#ef4444"
+                    strokeWidth={1.5}
+                  />
+                </svg>
+              );
+            })()}
           </div>
         </section>
       )}
