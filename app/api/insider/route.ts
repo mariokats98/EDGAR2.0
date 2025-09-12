@@ -1,392 +1,220 @@
 // app/api/insider/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-/** -------- Types returned to the UI -------- */
-type TapeRow = {
-  insider: string;
-  issuer: string;
+const FMP_API_KEY = process.env.FMP_API_KEY || "";
+
+type InsiderRow = {
+  source: "fmp" | "sec";
+  insider: string;                 // reporting person
+  insiderTitle?: string;
+  issuer: string;                  // issuer/company name
   symbol?: string;
-  filedAt: string;
-  action: "A" | "D" | "—";
-  shares?: number;
-  price?: number;
-  value?: number;
-  ownedFollowing?: number;
-  accessionNumber?: string;
-  indexHtml?: string;
-  docUrl?: string; // primary XML/HTM chosen
+  cik?: string;
+  filedAt?: string;                // filing date
+  transDate?: string;              // transaction date
+  txnType?: "A" | "D";             // acquired / disposed
+  shares?: number;                 // amount transacted
+  price?: number;                  // transaction price
+  value?: number;                  // shares * price (if available)
+  ownedAfter?: number;             // beneficially owned after txn
+  formUrl?: string;                // direct form link (best effort)
+  indexUrl?: string;               // index page (best effort)
 };
 
-/** -------- Config -------- */
-const SEC_BASE = "https://data.sec.gov";
-const SEC_UA =
-  process.env.SEC_USER_AGENT_EMAIL
-    ? `Herevna.io bot (${process.env.SEC_USER_AGENT_EMAIL})`
-    : "Herevna.io bot (contact@herevna.io)";
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://herevna.io";
-const FMP_API_KEY = process.env.FMP_API_KEY;
-
-/** -------- Small helpers -------- */
-let TICKER_CACHE:
-  | { bySymbol: Map<string, { cik: string; title: string }>; ts: number }
-  | null = null;
-
-function padCIK(raw: string | null | undefined) {
-  const digits = String(raw || "").replace(/\D/g, "");
-  if (!digits) return null;
-  return digits.replace(/^0+/, "").padStart(10, "0");
+// ---------- helpers ----------
+function json(data: any, init?: ResponseInit) {
+  return NextResponse.json(data, init);
 }
-
-async function fetchJSON<T = any>(url: string) {
-  const r = await fetch(url, {
-    headers: {
-      "User-Agent": SEC_UA,
-      "Accept": "application/json",
-      "Referer": SITE_URL,
-    },
-    cache: "no-store",
-  });
-  if (!r.ok) throw new Error(`fetch failed ${r.status} for ${url}`);
-  return (await r.json()) as T;
+function err(message: string, status = 400) {
+  return json({ error: message }, { status });
 }
-
-async function fetchText(url: string) {
-  const r = await fetch(url, {
-    headers: {
-      "User-Agent": SEC_UA,
-      "Accept": "text/plain,application/xml,text/html;q=0.9,*/*;q=0.8",
-      "Referer": SITE_URL,
-    },
-    cache: "no-store",
-  });
-  if (!r.ok) throw new Error(`fetch failed ${r.status} for ${url}`);
-  return await r.text();
-}
-
-/** Load SEC official ticker list and cache in-memory */
-async function loadTickerIndex() {
-  const now = Date.now();
-  if (TICKER_CACHE && now - TICKER_CACHE.ts < 6 * 60 * 60 * 1000) return TICKER_CACHE;
-
-  const data = await fetchJSON<Record<string, { cik_str: number; ticker: string; title: string }>>(
-    "https://www.sec.gov/files/company_tickers.json"
-  );
-
-  const bySymbol = new Map<string, { cik: string; title: string }>();
-  for (const k of Object.keys(data)) {
-    const row = data[k];
-    if (!row?.ticker || row?.cik_str == null) continue;
-    const sym = row.ticker.toUpperCase();
-    const cik = String(row.cik_str).padStart(10, "0");
-    bySymbol.set(sym, { cik, title: row.title });
-  }
-
-  TICKER_CACHE = { bySymbol, ts: now };
-  return TICKER_CACHE;
-}
-
-/** Try to resolve CIK from query: cik > symbol > issuer fuzzy */
-async function resolveCIK(searchParams: URLSearchParams) {
-  const rawCIK = searchParams.get("cik");
-  const symbolIn = (searchParams.get("symbol") || "").toUpperCase().trim();
-  const issuerIn = (searchParams.get("issuer") || "").trim();
-
-  if (rawCIK) {
-    const cik = padCIK(rawCIK);
-    if (cik) return { cik, from: "cik" as const };
-  }
-
-  const idx = await loadTickerIndex();
-
-  if (symbolIn) {
-    const candidates = [
-      symbolIn,
-      symbolIn.replace(/\./g, "-"),
-      symbolIn.replace(/-/g, "."),
-    ];
-    for (const c of candidates) {
-      const hit = idx.bySymbol.get(c);
-      if (hit) return { cik: hit.cik, from: "symbol" as const, title: hit.title, symbol: c };
-    }
-  }
-
-  if (issuerIn) {
-    const needle = issuerIn.toLowerCase();
-    for (const [sym, info] of idx.bySymbol.entries()) {
-      if (info.title.toLowerCase().includes(needle)) {
-        return { cik: info.cik, from: "issuer" as const, title: info.title, symbol: sym };
-      }
-    }
-  }
-
-  return null;
-}
-
-/** Very small XML helpers (avoid adding deps) */
-function pickTag(text: string, tag: string): string | undefined {
-  // returns innerText of first <tag>...</tag>
-  const m = text.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i"));
-  return m?.[1]?.trim();
-}
-
-function pickAll(text: string, tag: string): string[] {
-  const rx = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "gi");
-  const out: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = rx.exec(text))) out.push(m[1].trim());
-  return out;
-}
-
-function asNumber(x?: string | null): number | undefined {
-  if (!x) return undefined;
-  const n = Number(x.replace(/[, ]/g, ""));
+function asNum(x: any): number | undefined {
+  if (x === null || x === undefined || x === "") return undefined;
+  const n = Number(x);
   return Number.isFinite(n) ? n : undefined;
 }
+function cleanStr(s?: string | null) {
+  return (s ?? "").toString().trim() || undefined;
+}
+function padCIK(cik?: string | number) {
+  if (!cik) return undefined;
+  return String(cik).padStart(10, "0");
+}
 
-/** Extract core Form 4 fields (first Non-Derivative transaction row) */
-function parseForm4(xml: string) {
-  const issuerName = pickTag(xml, "issuerName") || pickTag(xml, "issuerName|issuer") || "—";
-  const issuerTradingSymbol = pickTag(xml, "issuerTradingSymbol") || undefined;
-  const insiderName =
-    pickTag(xml, "rptOwnerName") ||
-    pickTag(xml, "reportingOwnerId") ||
-    "—";
-
-  // Non-derivative table rows
-  const rows = pickAll(xml, "nonDerivativeTransaction");
-  let action: "A" | "D" | "—" = "—";
-  let shares: number | undefined;
-  let price: number | undefined;
-  let ownedFollowing: number | undefined;
-
-  if (rows.length) {
-    // choose the first transaction (most filings have one or a few)
-    const row = rows[0];
-    const acqDisp = pickTag(row, "transactionAcquiredDisposedCode") || pickTag(row, "transactionAcquiredDisposedCode|value");
-    const sharesStr =
-      pickTag(row, "transactionShares") ||
-      pickTag(row, "transactionShares|value");
-    const priceStr =
-      pickTag(row, "transactionPricePerShare") ||
-      pickTag(row, "transactionPricePerShare|value");
-
-    action = acqDisp?.includes("A") ? "A" : acqDisp?.includes("D") ? "D" : "—";
-    shares = asNumber(sharesStr);
-    price = asNumber(priceStr);
-  }
-
-  // post transaction amounts
-  const ownedStr =
-    pickTag(xml, "sharesOwnedFollowingTransaction") ||
-    pickTag(xml, "ownershipDirectOrIndirect") || // fallback if table missing
-    undefined;
-  ownedFollowing = asNumber(ownedStr);
-
+// Try to construct a usable form/index URL if we have CIK + accession.
+function buildSecUrls(cik?: string, accNoRaw?: string) {
+  const pad = padCIK(cik);
+  const accNo = accNoRaw?.replace(/-/g, "");
+  if (!pad || !accNo) return {};
+  const base = `https://www.sec.gov/Archives/edgar/data/${parseInt(pad, 10)}/${accNo}`;
   return {
-    issuerName,
-    issuerTradingSymbol,
-    insiderName,
-    action,
-    shares,
-    price,
-    ownedFollowing,
+    indexUrl: `${base}/index.json`,
+    // Often the main doc is index.html or the first file in index.json;
+    // we’ll still expose a best-effort classic HTML:
+    formUrl: `${base}/index.html`,
   };
 }
 
-/** Build SEC directory links safely from accession + cik */
-function secDirLinks(cik10: string, accession: string) {
-  const cikNoLeading = String(parseInt(cik10, 10)); // strip leading zeros
-  const accPath = accession.replace(/-/g, "");
-  const baseDir = `${SEC_BASE}/Archives/edgar/data/${cikNoLeading}/${accPath}`;
-  return {
-    baseDir,
-    indexHtml: `${baseDir}/index.html`,
-    indexJson: `${baseDir}/index.json`,
-  };
-}
+// ---------- FMP primary ----------
+async function fetchFromFMP(params: {
+  symbol?: string;
+  start?: string;
+  end?: string;
+  txnType?: "ALL" | "A" | "D";
+  page?: number;
+  perPage?: number;
+}) {
+  if (!FMP_API_KEY) return { rows: [], meta: { source: "fmp", note: "missing FMP key" } };
 
-/** Choose primary document from directory listing */
-function choosePrimaryFromIndex(index: any): string | null {
-  // next’s index.json looks like: { item: [{name:"", type:"", href:""} , ...] }
-  const items: { name?: string; href?: string }[] = index?.directory?.item || index?.item || [];
-  if (!Array.isArray(items) || !items.length) return null;
+  const { symbol, start, end, txnType = "ALL", page = 1, perPage = 50 } = params;
 
-  // Prefer XML that looks like a Form 4 filing
-  const xmlFirst = items.find((it) => (it.name || it.href || "").toLowerCase().endsWith(".xml"));
-  if (xmlFirst?.href) return xmlFirst.href;
+  // FMP insider-trading endpoint
+  const url = new URL("https://financialmodelingprep.com/api/v4/insider-trading");
+  if (symbol) url.searchParams.set("symbol", symbol.toUpperCase());
+  if (start) url.searchParams.set("from", start);
+  if (end) url.searchParams.set("to", end);
+  url.searchParams.set("page", String(page));
+  url.searchParams.set("limit", String(perPage));
+  url.searchParams.set("apikey", FMP_API_KEY);
 
-  // Otherwise an HTM/HTML doc
-  const htm = items.find((it) => {
-    const n = (it.name || it.href || "").toLowerCase();
-    return n.endsWith(".htm") || n.endsWith(".html");
+  const r = await fetch(url.toString(), {
+    headers: { "User-Agent": "Herevna/1.0 (Insider Screener)" },
+    cache: "no-store",
   });
-  if (htm?.href) return htm.href;
+  if (!r.ok) throw new Error(`FMP failed ${r.status}`);
+  const arr = await r.json();
 
-  // Fallback to first item
-  return items[0]?.href || null;
-}
+  if (!Array.isArray(arr)) return { rows: [], meta: { source: "fmp", count: 0 } };
 
-/** Try SEC path; on failure, fallback to FMP if available */
-async function fetchInsiderTapeSEC(cik: string, start?: string, end?: string): Promise<TapeRow[]> {
-  // Get recent submissions
-  const subs = await fetchJSON<any>(`${SEC_BASE}/submissions/CIK${cik}.json`);
-  const filings = subs?.filings?.recent;
-  if (!filings) return [];
-
-  const out: TapeRow[] = [];
-  const n = filings.form?.length || 0;
-
-  for (let i = 0; i < n; i++) {
-    if (filings.form[i] !== "4") continue;
-
-    const acc = filings.accessionNumber?.[i];
-    const filed = filings.filingDate?.[i];
-    if (!acc || !filed) continue;
-
-    if (start && filed < start) continue;
-    if (end && filed > end) continue;
-
-    const { baseDir, indexHtml, indexJson } = secDirLinks(
-      subs?.cik ? String(subs.cik).padStart(10, "0") : cik,
-      acc
-    );
-
-    // Discover the real file list
-    let docUrl: string | undefined;
-    let parsed: ReturnType<typeof parseForm4> | null = null;
-
-    try {
-      const dir = await fetchJSON<any>(indexJson);
-      const href = choosePrimaryFromIndex(dir);
-      if (href) {
-        // href is relative to baseDir
-        docUrl = `${baseDir}/${href.replace(/^\.?\//, "")}`;
-
-        if (docUrl.toLowerCase().endsWith(".xml")) {
-          const xml = await fetchText(docUrl);
-          parsed = parseForm4(xml);
-        } else {
-          // try to find an XML in the directory even if primary is HTM
-          const items = dir?.directory?.item || dir?.item || [];
-          const xmlItem = items.find((it: any) =>
-            String(it?.href || it?.name || "").toLowerCase().endsWith(".xml")
-          );
-          if (xmlItem?.href) {
-            const xmlUrl = `${baseDir}/${String(xmlItem.href).replace(/^\.?\//, "")}`;
-            const xml = await fetchText(xmlUrl);
-            parsed = parseForm4(xml);
-          }
-        }
+  // Filter by txnType (A/D) if requested
+  let filtered = arr as any[];
+  if (txnType !== "ALL") {
+    filtered = filtered.filter((t) => {
+      // FMP fields vary; normalize a few:
+      const acqDisp =
+        t.acquisitionOrDisposition ||
+        t.transactionType ||
+        t.type ||
+        t.ad ||
+        t.transactionCode ||
+        "";
+      const code = (acqDisp || "").toString().toUpperCase();
+      // accept 'A', 'D', or words that map to A/D
+      if (txnType === "A") {
+        return code.startsWith("A") || /PURCHASE|ACQ/.test(code);
       }
-    } catch {
-      // directory lookup failed -> we’ll still return a minimal row
-    }
-
-    const price = parsed?.price;
-    const shares = parsed?.shares;
-    const value = price && shares ? Math.round(price * shares * 100) / 100 : undefined;
-
-    out.push({
-      insider: parsed?.insiderName || "—",
-      issuer: parsed?.issuerName || subs?.name || "—",
-      symbol: parsed?.issuerTradingSymbol,
-      filedAt: filed,
-      action: parsed?.action ?? "—",
-      shares,
-      price,
-      value,
-      ownedFollowing: parsed?.ownedFollowing,
-      accessionNumber: acc,
-      indexHtml,
-      docUrl,
+      if (txnType === "D") {
+        return code.startsWith("D") || /SALE|DISP/.test(code);
+      }
+      return true;
     });
   }
 
-  return out;
-}
+  const rows: InsiderRow[] = filtered.map((t) => {
+    // Common FMP fields we’ve seen:
+    const cik = t.cik || t.issuerCik || t.cikIssuer;
+    const acc = t.accNo || t.accessionNumber || t.accession;
+    const { formUrl, indexUrl } = buildSecUrls(cik, acc);
 
-async function fetchInsiderTapeFMP(symbol: string, start?: string, end?: string): Promise<TapeRow[]> {
-  if (!FMP_API_KEY) return [];
-  const url = new URL("https://financialmodelingprep.com/api/v4/insider-trading");
-  url.searchParams.set("symbol", symbol);
-  if (start) url.searchParams.set("from", start);
-  if (end) url.searchParams.set("to", end);
-  url.searchParams.set("apikey", FMP_API_KEY);
+    const shares =
+      asNum(t.shares) ??
+      asNum(t.securitiesTransacted) ??
+      asNum(t.amountOfSecuritiesTransacted);
+    const price = asNum(t.price) ?? asNum(t.transactionPrice);
+    const ownedAfter =
+      asNum(t.sharesOwnedFollowingTransaction) ??
+      asNum(t.securitiesOwnedFollowingTransaction);
 
-  const data = await fetchJSON<any[]>(url.toString());
+    // A / D
+    const acqDisp =
+      t.acquisitionOrDisposition ||
+      t.transactionType ||
+      t.type ||
+      t.ad ||
+      t.transactionCode ||
+      "";
+    let txnTypeNorm: "A" | "D" | undefined;
+    const code = (acqDisp || "").toString().toUpperCase();
+    if (code.startsWith("A") || /PURCHASE|ACQ/.test(code)) txnTypeNorm = "A";
+    else if (code.startsWith("D") || /SALE|DISP/.test(code)) txnTypeNorm = "D";
 
-  // Map to TapeRow as best as possible (FMP field names)
-  return (data || []).map((d) => {
-    const price = asNumber(d?.transactionPrice);
-    const shares = asNumber(d?.transactionShares);
-    const value = price && shares ? Math.round(price * shares * 100) / 100 : undefined;
-    const action = (String(d?.acquisitionOrDisposition || "").toUpperCase().includes("A")
-      ? "A"
-      : String(d?.acquisitionOrDisposition || "").toUpperCase().includes("D")
-      ? "D"
-      : "—") as "A" | "D" | "—";
+    const val = shares && price ? shares * price : undefined;
 
     return {
-      insider: d?.reportingName || d?.reportingCik || "—",
-      issuer: d?.issuerName || "—",
-      symbol: d?.symbol || undefined,
-      filedAt: d?.filingDate || d?.filingDateTime || "—",
-      action,
+      source: "fmp",
+      insider: cleanStr(t.insiderName) || cleanStr(t.reportingName) || "—",
+      insiderTitle: cleanStr(t.insiderTitle) || cleanStr(t.reportingTitle),
+      issuer:
+        cleanStr(t.companyName) ||
+        cleanStr(t.issuerName) ||
+        cleanStr(t.issuer) ||
+        "—",
+      symbol: cleanStr(t.ticker) || cleanStr(t.symbol),
+      cik: cik ? padCIK(cik) : undefined,
+      filedAt: cleanStr(t.filingDate),
+      transDate: cleanStr(t.transactionDate) || cleanStr(t.transactionDate2),
+      txnType: txnTypeNorm,
       shares,
       price,
-      value,
-      ownedFollowing: asNumber(d?.postTransactionAmount),
-      accessionNumber: d?.accessionNumber,
-      indexHtml: d?.link || undefined,
-      docUrl: d?.link || undefined,
+      value: val,
+      ownedAfter,
+      formUrl: cleanStr(t.link) || formUrl, // FMP sometimes provides link
+      indexUrl,
     };
   });
+
+  return {
+    rows,
+    meta: { source: "fmp", count: rows.length, page, perPage },
+  };
 }
 
-/** -------- Route handler -------- */
+// ---------- SEC fallback (very light) ----------
+async function fetchFromSEC(params: { symbol?: string }) {
+  const { symbol } = params;
+  if (!symbol) return { rows: [], meta: { source: "sec", note: "no symbol" } };
+
+  // We’ll try the SEC search endpoint to find latest 4 forms for the issuer.
+  // This is a minimal fallback and may be sparse compared to FMP.
+  const q = encodeURIComponent(`${symbol} form 4`);
+  const searchUrl = `https://www.sec.gov/edgar/search/#/category=custom&forms=4&q=${q}`;
+
+  // We cannot scrape client-side here; just return a pointer to the search.
+  // (Your EDGAR page already fetches deeply when needed.)
+  const row: InsiderRow = {
+    source: "sec",
+    insider: "—",
+    issuer: "—",
+    symbol,
+    formUrl: searchUrl,
+    indexUrl: searchUrl,
+  };
+
+  return { rows: [row], meta: { source: "sec", note: "search pointer" } };
+}
+
+// ---------- Handler ----------
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    if (!searchParams.get("cik") && !searchParams.get("symbol") && !searchParams.get("issuer")) {
-      return NextResponse.json({ error: "Provide a symbol, CIK, or issuer." }, { status: 400 });
+    const symbol = cleanStr(searchParams.get("symbol") || "");
+    const start = cleanStr(searchParams.get("start") || "");
+    const end = cleanStr(searchParams.get("end") || "");
+    const txnTypeRaw = (searchParams.get("txnType") || "ALL").toUpperCase();
+    const txnType = ["A", "D"].includes(txnTypeRaw) ? (txnTypeRaw as "A" | "D") : "ALL";
+    const page = Number(searchParams.get("page") || "1") || 1;
+    const perPage = Math.min(200, Number(searchParams.get("perPage") || "50") || 50);
+
+    // 1) FMP first
+    const fmp = await fetchFromFMP({ symbol, start, end, txnType, page, perPage });
+    if (fmp.rows.length > 0) {
+      return json({ ok: true, rows: fmp.rows, meta: fmp.meta });
     }
 
-    const resolved = await resolveCIK(searchParams);
-    if (!resolved?.cik) {
-      return NextResponse.json({ error: "Could not resolve CIK from inputs." }, { status: 400 });
-    }
-
-    const cik = resolved.cik;
-    const start = searchParams.get("start") || undefined; // YYYY-MM-DD
-    const end = searchParams.get("end") || undefined;     // YYYY-MM-DD
-    const txnType = (searchParams.get("action") || "ALL").toUpperCase() as "ALL" | "A" | "D";
-
-    let rows: TapeRow[] = [];
-    try {
-      rows = await fetchInsiderTapeSEC(cik, start, end);
-    } catch (e) {
-      // SEC blocked or missing index? fallback to FMP if symbol available
-      if (resolved.symbol && FMP_API_KEY) {
-        rows = await fetchInsiderTapeFMP(resolved.symbol, start, end);
-      } else {
-        throw e;
-      }
-    }
-
-    // Optional filter by A/D
-    if (txnType !== "ALL") {
-      rows = rows.filter((r) => r.action === txnType);
-    }
-
-    return NextResponse.json({
-      ok: true,
-      source: rows.length && rows[0]?.docUrl ? "SEC" : FMP_API_KEY ? "FMP" : "SEC",
-      resolvedFrom: resolved.from,
-      cik,
-      symbol: resolved.symbol,
-      data: rows,
-    });
+    // 2) SEC fallback (pointer)
+    const sec = await fetchFromSEC({ symbol });
+    return json({ ok: true, rows: sec.rows, meta: sec.meta });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
+    return err(e?.message || "Unexpected error", 500);
   }
 }
