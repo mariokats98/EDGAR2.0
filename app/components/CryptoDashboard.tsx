@@ -46,6 +46,7 @@ export default function CryptoDashboard() {
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0); // triggers refetch without changing `days`
 
   // Fetch list once
   useEffect(() => {
@@ -55,7 +56,6 @@ export default function CryptoDashboard() {
         const j = await r.json();
         if (!r.ok || j?.ok === false) throw new Error(j?.error || "Failed list");
         setList(j.rows || []);
-        // Pick BTC if available, otherwise first symbol
         if (!symbol && j.rows?.length) setSymbol(j.rows[0].symbol);
       } catch (e: any) {
         setError(e?.message || "Failed to load list");
@@ -64,16 +64,17 @@ export default function CryptoDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Fetch detail when symbol/days change
+  // Fetch detail when symbol/days/refreshKey change
   useEffect(() => {
     if (!symbol) return;
     (async () => {
       try {
         setLoading(true);
         setError(null);
-        const r = await fetch(`/api/crypto?fn=detail&symbol=${encodeURIComponent(symbol)}&days=${days}`, {
-          cache: "no-store",
-        });
+        const r = await fetch(
+          `/api/crypto?fn=detail&symbol=${encodeURIComponent(symbol)}&days=${days}`,
+          { cache: "no-store" }
+        );
         const j = await r.json();
         if (!r.ok || j?.ok === false) throw new Error(j?.error || "Failed detail");
         setDetail(j.data || null);
@@ -84,7 +85,7 @@ export default function CryptoDashboard() {
         setLoading(false);
       }
     })();
-  }, [symbol, days]);
+  }, [symbol, days, refreshKey]);
 
   // ---- Chart prep (SVG, no deps) ----
   const series = detail?.series ?? [];
@@ -144,7 +145,6 @@ export default function CryptoDashboard() {
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
             >
-              {/* Prefer the list (sorted by mkt cap). Fallback to common majors if empty */}
               {list.length > 0
                 ? list.map((c) => (
                     <option key={c.symbol} value={c.symbol}>
@@ -178,11 +178,7 @@ export default function CryptoDashboard() {
 
         <div>
           <button
-            onClick={() => {
-              // manual refresh
-              setDays((prev) => (prev === 30 ? 31 : 30)); // quick flip to trigger refetch
-              setTimeout(() => setDays(30 as any), 0);
-            }}
+            onClick={() => setRefreshKey((k) => k + 1)}
             className="rounded-md border bg-white px-3 py-2 text-sm hover:bg-gray-50"
           >
             Refresh
@@ -242,13 +238,7 @@ export default function CryptoDashboard() {
             onMouseLeave={onLeave}
           >
             {/* axes */}
-            <line
-              x1={48}
-              y1={chartH - 24}
-              x2={chartW - 16}
-              y2={chartH - 24}
-              stroke="#e5e7eb"
-            />
+            <line x1={48} y1={chartH - 24} x2={chartW - 16} y2={chartH - 24} stroke="#e5e7eb" />
             <line x1={48} y1={16} x2={48} y2={chartH - 24} stroke="#e5e7eb" />
 
             {/* path */}
@@ -305,7 +295,7 @@ export default function CryptoDashboard() {
               </tr>
             </thead>
             <tbody>
-              {(series.slice(-14).reverse()).map((p, idx) => (
+              {series.slice(-14).reverse().map((p, idx) => (
                 <tr key={`${p.date}-${idx}`} className="border-b">
                   <td className="px-3 py-2">{p.date}</td>
                   <td className="px-3 py-2 text-right">{fmtUsd(p.close)}</td>
