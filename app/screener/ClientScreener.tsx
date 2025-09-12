@@ -11,7 +11,7 @@ export default function ClientScreener() {
   const [tab, setTab] = useState<TabKey>("insider");
 
   // ------- filters used by Insider tab -------
-  const [symbol, setSymbol] = useState("NVDA");
+  const [symbol, setSymbol] = useState(""); // start empty
   const [start, setStart] = useState(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
@@ -21,7 +21,6 @@ export default function ClientScreener() {
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
   const [qkey, setQkey] = useState(() => `${Date.now()}`);
 
-  // whenever inputs change, bump a queryKey to force data refresh in the child
   useEffect(() => {
     setQkey(`${symbol}|${start}|${end}|${txnType}|${Date.now()}`);
   }, [symbol, start, end, txnType]);
@@ -60,7 +59,7 @@ export default function ClientScreener() {
       {/* INSIDER TAB */}
       {tab === "insider" && (
         <section className="mt-6 space-y-4">
-          {/* Filter bar (single source of truth) */}
+          {/* Filter bar */}
           <div className="rounded-2xl border bg-white p-4 md:p-5">
             <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_repeat(2,1fr)_auto]">
               {/* Symbol */}
@@ -69,16 +68,9 @@ export default function ClientScreener() {
                 <input
                   value={symbol}
                   onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-                  placeholder="e.g., NVDA"
+                  placeholder="Enter ticker (e.g., NVDA)"
                   className="w-full rounded-md border px-3 py-2"
                 />
-                {/* subtle, greyed-out examples */}
-                <div className="mt-1 text-[11px] text-gray-400">
-                  Try: <span className="font-mono">AAPL</span>,{" "}
-                  <span className="font-mono">MSFT</span>,{" "}
-                  <span className="font-mono">BRK.B</span>,{" "}
-                  <span className="font-mono">TSLA</span>
-                </div>
               </div>
 
               {/* Start */}
@@ -115,7 +107,6 @@ export default function ClientScreener() {
                   <option value="A">Acquired (A)</option>
                   <option value="D">Disposed (D)</option>
                 </select>
-                {/* friendly reminder what A/D mean */}
                 <div className="mt-1 text-[11px] text-gray-500">
                   <span className="inline-flex items-center gap-1">
                     <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
@@ -133,21 +124,22 @@ export default function ClientScreener() {
             </div>
           </div>
 
-          {/* Insider list (no duplicate filters inside) */}
-          <InsiderTape
-            symbol={symbol.trim()}
-            start={start}
-            end={end}
-            txnType={txnType}
-            queryKey={qkey}
-          />
+          {/* Insider list */}
+          {symbol.trim() && (
+            <InsiderTape
+              symbol={symbol.trim()}
+              start={start}
+              end={end}
+              txnType={txnType}
+              queryKey={qkey}
+            />
+          )}
         </section>
       )}
 
       {/* CRYPTO TAB */}
       {tab === "crypto" && (
         <section className="mt-6">
-          {/* Your CryptoDashboard component handles its own UI */}
           <CryptoDashboard />
         </section>
       )}
