@@ -5,7 +5,6 @@ import React, { useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import InsiderTape, { type TxnFilter } from "../components/InsiderTape";
 
-// Lazy-load crypto dashboard (client-only)
 const CryptoDashboard = dynamic(() => import("../components/CryptoDashboard"), {
   ssr: false,
   loading: () => <div className="text-sm text-gray-500">Loading…</div>,
@@ -18,8 +17,7 @@ function iso(d: Date) {
 export default function ClientScreener() {
   const [tab, setTab] = useState<"insider" | "crypto">("insider");
 
-  // Filters for Insider tab
-  const [symbol, setSymbol] = useState<string>(""); // empty by default; user types to begin
+  const [symbol, setSymbol] = useState<string>("");
   const [start, setStart] = useState<string>(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
@@ -28,7 +26,6 @@ export default function ClientScreener() {
   const [end, setEnd] = useState<string>(iso(new Date()));
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
 
-  // cache-buster for child if we need manual refresh from here
   const queryKey = useMemo(
     () => `${symbol}-${start}-${end}-${txnType}`,
     [symbol, start, end, txnType]
@@ -36,7 +33,6 @@ export default function ClientScreener() {
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-6">
-      {/* Tabs */}
       <div className="mb-5 flex items-center gap-2">
         <button
           className={`rounded-full px-4 py-2 text-sm ring-1 ${
@@ -62,7 +58,6 @@ export default function ClientScreener() {
 
       {tab === "insider" ? (
         <>
-          {/* Page-level search/filters for Insider */}
           <section className="mb-4 rounded-2xl border bg-white p-4 md:p-5">
             <div className="grid gap-3 md:grid-cols-[minmax(180px,1fr)_repeat(2,1fr)_minmax(140px,160px)]">
               <div>
@@ -108,13 +103,11 @@ export default function ClientScreener() {
                 </select>
               </div>
             </div>
-
             <p className="mt-2 text-xs text-gray-500">
               A = Acquired (e.g., purchases, awards, option exercises). D = Disposed (e.g., sales, tax withholdings, gifts).
             </p>
           </section>
 
-          {/* Insider transactions list */}
           {symbol.trim() ? (
             <InsiderTape
               symbol={symbol.trim()}
@@ -130,9 +123,8 @@ export default function ClientScreener() {
           )}
         </>
       ) : (
-        // Crypto tab
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          {CryptoDashboard ? <CryptoDashboard /> : <div className="text-sm text-gray-500">Loading…</div>}
+          <CryptoDashboard />
         </section>
       )}
     </main>
