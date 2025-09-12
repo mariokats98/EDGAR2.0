@@ -8,7 +8,7 @@ export type TxnFilter = "ALL" | "A" | "D";
 type Row = {
   source: "fmp" | "sec";
   table?: "I" | "II";        // Table I or II
-  security?: string;         // Security title (RSU, Option, Common, etc.)
+  security?: string;         // Security title (Common, RSU, Option…)
   insider: string;
   insiderTitle?: string;
   issuer: string;
@@ -26,8 +26,8 @@ type Row = {
 };
 
 export default function InsiderTape() {
-  // ------- filters -------
-  const [symbol, setSymbol] = useState<string>(""); // start empty
+  // filters
+  const [symbol, setSymbol] = useState<string>("");
   const [start, setStart] = useState<string>(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
@@ -35,13 +35,13 @@ export default function InsiderTape() {
   });
   const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
-  const [q, setQ] = useState<string>(""); // free-text filter
+  const [q, setQ] = useState<string>("");
 
-  // ------- pagination -------
+  // pagination
   const [page, setPage] = useState<number>(1);
   const [perPage, setPerPage] = useState<number>(25);
 
-  // ------- data state -------
+  // data
   const [loading, setLoading] = useState<boolean>(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +57,6 @@ export default function InsiderTape() {
       setMeta(null);
       return;
     }
-
     setLoading(true);
     setError(null);
     try {
@@ -325,11 +324,7 @@ export default function InsiderTape() {
         </button>
       </div>
 
-      {error && (
-        <div className="mt-3 text-xs text-rose-600">
-          ⚠ {error}
-        </div>
-      )}
+      {error && <div className="mt-3 text-xs text-rose-600">⚠ {error}</div>}
     </section>
   );
 }
