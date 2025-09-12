@@ -3,167 +3,304 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type InsiderRow = {
-  id: string;
-  symbol: string;
-  issuer: string;
+export type TxnFilter = "ALL" | "A" | "D";
+
+type Row = {
+  source: "fmp" | "sec";
   insider: string;
-  ad: "A" | "D" | "?";
-  transactionDate: string;
-  filingDate: string;
-  shares: number | null;
-  price: number | null;
-  value: number | null;
-  ownedAfter: number | null;
-  formType: string;
-  documentUrl?: string;
+  insiderTitle?: string;
+  issuer: string;
+  symbol?: string;
+  cik?: string;
+  filedAt?: string;
+  transDate?: string;
+  txnType?: "A" | "D";
+  shares?: number;
+  price?: number;
+  value?: number;
+  ownedAfter?: number;
+  formUrl?: string;
+  indexUrl?: string;
 };
 
-export type InsiderTapeProps = {
-  symbol: string;
-  start: string;
-  end: string;
-  txnType: "ALL" | "A" | "D";
-  /** change key to force refetch from parent */
-  queryKey?: string;
-};
+export default function InsiderTape() {
+  // ------- filters -------
+  const [symbol, setSymbol] = useState<string>("NVDA");
+  const [start, setStart] = useState<string>(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return d.toISOString().slice(0, 10);
+  });
+  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [txnType, setTxnType] = useState<TxnFilter>("ALL");
+  const [q, setQ] = useState<string>(""); // free-text filter for insider/issuer
 
-function fmtNum(n: number | null | undefined, opts: Intl.NumberFormatOptions = {}) {
-  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, ...opts }).format(n);
-}
+  // ------- pagination -------
+  const [page, setPage] = useState<number>(1);
+  const [perPage, setPerPage] = useState<number>(25);
 
-function Pill({ kind }: { kind: "A" | "D" | "?" }) {
-  const map = {
-    A: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    D: "bg-rose-50 text-rose-700 border-rose-200",
-    "?": "bg-gray-50 text-gray-700 border-gray-200",
-  } as const;
-  const label = kind === "A" ? "Acquired (A)" : kind === "D" ? "Disposed (D)" : "Other";
-  return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${map[kind]}`}>
-      {label}
-    </span>
-  );
-}
+  // ------- data state -------
+  const [loading, setLoading] = useState<boolean>(false);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [meta, setMeta] = useState<any>(null);
 
-export default function InsiderTape({ symbol, start, end, txnType, queryKey }: InsiderTapeProps) {
-  const [rows, setRows] = useState<InsiderRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  // refetch when filters change (except page/perPage which also refetch)
+  useEffect(() => {
+    setPage(1);
+  }, [symbol, start, end, txnType]);
 
-  const url = useMemo(() => {
-    const p = new URLSearchParams();
-    if (symbol) p.set("symbol", symbol.toUpperCase());
-    if (start) p.set("start", start);
-    if (end) p.set("end", end);
-    if (txnType) p.set("txnType", txnType);
-    p.set("limit", "50");
-    return `/api/insider?${p.toString()}`;
-  }, [symbol, start, end, txnType, queryKey]);
+  async function fetchTape() {
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({
+        symbol: symbol.trim(),
+        start,
+        end,
+        txnType,
+        page: String(page),
+        perPage: String(perPage),
+      });
+      const url = `/api/insider?${params.toString()}`;
+      const r = await fetch(url, { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
+      setRows(Array.isArray(j.rows) ? j.rows : []);
+      setMeta(j.meta || null);
+    } catch (e: any) {
+      setRows([]);
+      setMeta(null);
+      setError(e?.message || "Unexpected error");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    let stop = false;
-    async function run() {
-      setLoading(true);
-      setErr(null);
-      try {
-        const r = await fetch(url, { cache: "no-store" });
-        const j = await r.json();
-        if (!r.ok || j?.ok === false) {
-          throw new Error(j?.error || `Fetch failed (${r.status})`);
-        }
-        if (!stop) setRows(j.data as InsiderRow[]);
-      } catch (e: any) {
-        if (!stop) setErr(e?.message || "Unexpected error");
-      } finally {
-        if (!stop) setLoading(false);
-      }
-    }
-    run();
-    return () => {
-      stop = true;
-    };
-  }, [url]);
+    fetchTape();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol, start, end, txnType, page, perPage]);
+
+  // client-side quick search
+  const filtered = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    if (!t) return rows;
+    return rows.filter((r) => {
+      const hay = `${r.insider} ${r.insiderTitle ?? ""} ${r.issuer} ${r.symbol ?? ""}`.toLowerCase();
+      return hay.includes(t);
+    });
+  }, [rows, q]);
+
+  function pillColor(type?: "A" | "D") {
+    return type === "A"
+      ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+      : type === "D"
+      ? "bg-rose-50 text-rose-700 ring-rose-200"
+      : "bg-gray-50 text-gray-700 ring-gray-200";
+  }
+
+  const fmt = (n?: number, digits = 2) =>
+    typeof n === "number" && Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: digits }) : "—";
 
   return (
-    <div className="grid gap-3">
-      {/* header */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm text-gray-600">
-          {loading ? "Loading…" : `${rows.length} transaction${rows.length === 1 ? "" : "s"} loaded`}
-          {symbol ? ` • ${symbol}` : ""}
-          {txnType !== "ALL" ? ` • ${txnType === "A" ? "Acquisitions" : "Dispositions"}` : ""}
+    <section className="rounded-2xl border bg-white p-4 md:p-5">
+      {/* Filters */}
+      <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_repeat(2,1fr)_auto_auto_auto]">
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Symbol</div>
+          <input
+            value={symbol}
+            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+            placeholder="e.g., NVDA"
+            className="w-full rounded-md border px-3 py-2"
+          />
         </div>
-        <div className="text-xs text-gray-500">Range: {start} → {end}</div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Start</div>
+          <input
+            type="date"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            className="w-full rounded-md border px-3 py-2"
+          />
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">End</div>
+          <input
+            type="date"
+            value={end}
+            onChange={(e) => setEnd(e.target.value)}
+            className="w-full rounded-md border px-3 py-2"
+          />
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Type</div>
+          <select
+            value={txnType}
+            onChange={(e) => setTxnType(e.target.value as TxnFilter)}
+            className="w-full rounded-md border px-3 py-2"
+          >
+            <option value="ALL">All</option>
+            <option value="A">Acquired (A)</option>
+            <option value="D">Disposed (D)</option>
+          </select>
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Filter text</div>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Filter by insider/issuer"
+            className="w-full rounded-md border px-3 py-2"
+          />
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Per page</div>
+          <select
+            value={perPage}
+            onChange={(e) => setPerPage(parseInt(e.target.value))}
+            className="w-full rounded-md border px-3 py-2"
+          >
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
+        </div>
+        <div className="flex items-end">
+          <button
+            onClick={fetchTape}
+            disabled={loading}
+            className="w-full md:w-auto rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
+          >
+            {loading ? "Loading…" : "Refresh"}
+          </button>
+        </div>
       </div>
 
-      {/* error */}
-      {err && (
-        <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-          {err}
+      {/* Summary */}
+      <div className="mt-3 text-xs text-gray-600">
+        Source: <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span>{" "}
+        • {filtered.length} trade{filtered.length === 1 ? "" : "s"} shown
+        {meta?.count !== undefined ? ` (fetched: ${meta.count})` : ""}
+      </div>
+
+      {/* Errors */}
+      {error && (
+        <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+          {error}
         </div>
       )}
 
-      {/* empty */}
-      {!loading && !err && rows.length === 0 && (
-        <div className="rounded-xl border bg-white p-6 text-sm text-gray-600">
-          No insider transactions found for the selected filters.
-        </div>
-      )}
+      {/* Table */}
+      <div className="mt-4 overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b bg-gray-50 text-gray-700">
+              <th className="px-3 py-2 text-left">Date (File / Txn)</th>
+              <th className="px-3 py-2 text-left">Insider</th>
+              <th className="px-3 py-2 text-left">Issuer / Symbol</th>
+              <th className="px-3 py-2 text-left">A/D</th>
+              <th className="px-3 py-2 text-right">Shares</th>
+              <th className="px-3 py-2 text-right">Price</th>
+              <th className="px-3 py-2 text-right">Value</th>
+              <th className="px-3 py-2 text-right">Owned After</th>
+              <th className="px-3 py-2 text-left">Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((r, i) => {
+              const value =
+                r.value ??
+                (typeof r.shares === "number" && typeof r.price === "number"
+                  ? r.shares * r.price
+                  : undefined);
+              const adClass = pillColor(r.txnType);
+              return (
+                <tr key={`${r.symbol}-${r.filedAt}-${i}`} className="border-b">
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <div className="text-gray-900">{r.filedAt ?? "—"}</div>
+                    <div className="text-gray-500 text-xs">{r.transDate ?? "—"}</div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="text-gray-900">{r.insider}</div>
+                    {r.insiderTitle && (
+                      <div className="text-gray-500 text-xs">{r.insiderTitle}</div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="text-gray-900">{r.issuer}</div>
+                    <div className="text-gray-500 text-xs">{r.symbol ?? r.cik ?? "—"}</div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adClass}`}>
+                      {r.txnType ?? "—"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right">{fmt(r.shares, 0)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {typeof r.price === "number" ? `$${fmt(r.price)}` : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    {typeof value === "number" ? `$${fmt(value)}` : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right">{fmt(r.ownedAfter, 0)}</td>
+                  <td className="px-3 py-2">
+                    {r.formUrl ? (
+                      <a
+                        href={r.formUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        Open
+                      </a>
+                    ) : r.indexUrl ? (
+                      <a
+                        href={r.indexUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        Index
+                      </a>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
 
-      {/* list */}
-      {rows.map((r) => (
-        <article key={r.id} className="rounded-xl border bg-white p-4">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <Pill kind={r.ad} />
-                <div className="text-sm text-gray-600 truncate">{r.insider}</div>
-              </div>
-              <div className="mt-0.5 font-medium truncate">
-                {r.issuer} <span className="text-gray-400">•</span> {r.symbol || "—"}
-              </div>
-              <div className="text-xs text-gray-500">
-                Txn: {r.transactionDate} <span className="text-gray-300">•</span> Filed: {r.filingDate}
-                {r.formType ? <span> <span className="text-gray-300">•</span> Form {r.formType}</span> : null}
-              </div>
-            </div>
+            {!loading && !error && filtered.length === 0 && (
+              <tr>
+                <td colSpan={9} className="px-3 py-6 text-center text-gray-500">
+                  No trades found for these filters.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
-            <div className="grid grid-cols-3 gap-4 text-right text-sm">
-              <div>
-                <div className="text-gray-500">Shares (A/D)</div>
-                <div className="font-medium">
-                  {fmtNum(r.shares)} <span className="text-gray-400">({r.ad})</span>
-                </div>
-              </div>
-              <div>
-                <div className="text-gray-500">Price</div>
-                <div className="font-medium">${fmtNum(r.price)}</div>
-              </div>
-              <div>
-                <div className="text-gray-500">Value</div>
-                <div className="font-medium">${fmtNum(r.value)}</div>
-              </div>
-            </div>
-
-            <div className="text-right">
-              <div className="text-xs text-gray-500">Beneficially Owned (after)</div>
-              <div className="font-medium">{fmtNum(r.ownedAfter)}</div>
-              {r.documentUrl && (
-                <a
-                  href={r.documentUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-2 inline-flex items-center rounded-full bg-black text-white px-3 py-1.5 text-xs hover:opacity-90"
-                >
-                  Open Form 4
-                </a>
-              )}
-            </div>
-          </div>
-        </article>
-      ))}
-    </div>
+      {/* Pagination */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={page <= 1 || loading}
+          onClick={() => setPage((p) => Math.max(1, p - 1))}
+        >
+          ← Prev
+        </button>
+        <div className="text-sm">Page {page}</div>
+        <button
+          className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={loading || rows.length < perPage}
+          onClick={() => setPage((p) => p + 1)}
+        >
+          Next →
+        </button>
+      </div>
+    </section>
   );
 }
