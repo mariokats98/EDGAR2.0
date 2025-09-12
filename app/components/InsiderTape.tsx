@@ -2,13 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+// ---- types ----
 export type TxnFilter = "ALL" | "A" | "D";
+
 export type InsiderTapeProps = {
   symbol: string;
   start: string;
   end: string;
   txnType: TxnFilter;
-  queryKey?: string;
+  queryKey?: string; // optional cache-buster
 };
 
 type Row = {
@@ -32,6 +34,7 @@ type Row = {
   indexUrl?: string;
 };
 
+// ---- helpers ----
 function pillColor(type?: "A" | "D") {
   return type === "A"
     ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
@@ -40,6 +43,7 @@ function pillColor(type?: "A" | "D") {
     : "bg-gray-50 text-gray-700 ring-gray-200";
 }
 
+// ---- component ----
 export default function InsiderTape({
   symbol,
   start,
@@ -47,17 +51,23 @@ export default function InsiderTape({
   txnType,
   queryKey,
 }: InsiderTapeProps) {
+  // pagination + quick filter
   const [page, setPage] = useState<number>(1);
   const [perPage, setPerPage] = useState<number>(25);
   const [q, setQ] = useState<string>("");
 
+  // data state
   const [loading, setLoading] = useState<boolean>(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [meta, setMeta] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => setPage(1), [symbol, start, end, txnType]);
+  // reset page when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [symbol, start, end, txnType]);
 
+  // fetcher
   async function fetchTape() {
     if (!symbol) {
       setRows([]);
@@ -76,11 +86,13 @@ export default function InsiderTape({
         perPage: String(perPage),
       });
       if (queryKey) params.set("_", queryKey);
-      const r = await fetch(`/api/insider?${params.toString()}`, { cache: "no-store" });
-      const j = await r.json();
-      if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
-      setRows(Array.isArray(j.rows) ? j.rows : []);
-      setMeta(j.meta || null);
+
+      const res = await fetch(`/api/insider?${params.toString()}`, { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok || json?.ok === false) throw new Error(json?.error || "Fetch failed");
+
+      setRows(Array.isArray(json.rows) ? json.rows : []);
+      setMeta(json.meta || null);
     } catch (e: any) {
       setError(e?.message || "Unexpected error");
       setRows([]);
@@ -90,11 +102,13 @@ export default function InsiderTape({
     }
   }
 
+  // refetch on deps
   useEffect(() => {
     fetchTape();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, start, end, txnType, page, perPage, queryKey]);
 
+  // client-side quick filter
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows;
@@ -104,6 +118,7 @@ export default function InsiderTape({
     });
   }, [rows, q]);
 
+  // ---- render ----
   return (
     <section className="rounded-2xl border bg-white p-4 md:p-5">
       <div className="flex flex-wrap items-end gap-3">
@@ -145,8 +160,8 @@ export default function InsiderTape({
       </div>
 
       <p className="mt-2 text-xs text-gray-500">
-        <span className="font-medium">A/D</span>: A = Acquired (e.g., P/Awards), D = Disposed (e.g., S).
-        &nbsp;“Code” shows the raw Form 4 code (P, S, A, D, M, G, F…). Ambiguous codes may leave A/D blank.
+        <span className="font-medium">A/D</span>: A = Acquired (e.g., P/Awards), D = Disposed (e.g., S).&nbsp;
+        “Code” shows the raw Form 4 code (P, S, A, D, M, G, F…). Ambiguous codes may leave A/D blank.
       </p>
 
       {error && (
@@ -173,17 +188,15 @@ export default function InsiderTape({
           </thead>
           <tbody>
             {filtered.map((r, i) => {
-              const adClass = pillColor(r.txnType);
               const value =
                 r.value ??
                 (typeof r.shares === "number" && typeof r.price === "number"
                   ? r.shares * r.price
                   : undefined);
+
               const showPrice =
                 typeof r.price === "number" && r.price > 0
                   ? `$${r.price.toFixed(2)}`
-                  : r.security && /RSU|AWARD|OPTION|DERIVATIVE/i.test(r.security)
-                  ? "—"
                   : "—";
 
               return (
@@ -203,13 +216,20 @@ export default function InsiderTape({
                     <div className="text-gray-500 text-xs">{r.symbol ?? r.cik ?? "—"}</div>
                   </td>
                   <td className="px-3 py-2">
-                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adClass}`}>
+                    <span
+                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${pillColor(
+                        r.txnType
+                      )}`}
+                    >
                       {r.txnType ?? "—"}
                     </span>
                   </td>
                   <td className="px-3 py-2">
                     {r.transactionCode ? (
-                      <span title={r.transactionText || ""} className="text-xs font-mono text-gray-700">
+                      <span
+                        title={r.transactionText || ""}
+                        className="text-xs font-mono text-gray-700"
+                      >
                         {r.transactionCode}
                       </span>
                     ) : (
@@ -228,11 +248,21 @@ export default function InsiderTape({
                   </td>
                   <td className="px-3 py-2">
                     {r.formUrl ? (
-                      <a href={r.formUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                      <a
+                        href={r.formUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
                         Open
                       </a>
                     ) : r.indexUrl ? (
-                      <a href={r.indexUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                      <a
+                        href={r.indexUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
                         Index
                       </a>
                     ) : (
@@ -266,7 +296,7 @@ export default function InsiderTape({
         <button
           className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
           disabled={loading || rows.length < perPage}
-          onClick={() => setPage((p) => p + 1))}
+          onClick={() => setPage((p) => p + 1)}
         >
           Next →
         </button>
