@@ -1,20 +1,14 @@
 // app/components/InsiderTape.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 export type TxnFilter = "ALL" | "A" | "D";
 
-export type InsiderTapeProps = {
-  symbol: string;        // required by your ClientScreener usage
-  start: string;         // YYYY-MM-DD
-  end: string;           // YYYY-MM-DD
-  txnType: TxnFilter;    // "ALL" | "A" | "D"
-  queryKey?: string;     // optional cache-buster
-};
-
 type Row = {
   source: "fmp" | "sec";
+  table?: "I" | "II";        // NEW: Table I or II
+  security?: string;         // NEW: Security title (RSU, Option, Common Stock, etc.)
   insider: string;
   insiderTitle?: string;
   issuer: string;
@@ -31,33 +25,41 @@ type Row = {
   indexUrl?: string;
 };
 
-export default function InsiderTape({
-  symbol,
-  start,
-  end,
-  txnType,
-  queryKey,
-}: InsiderTapeProps): JSX.Element {
-  const [page, setPage] = useState<number>(1);
-  const [perPage, setPerPage] = useState<number>(50);
+export default function InsiderTape() {
+  // ------- filters -------
+  const [symbol, setSymbol] = useState<string>(""); // start EMPTY per your request
+  const [start, setStart] = useState<string>(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return d.toISOString().slice(0, 10);
+  });
+  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [txnType, setTxnType] = useState<TxnFilter>("ALL");
+  const [q, setQ] = useState<string>(""); // free-text filter for insider/issuer
 
+  // ------- pagination -------
+  const [page, setPage] = useState<number>(1);
+  const [perPage, setPerPage] = useState<number>(25);
+
+  // ------- data state -------
   const [loading, setLoading] = useState<boolean>(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<any>(null);
-  const [q, setQ] = useState<string>(""); // client-side text filter
 
-  // refetch when inputs change
+  // reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
-  }, [symbol, start, end, txnType, queryKey]);
+  }, [symbol, start, end, txnType]);
 
   async function fetchTape() {
+    // don’t fetch until user enters a ticker
     if (!symbol.trim()) {
       setRows([]);
       setMeta(null);
       return;
     }
+
     setLoading(true);
     setError(null);
     try {
@@ -77,7 +79,6 @@ export default function InsiderTape({
       setMeta(j.meta || null);
     } catch (e: any) {
       setError(e?.message || "Unexpected error");
-      setRows([]);
     } finally {
       setLoading(false);
     }
@@ -86,13 +87,14 @@ export default function InsiderTape({
   useEffect(() => {
     fetchTape();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, start, end, txnType, page, perPage, queryKey]);
+  }, [symbol, start, end, txnType, page, perPage]);
 
+  // client-side quick search
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows;
     return rows.filter((r) => {
-      const hay = `${r.insider} ${r.insiderTitle ?? ""} ${r.issuer} ${r.symbol ?? ""}`.toLowerCase();
+      const hay = `${r.insider} ${r.insiderTitle ?? ""} ${r.issuer} ${r.symbol ?? ""} ${r.security ?? ""}`.toLowerCase();
       return hay.includes(t);
     });
   }, [rows, q]);
@@ -107,14 +109,53 @@ export default function InsiderTape({
 
   return (
     <section className="rounded-2xl border bg-white p-4 md:p-5">
-      {/* Top controls (client-side text filter + per-page + refresh) */}
-      <div className="grid gap-3 md:grid-cols-[minmax(180px,1fr)_auto_auto]">
+      {/* Filters */}
+      <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_repeat(2,1fr)_auto_auto_auto]">
         <div>
-          <div className="mb-1 text-xs text-gray-700">Filter (local)</div>
+          <div className="mb-1 text-xs text-gray-700">Symbol</div>
+          <input
+            value={symbol}
+            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+            placeholder="e.g., AAPL"
+            className="w-full rounded-md border px-3 py-2 placeholder:text-gray-400"
+          />
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Start</div>
+          <input
+            type="date"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            className="w-full rounded-md border px-3 py-2"
+          />
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">End</div>
+          <input
+            type="date"
+            value={end}
+            onChange={(e) => setEnd(e.target.value)}
+            className="w-full rounded-md border px-3 py-2"
+          />
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Type</div>
+          <select
+            value={txnType}
+            onChange={(e) => setTxnType(e.target.value as TxnFilter)}
+            className="w-full rounded-md border px-3 py-2"
+          >
+            <option value="ALL">All</option>
+            <option value="A">Acquired (A) — like “buys/awards”</option>
+            <option value="D">Disposed (D) — like “sells”</option>
+          </select>
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-gray-700">Filter text</div>
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Filter by insider or issuer…"
+            placeholder="Filter by insider/issuer/security"
             className="w-full rounded-md border px-3 py-2"
           />
         </div>
@@ -133,7 +174,7 @@ export default function InsiderTape({
         <div className="flex items-end">
           <button
             onClick={fetchTape}
-            disabled={loading || !symbol.trim()}
+            disabled={loading}
             className="w-full md:w-auto rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
           >
             {loading ? "Loading…" : "Refresh"}
@@ -141,38 +182,23 @@ export default function InsiderTape({
         </div>
       </div>
 
-      {/* Legend */}
-      <div className="mt-2 text-xs text-gray-500">
-        <span className="font-medium">Legend:</span>{" "}
-        <span className="inline-flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" /> A = Acquired (Buy)
-        </span>{" "}
-        ·{" "}
-        <span className="inline-flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full bg-rose-500" /> D = Disposed (Sell)
-        </span>
-      </div>
-
-      {/* Summary */}
+      {/* Hint & summary */}
       <div className="mt-3 text-xs text-gray-600">
         {symbol.trim() ? (
           <>
-            Symbol: <span className="font-medium">{symbol.toUpperCase()}</span> • Source:{" "}
-            <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span> •{" "}
-            {filtered.length} trade{filtered.length === 1 ? "" : "s"} shown
-            {meta?.count !== undefined ? ` (fetched: ${meta.count})` : ""}
+            Source: <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span>{" "}
+            • {filtered.length} trade{filtered.length === 1 ? "" : "s"} shown
+            {meta?.count !== undefined ? ` (fetched: ${meta.count})` : ""} •
+            <span className="ml-1 text-gray-500">
+              A = acquired (e.g., buy/award), D = disposed (sell).
+            </span>
           </>
         ) : (
-          "Enter a ticker above to load insider activity."
+          <span className="text-gray-500">
+            Enter a ticker above to load insider transactions. A = acquired, D = disposed.
+          </span>
         )}
       </div>
-
-      {/* Error */}
-      {error && (
-        <div className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-rose-700 text-sm">
-          {error}
-        </div>
-      )}
 
       {/* Table */}
       <div className="mt-4 overflow-x-auto">
@@ -182,6 +208,8 @@ export default function InsiderTape({
               <th className="px-3 py-2 text-left">Date (File / Txn)</th>
               <th className="px-3 py-2 text-left">Insider</th>
               <th className="px-3 py-2 text-left">Issuer / Symbol</th>
+              <th className="px-3 py-2 text-left">Security</th>  {/* NEW */}
+              <th className="px-3 py-2 text-left">Table</th>     {/* NEW */}
               <th className="px-3 py-2 text-left">A/D</th>
               <th className="px-3 py-2 text-right">Shares</th>
               <th className="px-3 py-2 text-right">Price</th>
@@ -198,8 +226,9 @@ export default function InsiderTape({
                   ? r.shares * r.price
                   : undefined);
               const adClass = pillColor(r.txnType);
+
               return (
-                <tr key={`${r.symbol}-${r.filedAt}-${i}`} className="border-b">
+                <tr key={`${r.symbol}-${r.filedAt}-${r.security}-${i}`} className="border-b">
                   <td className="px-3 py-2 whitespace-nowrap">
                     <div className="text-gray-900">{r.filedAt ?? "—"}</div>
                     <div className="text-gray-500 text-xs">{r.transDate ?? "—"}</div>
@@ -213,6 +242,12 @@ export default function InsiderTape({
                   <td className="px-3 py-2">
                     <div className="text-gray-900">{r.issuer}</div>
                     <div className="text-gray-500 text-xs">{r.symbol ?? r.cik ?? "—"}</div>
+                  </td>
+                  <td className="px-3 py-2">
+                    {r.security ?? "—"}
+                  </td>
+                  <td className="px-3 py-2">
+                    {r.table ?? "—"}
                   </td>
                   <td className="px-3 py-2">
                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adClass}`}>
@@ -258,10 +293,18 @@ export default function InsiderTape({
               );
             })}
 
-            {!loading && !error && symbol.trim() && filtered.length === 0 && (
+            {!loading && symbol.trim() && filtered.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-3 py-6 text-center text-gray-500">
+                <td colSpan={11} className="px-3 py-6 text-center text-gray-500">
                   No trades found for these filters.
+                </td>
+              </tr>
+            )}
+
+            {!symbol.trim() && (
+              <tr>
+                <td colSpan={11} className="px-3 py-6 text-center text-gray-400">
+                  Enter a ticker above to load insider activity.
                 </td>
               </tr>
             )}
@@ -282,7 +325,7 @@ export default function InsiderTape({
         <button
           className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
           disabled={loading || rows.length < perPage}
-          onClick={() => setPage((p) => p + 1)}
+          onClick={() => setPage((p) => p + 1))}
         >
           Next →
         </button>
