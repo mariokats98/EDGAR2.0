@@ -1,35 +1,44 @@
 // app/api/insider/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
+/**
+ * ENV: set FMP_API_KEY in Vercel Project Settings -> Environment Variables
+ * Example format (FMP): https://financialmodelingprep.com/api/v4/insider-trading?symbol=NVDA&apikey=YOUR_KEY
+ */
 const FMP_API_KEY = process.env.FMP_API_KEY || "";
 
-// ---------- Types ----------
+/* ----------------------------- Types ----------------------------- */
+
 type InsiderRow = {
   source: "fmp" | "sec";
   insider: string;                 // reporting person
   insiderTitle?: string;
   issuer: string;                  // issuer/company name
   symbol?: string;
-  cik?: string;
+  cik?: string;                    // 10-digit, left-padded
   filedAt?: string;                // filing date
   transDate?: string;              // transaction date
-  txnType?: "A" | "D";             // acquired / disposed
+  txnType?: "A" | "D" | "—";       // acquired / disposed (or em dash)
   shares?: number;                 // amount transacted
   price?: number;                  // transaction price
   value?: number;                  // shares * price (if available)
   ownedAfter?: number;             // beneficially owned after txn
-  formUrl?: string;                // direct doc (e.g., XML) when possible
-  indexUrl?: string;               // index.html (safe fallback)
-  _accNo?: string;                 // internal: accession number (normalized)
+  formUrl?: string;                // direct doc (best effort)
+  indexUrl?: string;               // EDGAR index page (best effort)
+
+  // internal helpers to enable enrichment
+  _accNo?: string;                 // accession number (########-##-######)
 };
 
-// ---------- Small helpers ----------
+/* --------------------------- Small helpers --------------------------- */
+
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
 }
 function err(message: string, status = 400) {
   return json({ ok: false, error: message }, { status });
 }
+
 function asNum(x: any): number | undefined {
   if (x === null || x === undefined || x === "") return undefined;
   const n = Number(x);
@@ -42,92 +51,169 @@ function padCIK(cik?: string | number) {
   if (!cik) return undefined;
   return String(cik).padStart(10, "0");
 }
-function cikForUrl(cik?: string | number) {
-  if (!cik) return undefined;
-  // SEC Archives path uses CIK WITHOUT leading zeros
-  return String(parseInt(String(cik), 10));
-}
-function normalizeAcc(acc?: string) {
-  return (acc || "").replace(/-/g, "");
-}
-function buildSecUrls(cik?: string | number, accNoRaw?: string) {
-  const cikPath = cikForUrl(cik);
-  const acc = normalizeAcc(accNoRaw);
-  if (!cikPath || !acc) return {};
-  const base = `https://www.sec.gov/Archives/edgar/data/${cikPath}/${acc}`;
+
+function buildSecUrls(cik?: string, accNoRaw?: string) {
+  const pad = padCIK(cik);
+  const accNo = accNoRaw?.replace(/-/g, "");
+  if (!pad || !accNo) return {};
+  const base = `https://www.sec.gov/Archives/edgar/data/${parseInt(pad, 10)}/${accNo}`;
   return {
-    indexUrl: `${base}/index.html`,
-    formUrl: `${base}/index.html`, // will try to replace with XML after index.json fetch
+    indexUrl: `${base}/index.json`,
+    formUrl: `${base}/index.html`, // often resolves; we try to replace with XML later
   };
 }
 
-// ---------- SEC enrichment (best-effort) ----------
-async function enrichFromSEC(cik?: string | number, accNoRaw?: string) {
-  try {
-    const cikPath = cikForUrl(cik);
-    const acc = normalizeAcc(accNoRaw);
-    if (!cikPath || !acc) return null;
+/* ---------------------- SEC Form 4 XML parse helpers ---------------------- */
 
-    const base = `https://www.sec.gov/Archives/edgar/data/${cikPath}/${acc}`;
-    const idxRes = await fetch(`${base}/index.json`, {
-      headers: { "User-Agent": "Herevna/1.0 (Insider Screener)" },
-      cache: "no-store",
-    });
-    if (!idxRes.ok) {
-      return { indexUrl: `${base}/index.html`, formUrl: `${base}/index.html` };
-    }
-    const idx = await idxRes.json();
-    const items: any[] = idx?.directory?.item || [];
-
-    // Prefer an XML (primary doc)
-    const xmlItem = items.find((it) => /\.xml$/i.test(it.name));
-    const formUrl = xmlItem ? `${base}/${xmlItem.name}` : `${base}/index.html`;
-
-    if (!xmlItem) {
-      return { indexUrl: `${base}/index.html`, formUrl };
-    }
-
-    const xr = await fetch(formUrl, {
-      headers: { "User-Agent": "Herevna/1.0 (Insider Screener)" },
-      cache: "no-store",
-    });
-    if (!xr.ok) {
-      return { indexUrl: `${base}/index.html`, formUrl: `${base}/index.html` };
-    }
-    const xml = await xr.text();
-
-    // Extract FIRST nonDerivativeTransaction block
-    const firstTxn =
-      xml.match(/<nonDerivativeTransaction>[\s\S]*?<\/nonDerivativeTransaction>/i)?.[0] || "";
-    const getVal = (tag: string) =>
-      firstTxn.match(new RegExp(`<${tag}>\\s*<value>([\\s\\S]*?)<\\/value>\\s*<\\/${tag}>`, "i"))?.[1]?.trim();
-
-    const ad = getVal("transactionAcquiredDisposedCode"); // "A" | "D"
-    const shares = Number(getVal("transactionShares") || "");
-    const price = Number(getVal("transactionPricePerShare") || "");
-    const ownedAfter = Number(getVal("sharesOwnedFollowingTransaction") || "");
-    const transDate = getVal("transactionDate");
-
-    const filedAt =
-      xml.match(/<periodOfReport>(.*?)<\/periodOfReport>/i)?.[1]?.trim() ||
-      xml.match(/<documentPeriodEndDate>(.*?)<\/documentPeriodEndDate>/i)?.[1]?.trim();
-
-    return {
-      indexUrl: `${base}/index.html`,
-      formUrl,
-      txnType: ad === "A" || ad === "D" ? (ad as "A" | "D") : undefined,
-      shares: Number.isFinite(shares) ? shares : undefined,
-      price: Number.isFinite(price) ? price : undefined,
-      ownedAfter: Number.isFinite(ownedAfter) ? ownedAfter : undefined,
-      filedAt: filedAt || undefined,
-      transDate: transDate || undefined,
-    };
-  } catch {
-    return null;
-  }
+/** Extracts the first match group for a simple XML tag, returns undefined if missing */
+function tag(text: string, name: string): string | undefined {
+  const re = new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "i");
+  const m = text.match(re);
+  return m?.[1]?.trim();
 }
 
-// ---------- FMP primary ----------
+/** Pull first <nonDerivativeTransaction> block to get main txn values */
+function firstTxnBlock(xml: string): string | undefined {
+  const re = /<nonDerivativeTransaction\b[^>]*>[\s\S]*?<\/nonDerivativeTransaction>/i;
+  const m = xml.match(re);
+  return m?.[0];
+}
+
+/** Try to pick the “best” XML path from EDGAR index.json */
+function selectXmlFromIndex(idx: any): string | undefined {
+  const items: any[] = idx?.directory?.item || [];
+  if (!Array.isArray(items) || items.length === 0) return undefined;
+
+  // Prefer ownership XMLs
+  const ownership = items.find((i) =>
+    /ownership|form4|xml/i.test(String(i?.name || "")) && /\.xml$/i.test(String(i?.name || ""))
+  );
+  if (ownership) return String(ownership?.name);
+
+  // Next: any XML
+  const anyXml = items.find((i) => /\.xml$/i.test(String(i?.name || "")));
+  if (anyXml) return String(anyXml?.name);
+
+  // Otherwise: first HTM as fallback
+  const htm = items.find((i) => /\.(htm|html)$/i.test(String(i?.name || "")));
+  if (htm) return String(htm?.name);
+
+  return undefined;
+}
+
+/** SEC enrichment: fetch index.json and XML, parse A/D, shares, price, ownedAfter, dates, and build URLs */
+async function enrichFromSEC(cik?: string, accNoRaw?: string): Promise<Partial<InsiderRow> | null> {
+  const pad = padCIK(cik);
+  const accNo = accNoRaw?.replace(/-/g, "");
+  if (!pad || !accNo) return null;
+
+  const base = `https://www.sec.gov/Archives/edgar/data/${parseInt(pad, 10)}/${accNo}`;
+  const indexUrl = `${base}/index.json`;
+
+  const idxResp = await fetch(indexUrl, {
+    headers: {
+      "User-Agent": "Herevna/1.0 (+https://herevna.io)",
+      "Accept": "application/json",
+    },
+    cache: "no-store",
+  });
+
+  if (!idxResp.ok) {
+    return {
+      indexUrl,
+      formUrl: `${base}/index.html`,
+    };
+  }
+
+  const idx = await idxResp.json();
+  const xmlName = selectXmlFromIndex(idx);
+  const xmlUrl = xmlName ? `${base}/${xmlName}` : undefined;
+
+  if (!xmlUrl) {
+    return {
+      indexUrl,
+      formUrl: `${base}/index.html`,
+    };
+  }
+
+  const xmlResp = await fetch(xmlUrl, {
+    headers: { "User-Agent": "Herevna/1.0 (+https://herevna.io)" },
+    cache: "no-store",
+  });
+  if (!xmlResp.ok) {
+    return {
+      indexUrl,
+      formUrl: `${base}/index.html`,
+    };
+  }
+
+  const xml = await xmlResp.text();
+
+  // Try periodOfReport for filed/txn date
+  const filedAt = tag(xml, "periodOfReport") || undefined;
+
+  // Pull first nonDerivativeTransaction
+  const block = firstTxnBlock(xml) ?? xml;
+
+  // A/D code
+  const txnCodeFromXml =
+    tag(block, "transactionAcquiredDisposedCode") ||
+    tag(block, "transactionAcquiredDisposed") ||
+    undefined;
+
+  let txnType: "A" | "D" | "—" | undefined;
+  const codeUp = (txnCodeFromXml || "").toUpperCase();
+  if (codeUp.startsWith("A")) txnType = "A";
+  else if (codeUp.startsWith("D")) txnType = "D";
+  else txnType = "—";
+
+  // Shares and price
+  const shares =
+    asNum(tag(block, "transactionShares")) ??
+    asNum(tag(block, "transactionShareAmount")) ??
+    asNum(tag(block, "transactionAmount"));
+
+  const price =
+    asNum(tag(block, "transactionPricePerShare")) ??
+    asNum(tag(block, "pricePerShare")) ??
+    asNum(tag(block, "transactionPrice"));
+
+  // Owned after
+  const ownedAfter =
+    asNum(tag(block, "sharesOwnedFollowingTransaction")) ??
+    asNum(tag(xml, "sharesOwnedFollowingTransaction"));
+
+  // Transaction date (usually <transactionDate><value>YYYY-MM-DD</value></transactionDate>)
+  const txnDate =
+    tag(block, "transactionDate") ||
+    tag(xml, "transactionDate") ||
+    undefined;
+
+  return {
+    indexUrl,
+    formUrl: xmlUrl, // direct XML (usually best for evidence)
+    filedAt,
+    transDate: txnDate,
+    txnType,
+    shares,
+    price,
+    ownedAfter,
+  };
+}
+
+/* ---------------------------- FMP primary ---------------------------- */
+
+function normalizeTxnType(raw: any): "A" | "D" | undefined {
+  const s = (raw ?? "").toString().toUpperCase();
+  // Map common FMP fields / words
+  if (/\bA\b/.test(s) || /ACQ|PURCH|BUY/.test(s)) return "A";
+  if (/\bD\b/.test(s) || /DISP|SALE|SELL/.test(s)) return "D";
+  // sometimes FMP uses letter codes like "A", "D", or "M", "S" etc.
+  if (s.startsWith("A")) return "A";
+  if (s.startsWith("D")) return "D";
+  return undefined;
+}
+
 async function fetchFromFMP(params: {
   symbol?: string;
   start?: string;
@@ -136,11 +222,9 @@ async function fetchFromFMP(params: {
   page?: number;
   perPage?: number;
 }) {
-  const { symbol, start, end, txnType = "ALL", page = 1, perPage = 50 } = params;
+  if (!FMP_API_KEY) return { rows: [] as InsiderRow[], meta: { source: "fmp", note: "missing FMP key" } };
 
-  if (!FMP_API_KEY) {
-    return { rows: [], meta: { source: "fmp", note: "missing FMP key" } };
-  }
+  const { symbol, start, end, txnType = "ALL", page = 1, perPage = 50 } = params;
 
   const url = new URL("https://financialmodelingprep.com/api/v4/insider-trading");
   if (symbol) url.searchParams.set("symbol", symbol.toUpperCase());
@@ -155,54 +239,54 @@ async function fetchFromFMP(params: {
     cache: "no-store",
   });
   if (!r.ok) throw new Error(`FMP failed ${r.status}`);
-  const arr = await r.json();
-  if (!Array.isArray(arr)) return { rows: [], meta: { source: "fmp", count: 0 } };
 
-  // Type filter (A/D) if requested
+  const arr = await r.json();
+  if (!Array.isArray(arr)) return { rows: [] as InsiderRow[], meta: { source: "fmp", count: 0 } };
+
+  // Filter by A/D if requested
   let filtered = arr as any[];
   if (txnType !== "ALL") {
     filtered = filtered.filter((t) => {
-      const acqDisp =
-        t.acquisitionOrDisposition ||
-        t.transactionType ||
-        t.type ||
-        t.ad ||
-        t.transactionCode ||
+      const raw =
+        t.transactionCode ??
+        t.acquisitionOrDisposition ??
+        t.transactionType ??
+        t.type ??
+        t.ad ??
         "";
-      const code = (acqDisp || "").toString().toUpperCase();
-      if (txnType === "A") return code.startsWith("A") || /PURCHASE|ACQ/.test(code);
-      if (txnType === "D") return code.startsWith("D") || /SALE|DISP/.test(code);
-      return true;
+      const norm = normalizeTxnType(raw);
+      return txnType === "A" ? norm === "A" : norm === "D";
     });
   }
 
   const rows: InsiderRow[] = filtered.map((t) => {
-    const cik = t.cik || t.issuerCik || t.cikIssuer;
-    const acc = t.accNo || t.accessionNumber || t.accession;
-    const urls = buildSecUrls(cik, acc);
+    const cikRaw = t.cik || t.issuerCik || t.cikIssuer || t.cikNumber;
+    const accRaw = t.accNo || t.accessionNumber || t.accession || t.accessionNumberLatest;
+    const { formUrl, indexUrl } = buildSecUrls(cikRaw, accRaw);
 
     const shares =
       asNum(t.shares) ??
       asNum(t.securitiesTransacted) ??
       asNum(t.amountOfSecuritiesTransacted);
-    const price = asNum(t.price) ?? asNum(t.transactionPrice);
+
+    const price =
+      asNum(t.price) ??
+      asNum(t.transactionPrice) ??
+      asNum(t.transactionPricePerShare);
+
     const ownedAfter =
       asNum(t.sharesOwnedFollowingTransaction) ??
       asNum(t.securitiesOwnedFollowingTransaction);
 
-    const acqDisp =
-      t.acquisitionOrDisposition ||
-      t.transactionType ||
-      t.type ||
-      t.ad ||
-      t.transactionCode ||
-      "";
-    let txnTypeNorm: "A" | "D" | undefined;
-    const code = (acqDisp || "").toString().toUpperCase();
-    if (code.startsWith("A") || /PURCHASE|ACQ/.test(code)) txnTypeNorm = "A";
-    else if (code.startsWith("D") || /SALE|DISP/.test(code)) txnTypeNorm = "D";
+    const txnTypeNorm = normalizeTxnType(
+      t.transactionCode ??
+        t.acquisitionOrDisposition ??
+        t.transactionType ??
+        t.type ??
+        t.ad
+    );
 
-    const value = shares && price ? shares * price : undefined;
+    const val = shares && price ? shares * price : undefined;
 
     return {
       source: "fmp",
@@ -214,40 +298,49 @@ async function fetchFromFMP(params: {
         cleanStr(t.issuer) ||
         "—",
       symbol: cleanStr(t.ticker) || cleanStr(t.symbol),
-      cik: padCIK(cik),
-      filedAt: cleanStr(t.filingDate),
-      transDate: cleanStr(t.transactionDate) || cleanStr(t.transactionDate2),
-      txnType: txnTypeNorm,
+      cik: cikRaw ? padCIK(cikRaw) : undefined,
+      filedAt: cleanStr(t.filingDate) || cleanStr(t.acceptedDate),
+      transDate: cleanStr(t.transactionDate) || cleanStr(t.transactionDate2) || cleanStr(t.date),
+      txnType: txnTypeNorm ?? "—",
       shares,
       price,
-      value,
+      value: val,
       ownedAfter,
-      formUrl: cleanStr(t.link) || urls.formUrl,
-      indexUrl: urls.indexUrl,
-      _accNo: cleanStr(acc),
+      formUrl: cleanStr(t.link) || formUrl,
+      indexUrl,
+      _accNo: cleanStr(accRaw),
     };
   });
 
-  return { rows, meta: { source: "fmp", count: rows.length, page, perPage } };
+  return {
+    rows,
+    meta: { source: "fmp", count: rows.length, page, perPage },
+  };
 }
 
-// ---------- SEC fallback (pointer) ----------
-async function fetchFromSECsymbolOnly(symbol?: string) {
-  if (!symbol) return { rows: [], meta: { source: "sec", note: "no symbol" } };
+/* ------------------------------ SEC fallback ------------------------------ */
+
+async function secFallbackPointer(symbol?: string) {
+  if (!symbol) return { rows: [] as InsiderRow[], meta: { source: "sec", note: "no symbol" } };
+
   const q = encodeURIComponent(`${symbol} form 4`);
-  const searchUrl = `https://www.sec.gov/edgar/search/#/category=custom&forms=4&q=${q}`;
+  const url = `https://www.sec.gov/edgar/search/#/category=custom&forms=4&q=${q}`;
+
   const row: InsiderRow = {
     source: "sec",
     insider: "—",
     issuer: "—",
     symbol,
-    formUrl: searchUrl,
-    indexUrl: searchUrl,
+    txnType: "—",
+    formUrl: url,
+    indexUrl: url,
   };
+
   return { rows: [row], meta: { source: "sec", note: "search pointer" } };
 }
 
-// ---------- Handler ----------
+/* --------------------------------- GET --------------------------------- */
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -255,61 +348,60 @@ export async function GET(req: NextRequest) {
     const start = cleanStr(searchParams.get("start") || "");
     const end = cleanStr(searchParams.get("end") || "");
     const txnTypeRaw = (searchParams.get("txnType") || "ALL").toUpperCase();
-    const txnType: "ALL" | "A" | "D" = (["A", "D"].includes(txnTypeRaw) ? txnTypeRaw : "ALL") as any;
+    const txnType = (["A", "D"].includes(txnTypeRaw) ? txnTypeRaw : "ALL") as "ALL" | "A" | "D";
     const page = Number(searchParams.get("page") || "1") || 1;
     const perPage = Math.min(200, Number(searchParams.get("perPage") || "50") || 50);
 
-    // Require a symbol for server work
-    if (!symbol) return json({ ok: true, rows: [], meta: { source: "none", count: 0 } });
-
-    // 1) FMP PRIMARY
+    // 1) FMP primary
     const fmp = await fetchFromFMP({ symbol, start, end, txnType, page, perPage });
     let rows = fmp.rows;
 
-    // 2) Enrich missing fields from SEC XML where possible (only when we have cik+acc)
-    const enriched = await Promise.all(
-      rows.map(async (r) => {
-        if (r.source !== "fmp") return r;
-        const hasAll = r.shares && r.price && r.ownedAfter && r.formUrl;
-        if (hasAll) return r;
-        const extra = await enrichFromSEC(r.cik, r._accNo);
-        if (!extra) return r;
-
-        const value =
-          r.value ??
-          (Number.isFinite(r.shares) && Number.isFinite(r.price)
-            ? (r.shares as number) * (r.price as number)
-            : (Number.isFinite(extra.shares) && Number.isFinite(extra.price)
-                ? (extra.shares as number) * (extra.price as number)
-                : undefined));
-
-        return {
-          ...r,
-          formUrl: r.formUrl || extra.formUrl || extra.indexUrl,
-          indexUrl: r.indexUrl || extra.indexUrl,
-          txnType: r.txnType || extra.txnType,
-          shares: r.shares ?? extra.shares,
-          price: r.price ?? extra.price,
-          ownedAfter: r.ownedAfter ?? extra.ownedAfter,
-          filedAt: r.filedAt || extra.filedAt,
-          transDate: r.transDate || extra.transDate,
-          value,
-        };
-      })
-    );
-
+    // 2) Enrich each FMP row with SEC XML if we have CIK + accession
+    //    (limit concurrent calls to be polite; simple window of 8)
+    const window = 8;
+    const enriched: InsiderRow[] = [];
+    for (let i = 0; i < rows.length; i += window) {
+      const batch = rows.slice(i, i + window).map(async (r) => {
+        if (!r.cik || !r._accNo) return r;
+        try {
+          const extra = await enrichFromSEC(r.cik, r._accNo);
+          if (!extra) return r;
+          const merged: InsiderRow = {
+            ...r,
+            // Prefer explicit SEC links when available
+            formUrl: extra.formUrl || r.formUrl,
+            indexUrl: extra.indexUrl || r.indexUrl,
+            // Ensure A/D always present
+            txnType: r.txnType && r.txnType !== "—" ? r.txnType : (extra.txnType as "A" | "D" | "—"),
+            shares: r.shares ?? extra.shares,
+            price: r.price ?? extra.price,
+            ownedAfter: r.ownedAfter ?? extra.ownedAfter,
+            filedAt: r.filedAt || extra.filedAt,
+            transDate: r.transDate || extra.transDate,
+          };
+          merged.value =
+            typeof merged.value === "number"
+              ? merged.value
+              : typeof merged.shares === "number" && typeof merged.price === "number"
+              ? merged.shares * merged.price
+              : undefined;
+          return merged;
+        } catch {
+          return r; // keep original row if SEC call fails
+        }
+      });
+      const got = await Promise.all(batch);
+      enriched.push(...got);
+    }
     rows = enriched;
 
-    // If still nothing, give a SEC pointer so user can click
-    if (!rows.length) {
-      const sec = await fetchFromSECsymbolOnly(symbol);
-      return json({ ok: true, rows: sec.rows, meta: sec.meta });
+    if (rows.length > 0) {
+      return json({ ok: true, rows, meta: fmp.meta });
     }
 
-    // Clean internal keys
-    rows = rows.map(({ _accNo, ...rest }) => rest);
-
-    return json({ ok: true, rows, meta: fmp.meta });
+    // 3) SEC pointer fallback if FMP returned nothing
+    const sec = await secFallbackPointer(symbol);
+    return json({ ok: true, rows: sec.rows, meta: sec.meta });
   } catch (e: any) {
     return err(e?.message || "Unexpected error", 500);
   }
