@@ -2,80 +2,58 @@
 "use client";
 
 import { useState } from "react";
-// If InsiderTape.tsx is in app/components/InsiderTape.tsx use this:
-import InsiderTape from "../components/InsiderTape";
-// If you actually put it at /components/InsiderTape.tsx instead, then use:
-// import InsiderTape from "../../components/InsiderTape";
+import InsiderTape from "../components/InsiderTape"; // << correct default import
 
 export default function ScreenerPage() {
-  const today = new Date().toISOString().slice(0, 10);
-  const thirtyAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
-
   const [symbol, setSymbol] = useState("NVDA");
-  const [start, setStart] = useState(thirtyAgo);
-  const [end, setEnd] = useState(today);
+  const [start, setStart] = useState("2024-01-01");
+  const [end, setEnd] = useState("");
   const [txnType, setTxnType] = useState<"ALL" | "A" | "D">("ALL");
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-white to-slate-50 p-6">
-      <h1 className="text-2xl font-bold mb-4">Insider Transactions</h1>
+    <main className="mx-auto max-w-6xl px-4 py-8">
+      <h1 className="text-2xl font-semibold">Insider Tape</h1>
 
-      {/* Filter controls */}
-      <div className="mb-6 flex flex-wrap gap-3 items-end">
-        <div>
-          <label className="block text-sm font-medium">Symbol / Ticker</label>
+      {/* Controls */}
+      <section className="mt-4 rounded-2xl border bg-white p-4">
+        <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_1fr_1fr]">
           <input
-            type="text"
+            className="w-full border rounded-md px-3 py-2"
+            placeholder="Ticker (e.g., NVDA)"
             value={symbol}
             onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-            className="mt-1 block w-32 rounded border px-2 py-1 text-sm"
-            placeholder="AAPL"
           />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium">Start Date</label>
           <input
             type="date"
+            className="w-full border rounded-md px-3 py-2"
             value={start}
             onChange={(e) => setStart(e.target.value)}
-            className="mt-1 block rounded border px-2 py-1 text-sm"
           />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium">End Date</label>
           <input
             type="date"
+            className="w-full border rounded-md px-3 py-2"
             value={end}
             onChange={(e) => setEnd(e.target.value)}
-            className="mt-1 block rounded border px-2 py-1 text-sm"
           />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium">Txn Type</label>
           <select
+            className="w-full border rounded-md px-3 py-2"
             value={txnType}
             onChange={(e) => setTxnType(e.target.value as "ALL" | "A" | "D")}
-            className="mt-1 block rounded border px-2 py-1 text-sm"
           >
             <option value="ALL">All</option>
-            <option value="A">Buy (A)</option>
-            <option value="D">Sell (D)</option>
+            <option value="A">Acquired (A)</option>
+            <option value="D">Disposed (D)</option>
           </select>
         </div>
-      </div>
+      </section>
 
-      {/* Insider transactions list */}
+      {/* List */}
       <InsiderTape
         symbol={symbol}
-        start={start}
-        end={end}
+        start={start || undefined}
+        end={end || undefined}
         txnType={txnType}
-        queryKey={`${symbol}-${start}-${end}-${txnType}`}
+        queryKey={`${symbol}|${start}|${end}|${txnType}`}
       />
     </main>
   );
