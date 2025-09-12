@@ -14,20 +14,18 @@ type Row = {
   cik?: string;
   filedAt?: string;
   transDate?: string;
-  txnType?: "A" | "D";      // inferred Acquired/Disposed
-  code?: string;            // raw Form 4 transaction code (P, S, M, etc.) if available
+  txnType?: "A" | "D";
+  code?: string;            // raw Form 4 transaction code (P, S, M, etc.)
   shares?: number;
   price?: number;
   value?: number;
   ownedAfter?: number;
   formUrl?: string;
   indexUrl?: string;
-  // security/table — from parsed form details (optional)
-  security?: string;        // e.g., "Common Stock", "Stock Option (right to buy)"
-  table?: "I" | "II";       // Table I or Table II
+  security?: string;        // "Common Stock", "Stock Option (right to buy)", etc.
+  table?: "I" | "II";       // which table the row came from (if known)
 };
 
-// Friendly formatter helpers
 function fmtNum(n?: number, opts?: Intl.NumberFormatOptions) {
   if (typeof n !== "number" || !Number.isFinite(n)) return "—";
   return n.toLocaleString(undefined, opts);
@@ -45,8 +43,8 @@ function pillClass(type?: "A" | "D") {
 }
 
 export default function InsiderTape() {
-  // ------- filters (owned here; no props) -------
-  const [symbol, setSymbol] = useState<string>(""); // user types it
+  // filters (internal state)
+  const [symbol, setSymbol] = useState<string>(""); // user types to begin
   const [start, setStart] = useState<string>(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
@@ -54,7 +52,7 @@ export default function InsiderTape() {
   });
   const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
-  const [q, setQ] = useState<string>(""); // free-text filter for insider/issuer
+  const [q, setQ] = useState<string>("");
 
   // pagination
   const [page, setPage] = useState<number>(1);
@@ -66,7 +64,6 @@ export default function InsiderTape() {
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<any>(null);
 
-  // Reset to page 1 when key filters change
   useEffect(() => {
     setPage(1);
   }, [symbol, start, end, txnType]);
@@ -108,7 +105,6 @@ export default function InsiderTape() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, start, end, txnType, page, perPage]);
 
-  // client-side quick filter (insider / issuer / symbol)
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows;
@@ -120,7 +116,6 @@ export default function InsiderTape() {
 
   return (
     <section className="rounded-2xl border bg-white p-4 md:p-5">
-      {/* Top bar: source + inline tips + compact refresh */}
       <div className="flex flex-wrap items-end gap-3">
         <div className="text-xs text-gray-600">
           Source: <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span>{" "}
@@ -209,14 +204,12 @@ export default function InsiderTape() {
         </div>
       </div>
 
-      {/* Error */}
       {error && (
         <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
           {error}
         </div>
       )}
 
-      {/* Table */}
       <div className="mt-4 overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
@@ -250,47 +243,34 @@ export default function InsiderTape() {
                     <div className="text-gray-900">{r.filedAt ?? "—"}</div>
                     <div className="text-gray-500 text-xs">{r.transDate ?? "—"}</div>
                   </td>
-
                   <td className="px-3 py-2">
                     <div className="text-gray-900">{r.insider}</div>
                     {r.insiderTitle && (
                       <div className="text-gray-500 text-xs">{r.insiderTitle}</div>
                     )}
                   </td>
-
                   <td className="px-3 py-2">
                     <div className="text-gray-900">{r.issuer}</div>
                     <div className="text-gray-500 text-xs">{r.symbol ?? r.cik ?? "—"}</div>
                   </td>
-
-                  {/* Code (raw form code like P, S, M, etc.) */}
                   <td className="px-3 py-2">
                     <span className="inline-flex items-center rounded-full bg-gray-50 px-2 py-0.5 text-xs text-gray-700 ring-1 ring-gray-200">
                       {r.code ?? "—"}
                     </span>
                   </td>
-
-                  {/* A/D (inferred acquired/ disposed) */}
                   <td className="px-3 py-2">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${pillClass(
-                        r.txnType
-                      )}`}
-                    >
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${pillClass(r.txnType)}`}>
                       {r.txnType ?? "—"}
                     </span>
                   </td>
-
                   <td className="px-3 py-2 text-right">{fmtNum(r.shares)}</td>
                   <td className="px-3 py-2 text-right">{fmtUsd(r.price)}</td>
                   <td className="px-3 py-2 text-right">{fmtUsd(value)}</td>
                   <td className="px-3 py-2 text-right">{fmtNum(r.ownedAfter)}</td>
-
                   <td className="px-3 py-2">
                     <div className="text-gray-900">{r.security ?? "—"}</div>
                   </td>
                   <td className="px-3 py-2">{r.table ?? "—"}</td>
-
                   <td className="px-3 py-2">
                     {r.formUrl ? (
                       <a
