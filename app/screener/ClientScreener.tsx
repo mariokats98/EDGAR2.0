@@ -1,123 +1,156 @@
-// app/screener/ClientScreener.tsx
 "use client";
 
-import { useSearchParams, useRouter } from "next/navigation";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import InsiderTape from "../components/InsiderTape";
-import CryptoDashboard from "../components/CryptoDashboard";
+import CryptoDashboard from "../components/CryptoDashboard"; // keep if you have this component
 
 type TabKey = "insider" | "crypto";
-
-function Tabs({
-  current,
-  onChange,
-}: {
-  current: TabKey;
-  onChange: (t: TabKey) => void;
-}) {
-  const base =
-    "inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm border transition";
-  const active =
-    "bg-black text-white border-black";
-  const idle = "bg-white text-gray-900 hover:bg-gray-50";
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      <button
-        className={`${base} ${current === "insider" ? active : idle}`}
-        onClick={() => onChange("insider")}
-      >
-        Insider Activity
-      </button>
-      <button
-        className={`${base} ${current === "crypto" ? active : idle}`}
-        onClick={() => onChange("crypto")}
-      >
-        Crypto
-      </button>
-    </div>
-  );
-}
+type TxnFilter = "ALL" | "A" | "D";
 
 export default function ClientScreener() {
-  const search = useSearchParams();
-  const router = useRouter();
+  const [tab, setTab] = useState<TabKey>("insider");
 
-  // url state
-  const tab = (search.get("tab") as TabKey) || "insider";
-  const symbol = search.get("symbol") || "";
-  const start = search.get("start") || new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
-  const end = search.get("end") || new Date().toISOString().slice(0, 10);
-  const txnType = (search.get("txnType") as "ALL" | "A" | "D") || "ALL";
+  // ------- filters used by Insider tab -------
+  const [symbol, setSymbol] = useState("NVDA");
+  const [start, setStart] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return d.toISOString().slice(0, 10);
+  });
+  const [end, setEnd] = useState(new Date().toISOString().slice(0, 10));
+  const [txnType, setTxnType] = useState<TxnFilter>("ALL");
+  const [qkey, setQkey] = useState(() => `${Date.now()}`);
 
-  const setParam = (k: string, v: string) => {
-    const s = new URLSearchParams(search.toString());
-    if (v) s.set(k, v);
-    else s.delete(k);
-    router.replace(`?${s.toString()}`);
-  };
+  // whenever inputs change, bump a queryKey to force data refresh in the child
+  useEffect(() => {
+    setQkey(`${symbol}|${start}|${end}|${txnType}|${Date.now()}`);
+  }, [symbol, start, end, txnType]);
 
-  const onTabChange = (t: TabKey) => setParam("tab", t);
-
-  const queryKey = useMemo(
-    () => [symbol, start, end, txnType].join("|"),
-    [symbol, start, end, txnType]
+  const tabs = useMemo(
+    () => [
+      { id: "insider", label: "Insider Activity" },
+      { id: "crypto", label: "Crypto Stats" },
+    ] as const,
+    []
   );
 
   return (
-    <section className="mt-4">
+    <main className="mx-auto max-w-6xl px-4 py-8">
+      <h1 className="text-2xl font-semibold">Screener</h1>
+
       {/* Tabs */}
-      <div className="mb-4">
-        <Tabs current={tab} onChange={onTabChange} />
+      <div className="mt-4 inline-flex rounded-lg border bg-white p-1">
+        {tabs.map((t) => {
+          const active = tab === (t.id as TabKey);
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id as TabKey)}
+              className={[
+                "px-3 py-1.5 text-sm rounded-md",
+                active ? "bg-black text-white" : "text-gray-700 hover:bg-gray-50",
+              ].join(" ")}
+            >
+              {t.label}
+            </button>
+          );
+        })}
       </div>
 
-      {/* Filters (only visible on Insider tab) */}
+      {/* INSIDER TAB */}
       {tab === "insider" && (
-        <div className="mb-4 grid gap-3 md:grid-cols-[1fr_1fr_1fr_1fr]">
-          <input
-            className="w-full border rounded-md px-3 py-2 text-sm"
-            placeholder="Ticker (optional)"
-            value={symbol}
-            onChange={(e) => setParam("symbol", e.target.value.toUpperCase())}
-          />
-          <input
-            type="date"
-            className="w-full border rounded-md px-3 py-2 text-sm"
-            value={start}
-            onChange={(e) => setParam("start", e.target.value)}
-          />
-          <input
-            type="date"
-            className="w-full border rounded-md px-3 py-2 text-sm"
-            value={end}
-            onChange={(e) => setParam("end", e.target.value)}
-          />
-          <select
-            className="w-full border rounded-md px-3 py-2 text-sm"
-            value={txnType}
-            onChange={(e) => setParam("txnType", e.target.value)}
-          >
-            <option value="ALL">All Txns</option>
-            <option value="A">Acquisitions (A)</option>
-            <option value="D">Dispositions (D)</option>
-          </select>
-        </div>
-      )}
+        <section className="mt-6 space-y-4">
+          {/* Filter bar (single source of truth) */}
+          <div className="rounded-2xl border bg-white p-4 md:p-5">
+            <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_repeat(2,1fr)_auto]">
+              {/* Symbol */}
+              <div>
+                <div className="mb-1 text-xs text-gray-700">Symbol</div>
+                <input
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+                  placeholder="e.g., NVDA"
+                  className="w-full rounded-md border px-3 py-2"
+                />
+                {/* subtle, greyed-out examples */}
+                <div className="mt-1 text-[11px] text-gray-400">
+                  Try: <span className="font-mono">AAPL</span>,{" "}
+                  <span className="font-mono">MSFT</span>,{" "}
+                  <span className="font-mono">BRK.B</span>,{" "}
+                  <span className="font-mono">TSLA</span>
+                </div>
+              </div>
 
-      {/* Panels */}
-      <div className="rounded-2xl border bg-white p-4">
-        {tab === "insider" ? (
+              {/* Start */}
+              <div>
+                <div className="mb-1 text-xs text-gray-700">Start</div>
+                <input
+                  type="date"
+                  value={start}
+                  onChange={(e) => setStart(e.target.value)}
+                  className="w-full rounded-md border px-3 py-2"
+                />
+              </div>
+
+              {/* End */}
+              <div>
+                <div className="mb-1 text-xs text-gray-700">End</div>
+                <input
+                  type="date"
+                  value={end}
+                  onChange={(e) => setEnd(e.target.value)}
+                  className="w-full rounded-md border px-3 py-2"
+                />
+              </div>
+
+              {/* Type (A/D) */}
+              <div>
+                <div className="mb-1 text-xs text-gray-700">Type</div>
+                <select
+                  value={txnType}
+                  onChange={(e) => setTxnType(e.target.value as TxnFilter)}
+                  className="w-full rounded-md border px-3 py-2"
+                >
+                  <option value="ALL">All</option>
+                  <option value="A">Acquired (A)</option>
+                  <option value="D">Disposed (D)</option>
+                </select>
+                {/* friendly reminder what A/D mean */}
+                <div className="mt-1 text-[11px] text-gray-500">
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+                    <span className="font-medium">A = Acquired</span>{" "}
+                    <span className="text-gray-400">— like a buy</span>
+                  </span>
+                  <span className="mx-2 text-gray-300">•</span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block h-2 w-2 rounded-full bg-rose-500" />
+                    <span className="font-medium">D = Disposed</span>{" "}
+                    <span className="text-gray-400">— like a sell</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Insider list (no duplicate filters inside) */}
           <InsiderTape
             symbol={symbol.trim()}
             start={start}
             end={end}
-            txnType={txnType as any}
-            queryKey={queryKey}
+            txnType={txnType}
+            queryKey={qkey}
           />
-        ) : (
+        </section>
+      )}
+
+      {/* CRYPTO TAB */}
+      {tab === "crypto" && (
+        <section className="mt-6">
+          {/* Your CryptoDashboard component handles its own UI */}
           <CryptoDashboard />
-        )}
-      </div>
-    </section>
+        </section>
+      )}
+    </main>
   );
 }
