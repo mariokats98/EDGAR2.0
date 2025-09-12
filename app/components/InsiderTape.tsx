@@ -1,7 +1,7 @@
 // app/components/InsiderTape.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 export type TxnFilter = "ALL" | "A" | "D";
 
@@ -26,7 +26,7 @@ type Row = {
 };
 
 export default function InsiderTape() {
-  // filters
+  // ------- filters -------
   const [symbol, setSymbol] = useState<string>("");
   const [start, setStart] = useState<string>(() => {
     const d = new Date();
@@ -35,18 +35,19 @@ export default function InsiderTape() {
   });
   const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
-  const [q, setQ] = useState<string>("");
+  const [q, setQ] = useState<string>(""); // free-text filter for insider/issuer/security
 
-  // pagination
+  // ------- pagination -------
   const [page, setPage] = useState<number>(1);
   const [perPage, setPerPage] = useState<number>(25);
 
-  // data
+  // ------- data state -------
   const [loading, setLoading] = useState<boolean>(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<any>(null);
 
+  // Reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
   }, [symbol, start, end, txnType]);
@@ -68,7 +69,8 @@ export default function InsiderTape() {
         page: String(page),
         perPage: String(perPage),
       });
-      const r = await fetch(`/api/insider?${params.toString()}`, { cache: "no-store" });
+      const url = `/api/insider?${params.toString()}`;
+      const r = await fetch(url, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
       setRows(Array.isArray(j.rows) ? j.rows : []);
@@ -87,6 +89,7 @@ export default function InsiderTape() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, start, end, txnType, page, perPage]);
 
+  // client-side quick search
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows;
