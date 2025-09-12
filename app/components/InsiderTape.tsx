@@ -1,6 +1,7 @@
+// app/components/InsiderTape.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 // ---- types ----
 export type TxnFilter = "ALL" | "A" | "D";
@@ -23,19 +24,14 @@ type Row = {
   filedAt?: string;
   transDate?: string;
   txnType?: "A" | "D";
-  transactionCode?: string;   // <-- UI uses this
-  transactionText?: string;   // <-- tooltip/description
+  transactionCode?: string;   // raw Form 4 code (P, S, A, D, M, G, F…)
+  transactionText?: string;   // human text if available
   shares?: number;
   price?: number;
   value?: number;
   ownedAfter?: number;
-  security?: string;
   formUrl?: string;
   indexUrl?: string;
-
-  // tolerant of server returning `code` instead:
-  code?: string;
-  description?: string;
 };
 
 // ---- helpers ----
@@ -47,10 +43,18 @@ function pillColor(type?: "A" | "D") {
     : "bg-gray-50 text-gray-700 ring-gray-200";
 }
 
-function deriveADFromCode(code?: string): "A" | "D" | undefined {
-  const c = (code || "").toUpperCase();
-  if (c === "P" || c === "M") return "A"; // Purchase / Option exercise
-  if (c === "S" || c === "G" || c === "F") return "D"; // Sale / Gift / Tax Withhold
+// Map raw Form 4 code to A/D (fallback if API didn’t set txnType)
+function mapCodeToAD(code?: string): "A" | "D" | undefined {
+  if (!code) return undefined;
+  const c = code.trim().toUpperCase();
+
+  // Common rules:
+  // P (open market purchase), A (grant/award), M (option exercise) → A (acquire)
+  // S (sale), F (withholding for taxes), G (gift – generally disposition) → D
+  if (/^(P|A|M)$/.test(c)) return "A";
+  if (/^(S|F|G)$/.test(c)) return "D";
+
+  // Codes like C, X, H, I, J… are ambiguous → leave undefined
   return undefined;
 }
 
@@ -73,7 +77,7 @@ export default function InsiderTape({
   const [meta, setMeta] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // reset page when filters change
+  // reset page when inputs change
   useEffect(() => {
     setPage(1);
   }, [symbol, start, end, txnType]);
@@ -102,30 +106,10 @@ export default function InsiderTape({
       const json = await res.json();
       if (!res.ok || json?.ok === false) throw new Error(json?.error || "Fetch failed");
 
-      const raw: Row[] = Array.isArray(json.rows) ? json.rows : [];
-
-      // 🔧 Normalize fields so UI is always filled:
-      const normalized: Row[] = raw.map((r) => {
-        const transactionCode = r.transactionCode ?? r.code; // server may send `code`
-        const txnTypeNorm = r.txnType ?? deriveADFromCode(transactionCode);
-        const transactionText =
-          r.transactionText ?? r.description ?? r.security ?? undefined;
-
-        // keep computed value as fallback
-        const value =
-          typeof r.value === "number"
-            ? r.value
-            : typeof r.shares === "number" && typeof r.price === "number"
-            ? r.shares * r.price
-            : undefined;
-
-        return {
-          ...r,
-          transactionCode,
-          txnType: txnTypeNorm,
-          transactionText,
-          value,
-        };
+      // Normalize rows: ensure txnType is filled from Code if missing
+      const normalized: Row[] = (Array.isArray(json.rows) ? json.rows : []).map((r: Row) => {
+        const derived = r.txnType ?? mapCodeToAD(r.transactionCode);
+        return { ...r, txnType: derived };
       });
 
       setRows(normalized);
@@ -189,8 +173,7 @@ export default function InsiderTape({
           <button
             onClick={fetchTape}
             disabled={loading}
-            className="rounded-md bg-black px-3 py-1.5 text-sm text-white disabled:opacity-60"
-            title="Refresh"
+            className="rounded-md bg-black px-3 py-1.5 text-xs text-white disabled:opacity-60"
           >
             {loading ? "Loading…" : "Refresh"}
           </button>
@@ -198,8 +181,8 @@ export default function InsiderTape({
       </div>
 
       <p className="mt-2 text-xs text-gray-500">
-        <span className="font-medium">A/D</span>: A = Acquired (e.g., P/Awards), D = Disposed (e.g., S).&nbsp;
-        “Code” shows the raw Form 4 code (P, S, A, D, M, G, F…). When code is ambiguous, A/D may be blank.
+        <span className="font-medium">A/D</span>: A = Acquired (e.g., P / A / M), D = Disposed (e.g., S / F / G).&nbsp;
+        “Code” shows the raw Form&nbsp;4 code. If a code is ambiguous, A/D may be blank.
       </p>
 
       {error && (
@@ -215,4 +198,130 @@ export default function InsiderTape({
               <th className="px-3 py-2 text-left">Date (File / Txn)</th>
               <th className="px-3 py-2 text-left">Insider</th>
               <th className="px-3 py-2 text-left">Issuer / Symbol</th>
-              <th class
+              <th className="px-3 py-2 text-left">A/D</th>
+              <th className="px-3 py-2 text-left">Code</th>
+              <th className="px-3 py-2 text-right">Shares</th>
+              <th className="px-3 py-2 text-right">Price</th>
+              <th className="px-3 py-2 text-right">Value</th>
+              <th className="px-3 py-2 text-right">Owned After</th>
+              <th className="px-3 py-2 text-left">Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((r, i) => {
+              const value =
+                r.value ??
+                (typeof r.shares === "number" && typeof r.price === "number"
+                  ? r.shares * r.price
+                  : undefined);
+
+              const showPrice =
+                typeof r.price === "number" && r.price > 0
+                  ? `$${r.price.toFixed(2)}`
+                  : "—";
+
+              return (
+                <tr key={`${r.symbol}-${r.filedAt}-${i}`} className="border-b">
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <div className="text-gray-900">{r.filedAt ?? "—"}</div>
+                    <div className="text-gray-500 text-xs">{r.transDate ?? "—"}</div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="text-gray-900">{r.insider}</div>
+                    {r.insiderTitle && (
+                      <div className="text-gray-500 text-xs">{r.insiderTitle}</div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="text-gray-900">{r.issuer}</div>
+                    <div className="text-gray-500 text-xs">{r.symbol ?? r.cik ?? "—"}</div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <span
+                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${pillColor(
+                        r.txnType
+                      )}`}
+                    >
+                      {r.txnType ?? "—"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2">
+                    {r.transactionCode ? (
+                      <span
+                        title={r.transactionText || ""}
+                        className="text-xs font-mono text-gray-700"
+                      >
+                        {r.transactionCode}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    {typeof r.shares === "number" ? r.shares.toLocaleString() : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right">{showPrice}</td>
+                  <td className="px-3 py-2 text-right">
+                    {typeof value === "number" ? `$${value.toLocaleString()}` : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    {typeof r.ownedAfter === "number" ? r.ownedAfter.toLocaleString() : "—"}
+                  </td>
+                  <td className="px-3 py-2">
+                    {r.formUrl ? (
+                      <a
+                        href={r.formUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        Open
+                      </a>
+                    ) : r.indexUrl ? (
+                      <a
+                        href={r.indexUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        Index
+                      </a>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+
+            {!loading && filtered.length === 0 && (
+              <tr>
+                <td colSpan={10} className="px-3 py-6 text-center text-gray-500">
+                  No trades found for these filters.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={page <= 1 || loading}
+          onClick={() => setPage((p) => Math.max(1, p - 1))}
+        >
+          ← Prev
+        </button>
+        <div className="text-sm">Page {page}</div>
+        <button
+          className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={loading || rows.length < perPage}
+          onClick={() => setPage((p) => p + 1)}
+        >
+          Next →
+        </button>
+      </div>
+    </section>
+  );
+}
