@@ -1,9 +1,7 @@
-// app/api/insider/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
 const FMP_API_KEY = process.env.FMP_API_KEY || "";
 
-/** Normalized row we return to the UI */
 type InsiderRow = {
   source: "fmp" | "sec";
   insider: string;
@@ -11,21 +9,20 @@ type InsiderRow = {
   issuer: string;
   symbol?: string;
   cik?: string;
-  filedAt?: string;      // filing date
-  transDate?: string;    // transaction date
-  txnType?: "A" | "D";   // derived A/D when unambiguous
-  transactionCode?: string; // raw Form 4 code (P,S,A,D,M,G,F,...)
-  transactionText?: string; // optional human text from provider
-  shares?: number;       // amount transacted (Table I usually)
-  price?: number;        // cash price; often absent for awards/options
-  value?: number;        // shares * price (if both exist)
-  ownedAfter?: number;   // beneficially owned after
-  security?: string;     // best-effort security name/title
-  formUrl?: string;      // direct file if known (best-effort)
-  indexUrl?: string;     // SEC index for the accession (best-effort)
+  filedAt?: string;
+  transDate?: string;
+  txnType?: "A" | "D";       // derived A/D (now stricter from Code)
+  transactionCode?: string;  // raw Form 4 code (P,S,A,D,M,G,F,…)
+  transactionText?: string;
+  shares?: number;
+  price?: number;
+  value?: number;
+  ownedAfter?: number;
+  security?: string;
+  formUrl?: string;
+  indexUrl?: string;
 };
 
-// ---------- small helpers ----------
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
 }
@@ -49,21 +46,23 @@ function buildSecUrls(cik?: string, accNoRaw?: string) {
   const accNo = accNoRaw?.replace(/-/g, "");
   if (!pad || !accNo) return {};
   const base = `https://www.sec.gov/Archives/edgar/data/${parseInt(pad, 10)}/${accNo}`;
-  return {
-    indexUrl: `${base}/index.json`,
-    formUrl: `${base}/index.html`,
-  };
+  return { indexUrl: `${base}/index.json`, formUrl: `${base}/index.html` };
 }
 
-// Unambiguous mapping: show A/D only when we’re sure.
+/** Derive A/D from the **first alpha** in the code so things like `S*`, `P – Purchase` still work. */
 function mapTxnTypeFromCode(raw?: string): "A" | "D" | undefined {
   const code = (raw || "").toUpperCase().trim();
-  if (code === "P") return "A"; // open-market Purchase
-  if (code === "S") return "D"; // open-market Sale
-  if (code === "A") return "A"; // Award/Acquired
-  if (code === "D") return "D"; // Disposed (not the same as 'S', but still D)
-  // M, G, F, X, C, W... are ambiguous—leave undefined
-  return undefined;
+  const firstAlpha = code.match(/[A-Z]/)?.[0] || "";
+  switch (firstAlpha) {
+    case "P":
+    case "A":
+      return "A"; // Purchase or Award/Acquired
+    case "S":
+    case "D":
+      return "D"; // Sale or Disposed
+    default:
+      return undefined; // M, G, F, X, C, W… keep undefined
+  }
 }
 
 // ---------- FMP primary ----------
@@ -95,10 +94,8 @@ async function fetchFromFMP(params: {
   });
   if (!r.ok) throw new Error(`FMP failed ${r.status}`);
   const arr = await r.json();
-
   if (!Array.isArray(arr)) return { rows: [], meta: { source: "fmp", count: 0 } };
 
-  // normalize + optional (light) filter
   const normalized: InsiderRow[] = arr.map((t: any) => {
     const cik = t.cik || t.issuerCik || t.cikIssuer;
     const acc = t.accNo || t.accessionNumber || t.accession;
@@ -114,23 +111,17 @@ async function fetchFromFMP(params: {
       asNum(t.sharesOwnedFollowingTransaction) ??
       asNum(t.securitiesOwnedFollowingTransaction);
 
-    const rawCode =
-      (t.transactionCode ||
-        t.transaction_type ||
-        t.type ||
-        t.transactionType ||
-        t.ad) &&
-      String(
-        t.transactionCode ||
-          t.transaction_type ||
-          t.type ||
-          t.transactionType ||
-          t.ad
-      ).toUpperCase();
+    const rawCode = cleanStr(
+      (t.transactionCode ??
+        t.transaction_type ??
+        t.type ??
+        t.transactionType ??
+        t.ad) as string
+    );
 
+    // NEW: prioritize A/D from the normalized code (handles `S`, `S*`, `P`, `A`, `D`)
     const txnTypeNorm =
-      mapTxnTypeFromCode(rawCode) ??
-      // super-light textual fallback
+      mapTxnTypeFromCode(rawCode) ||
       ((/PURCHASE|ACQ/i.test(String(t.transactionText || t.transaction_type || "")) && "A") ||
         (/SALE|DISP/i.test(String(t.transactionText || t.transaction_type || "")) && "D") ||
         undefined);
@@ -142,16 +133,13 @@ async function fetchFromFMP(params: {
       insider: cleanStr(t.insiderName) || cleanStr(t.reportingName) || "—",
       insiderTitle: cleanStr(t.insiderTitle) || cleanStr(t.reportingTitle),
       issuer:
-        cleanStr(t.companyName) ||
-        cleanStr(t.issuerName) ||
-        cleanStr(t.issuer) ||
-        "—",
+        cleanStr(t.companyName) || cleanStr(t.issuerName) || cleanStr(t.issuer) || "—",
       symbol: cleanStr(t.ticker) || cleanStr(t.symbol),
       cik: cik ? padCIK(cik) : undefined,
       filedAt: cleanStr(t.filingDate),
       transDate: cleanStr(t.transactionDate) || cleanStr(t.transactionDate2),
       txnType: txnTypeNorm,
-      transactionCode: cleanStr(rawCode),
+      transactionCode: rawCode,
       transactionText:
         cleanStr(t.transactionText) ||
         cleanStr(t.transaction_type) ||
@@ -169,59 +157,47 @@ async function fetchFromFMP(params: {
     };
   });
 
-  // Optional filter on derived A/D
   const filtered =
-    txnType === "ALL"
-      ? normalized
-      : normalized.filter((r) => r.txnType === txnType);
+    txnType === "ALL" ? normalized : normalized.filter((r) => r.txnType === txnType);
 
-  return {
-    rows: filtered,
-    meta: { source: "fmp", count: filtered.length, page, perPage },
-  };
+  return { rows: filtered, meta: { source: "fmp", count: filtered.length, page, perPage } };
 }
 
 // ---------- SEC fallback: simple pointer ----------
 async function fetchFromSEC(params: { symbol?: string }) {
   const { symbol } = params;
   if (!symbol) return { rows: [], meta: { source: "sec", note: "no symbol" } };
-
   const q = encodeURIComponent(`${symbol} form 4`);
   const searchUrl = `https://www.sec.gov/edgar/search/#/category=custom&forms=4&q=${q}`;
-
-  const row: InsiderRow = {
-    source: "sec",
-    insider: "—",
-    issuer: "—",
-    symbol,
-    formUrl: searchUrl,
-    indexUrl: searchUrl,
+  return {
+    rows: [
+      {
+        source: "sec",
+        insider: "—",
+        issuer: "—",
+        symbol,
+        formUrl: searchUrl,
+        indexUrl: searchUrl,
+      },
+    ],
+    meta: { source: "sec", note: "search pointer" },
   };
-
-  return { rows: [row], meta: { source: "sec", note: "search pointer" } };
 }
 
-// ---------- Handler ----------
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const symbol = cleanStr(searchParams.get("symbol") || "");
     const start = cleanStr(searchParams.get("start") || "");
     const end = cleanStr(searchParams.get("end") || "");
-    const txnTypeRaw = (searchParams.get("txnType") || "ALL").toUpperCase();
-    const txnType: "ALL" | "A" | "D" = ["A", "D"].includes(txnTypeRaw)
-      ? (txnTypeRaw as "A" | "D")
-      : "ALL";
+    const raw = (searchParams.get("txnType") || "ALL").toUpperCase();
+    const txnType: "ALL" | "A" | "D" = raw === "A" || raw === "D" ? (raw as any) : "ALL";
     const page = Number(searchParams.get("page") || "1") || 1;
     const perPage = Math.min(200, Number(searchParams.get("perPage") || "50") || 50);
 
-    // 1) FMP
     const fmp = await fetchFromFMP({ symbol, start, end, txnType, page, perPage });
-    if (fmp.rows.length > 0) {
-      return json({ ok: true, rows: fmp.rows, meta: fmp.meta });
-    }
+    if (fmp.rows.length > 0) return json({ ok: true, rows: fmp.rows, meta: fmp.meta });
 
-    // 2) SEC pointer
     const sec = await fetchFromSEC({ symbol });
     return json({ ok: true, rows: sec.rows, meta: sec.meta });
   } catch (e: any) {
