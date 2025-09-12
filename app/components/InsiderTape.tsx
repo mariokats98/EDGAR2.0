@@ -1,16 +1,14 @@
-// app/components/InsiderTape.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 
 export type TxnFilter = "ALL" | "A" | "D";
-
 export type InsiderTapeProps = {
-  symbol: string;      // already uppercased by parent is fine
-  start: string;       // "YYYY-MM-DD"
-  end: string;         // "YYYY-MM-DD"
-  txnType: TxnFilter;  // "ALL" | "A" | "D"
-  queryKey?: string;   // optional: to bust cache externally
+  symbol: string;
+  start: string;
+  end: string;
+  txnType: TxnFilter;
+  queryKey?: string;
 };
 
 type Row = {
@@ -49,20 +47,16 @@ export default function InsiderTape({
   txnType,
   queryKey,
 }: InsiderTapeProps) {
-  // Local UI helpers
   const [page, setPage] = useState<number>(1);
   const [perPage, setPerPage] = useState<number>(25);
-  const [q, setQ] = useState<string>(""); // quick client-side filter
+  const [q, setQ] = useState<string>("");
 
   const [loading, setLoading] = useState<boolean>(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [meta, setMeta] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset pagination whenever filters change
-  useEffect(() => {
-    setPage(1);
-  }, [symbol, start, end, txnType]);
+  useEffect(() => setPage(1), [symbol, start, end, txnType]);
 
   async function fetchTape() {
     if (!symbol) {
@@ -81,10 +75,8 @@ export default function InsiderTape({
         page: String(page),
         perPage: String(perPage),
       });
-      // optional cache-buster
       if (queryKey) params.set("_", queryKey);
-      const url = `/api/insider?${params.toString()}`;
-      const r = await fetch(url, { cache: "no-store" });
+      const r = await fetch(`/api/insider?${params.toString()}`, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
       setRows(Array.isArray(j.rows) ? j.rows : []);
@@ -103,7 +95,6 @@ export default function InsiderTape({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, start, end, txnType, page, perPage, queryKey]);
 
-  // client-side quick text filter (insider/issuer/symbol)
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows;
@@ -115,7 +106,6 @@ export default function InsiderTape({
 
   return (
     <section className="rounded-2xl border bg-white p-4 md:p-5">
-      {/* Top line: summary + mini search + per-page + refresh */}
       <div className="flex flex-wrap items-end gap-3">
         <div className="text-xs text-gray-600">
           Source: <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span>{" "}
@@ -154,20 +144,17 @@ export default function InsiderTape({
         </div>
       </div>
 
-      {/* Tiny legend for users (A/D vs Code) */}
       <p className="mt-2 text-xs text-gray-500">
         <span className="font-medium">A/D</span>: A = Acquired (e.g., P/Awards), D = Disposed (e.g., S).
         &nbsp;“Code” shows the raw Form 4 code (P, S, A, D, M, G, F…). Ambiguous codes may leave A/D blank.
       </p>
 
-      {/* Error state */}
       {error && (
         <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
           {error}
         </div>
       )}
 
-      {/* Table */}
       <div className="mt-4 overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
@@ -213,9 +200,7 @@ export default function InsiderTape({
                   </td>
                   <td className="px-3 py-2">
                     <div className="text-gray-900">{r.issuer}</div>
-                    <div className="text-gray-500 text-xs">
-                      {r.symbol ?? r.cik ?? "—"}
-                    </div>
+                    <div className="text-gray-500 text-xs">{r.symbol ?? r.cik ?? "—"}</div>
                   </td>
                   <td className="px-3 py-2">
                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adClass}`}>
@@ -224,10 +209,7 @@ export default function InsiderTape({
                   </td>
                   <td className="px-3 py-2">
                     {r.transactionCode ? (
-                      <span
-                        title={r.transactionText || ""}
-                        className="text-xs font-mono text-gray-700"
-                      >
+                      <span title={r.transactionText || ""} className="text-xs font-mono text-gray-700">
                         {r.transactionCode}
                       </span>
                     ) : (
@@ -242,27 +224,15 @@ export default function InsiderTape({
                     {typeof value === "number" ? `$${value.toLocaleString()}` : "—"}
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {typeof r.ownedAfter === "number"
-                      ? r.ownedAfter.toLocaleString()
-                      : "—"}
+                    {typeof r.ownedAfter === "number" ? r.ownedAfter.toLocaleString() : "—"}
                   </td>
                   <td className="px-3 py-2">
                     {r.formUrl ? (
-                      <a
-                        href={r.formUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
+                      <a href={r.formUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                         Open
                       </a>
                     ) : r.indexUrl ? (
-                      <a
-                        href={r.indexUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
+                      <a href={r.indexUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                         Index
                       </a>
                     ) : (
@@ -284,7 +254,6 @@ export default function InsiderTape({
         </table>
       </div>
 
-      {/* Pagination */}
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <button
           className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
@@ -297,7 +266,7 @@ export default function InsiderTape({
         <button
           className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
           disabled={loading || rows.length < perPage}
-          onClick={() => setPage((p) => p + 1)}
+          onClick={() => setPage((p) => p + 1))}
         >
           Next →
         </button>
