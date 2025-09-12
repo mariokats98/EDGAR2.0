@@ -14,37 +14,35 @@ type Row = {
   cik?: string;
   filedAt?: string;
   transDate?: string;
-  txnType?: "A" | "D";
-  code?: string;            // raw Form 4 transaction code (P, S, M, etc.)
+  txnType?: "A" | "D";     // acquired / disposed (normalized)
+  code?: string;           // raw Form 4 code (P, S, M…)
   shares?: number;
   price?: number;
   value?: number;
   ownedAfter?: number;
   formUrl?: string;
   indexUrl?: string;
-  security?: string;        // "Common Stock", "Stock Option (right to buy)", etc.
-  table?: "I" | "II";       // which table the row came from (if known)
+  security?: string;       // e.g., "Common Stock", "Stock Option"
+  table?: "I" | "II";
 };
 
-function fmtNum(n?: number, opts?: Intl.NumberFormatOptions) {
-  if (typeof n !== "number" || !Number.isFinite(n)) return "—";
-  return n.toLocaleString(undefined, opts);
+function fmtNum(n?: number) {
+  return typeof n === "number" && Number.isFinite(n) ? n.toLocaleString() : "—";
 }
 function fmtUsd(n?: number) {
-  if (typeof n !== "number" || !Number.isFinite(n)) return "—";
-  return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+  return typeof n === "number" && Number.isFinite(n)
+    ? n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 })
+    : "—";
 }
-function pillClass(type?: "A" | "D") {
-  return type === "A"
-    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-    : type === "D"
-    ? "bg-rose-50 text-rose-700 ring-rose-200"
-    : "bg-gray-50 text-gray-700 ring-gray-200";
+function pill(type?: "A" | "D") {
+  if (type === "A") return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  if (type === "D") return "bg-rose-50 text-rose-700 ring-rose-200";
+  return "bg-gray-50 text-gray-700 ring-gray-200";
 }
 
 export default function InsiderTape() {
-  // filters (internal state)
-  const [symbol, setSymbol] = useState<string>(""); // user types to begin
+  // Filters
+  const [symbol, setSymbol] = useState<string>("");
   const [start, setStart] = useState<string>(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
@@ -54,16 +52,17 @@ export default function InsiderTape() {
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
   const [q, setQ] = useState<string>("");
 
-  // pagination
+  // Pagination
   const [page, setPage] = useState<number>(1);
   const [perPage, setPerPage] = useState<number>(25);
 
-  // data
+  // Data
   const [loading, setLoading] = useState<boolean>(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<any>(null);
 
+  // Reset page when filters change
   useEffect(() => {
     setPage(1);
   }, [symbol, start, end, txnType]);
@@ -85,8 +84,7 @@ export default function InsiderTape() {
         page: String(page),
         perPage: String(perPage),
       });
-      const url = `/api/insider?${params.toString()}`;
-      const r = await fetch(url, { cache: "no-store" });
+      const r = await fetch(`/api/insider?${params.toString()}`, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
       setRows(Array.isArray(j.rows) ? j.rows : []);
@@ -100,11 +98,13 @@ export default function InsiderTape() {
     }
   }
 
+  // Fetch on filter changes
   useEffect(() => {
     fetchTape();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, start, end, txnType, page, perPage]);
 
+  // Client-side quick filter
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows;
@@ -116,15 +116,14 @@ export default function InsiderTape() {
 
   return (
     <section className="rounded-2xl border bg-white p-4 md:p-5">
+      {/* Top row: summary + refresh */}
       <div className="flex flex-wrap items-end gap-3">
         <div className="text-xs text-gray-600">
-          Source: <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span>{" "}
-          • {filtered.length} trade{filtered.length === 1 ? "" : "s"} shown
+          Source: <span className="font-medium">{meta?.source?.toUpperCase() || "—"}</span> •{" "}
+          {filtered.length} trade{filtered.length === 1 ? "" : "s"} shown
           {meta?.count !== undefined ? ` (fetched: ${meta.count})` : ""}
         </div>
-        <div className="ml-auto text-[11px] text-gray-500">
-          A = acquired (buy) • D = disposed (sell)
-        </div>
+        <div className="ml-auto text-[11px] text-gray-500">A = acquired (buy) • D = disposed (sell)</div>
         <button
           onClick={fetchTape}
           disabled={loading}
@@ -143,9 +142,7 @@ export default function InsiderTape() {
             value={symbol}
             onChange={(e) => setSymbol(e.target.value.toUpperCase())}
             placeholder="e.g., AAPL (press Enter)"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") fetchTape();
-            }}
+            onKeyDown={(e) => { if (e.key === "Enter") fetchTape(); }}
             className="w-full rounded-md border px-3 py-2"
             inputMode="text"
             autoCapitalize="characters"
@@ -204,12 +201,14 @@ export default function InsiderTape() {
         </div>
       </div>
 
+      {/* Errors */}
       {error && (
         <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
           {error}
         </div>
       )}
 
+      {/* Table */}
       <div className="mt-4 overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
@@ -259,7 +258,7 @@ export default function InsiderTape() {
                     </span>
                   </td>
                   <td className="px-3 py-2">
-                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${pillClass(r.txnType)}`}>
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${pill(r.txnType)}`}>
                       {r.txnType ?? "—"}
                     </span>
                   </td>
@@ -273,21 +272,11 @@ export default function InsiderTape() {
                   <td className="px-3 py-2">{r.table ?? "—"}</td>
                   <td className="px-3 py-2">
                     {r.formUrl ? (
-                      <a
-                        href={r.formUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
+                      <a href={r.formUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                         Open
                       </a>
                     ) : r.indexUrl ? (
-                      <a
-                        href={r.indexUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
+                      <a href={r.indexUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                         Index
                       </a>
                     ) : (
@@ -301,9 +290,7 @@ export default function InsiderTape() {
             {!loading && filtered.length === 0 && (
               <tr>
                 <td colSpan={12} className="px-3 py-6 text-center text-gray-500">
-                  {symbol.trim()
-                    ? "No trades found for these filters."
-                    : "Enter a symbol to begin."}
+                  {symbol.trim() ? "No trades found for these filters." : "Enter a symbol to begin."}
                 </td>
               </tr>
             )}
@@ -324,7 +311,7 @@ export default function InsiderTape() {
         <button
           className="rounded-md border bg-white px-3 py-1.5 text-sm disabled:opacity-50"
           disabled={loading || rows.length < perPage}
-          onClick={() => setPage((p) => p + 1))}
+          onClick={() => setPage((p) => p + 1)}
         >
           Next →
         </button>
