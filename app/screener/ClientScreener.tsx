@@ -1,68 +1,43 @@
 // app/screener/ClientScreener.tsx
 "use client";
 
-import { useState, Suspense } from "react";
+import { useState } from "react";
+import dynamic from "next/dynamic";
 import InsiderTape from "../components/InsiderTape";
-import CryptoDashboard from "../components/CryptoDashboard";
 
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={[
-        "rounded-full px-3 py-1.5 text-sm transition",
-        active
-          ? "bg-black text-white"
-          : "bg-white text-gray-800 border hover:bg-gray-50",
-      ].join(" ")}
-    >
-      {children}
-    </button>
-  );
-}
+// If you have a CryptoDashboard component, dynamically import it (client-only)
+const CryptoDashboard = dynamic(() => import("../components/CryptoDashboard"), { ssr: false, loading: () => null });
 
 export default function ClientScreener() {
   const [tab, setTab] = useState<"insider" | "crypto">("insider");
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-white via-slate-50 to-slate-100">
-      <section className="mx-auto max-w-6xl px-4 pt-10 pb-4">
-        <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-gray-900">
-          Screener
-        </h1>
-        <p className="mt-1 text-sm text-gray-600">
-          Explore insider activity and crypto market stats.
-        </p>
+    <main className="mx-auto max-w-6xl px-4 py-6">
+      <h1 className="mb-4 text-2xl font-bold">Screener</h1>
 
-        {/* Tabs */}
-        <div className="mt-4 flex gap-2">
-          <TabButton active={tab === "insider"} onClick={() => setTab("insider")}>
-            Insider Activity
-          </TabButton>
-          <TabButton active={tab === "crypto"} onClick={() => setTab("crypto")}>
-            Crypto
-          </TabButton>
-        </div>
-      </section>
+      {/* Tabs */}
+      <div className="mb-4 flex gap-2">
+        <button
+          className={`rounded-full px-4 py-2 text-sm ${tab === "insider" ? "bg-black text-white" : "bg-white border"}`}
+          onClick={() => setTab("insider")}
+        >
+          Insider Activity
+        </button>
+        <button
+          className={`rounded-full px-4 py-2 text-sm ${tab === "crypto" ? "bg-black text-white" : "bg-white border"}`}
+          onClick={() => setTab("crypto")}
+        >
+          Crypto
+        </button>
+      </div>
 
-      <section className="mx-auto max-w-6xl px-4 pb-10">
-        <Suspense fallback={<div className="text-sm text-gray-500">Loading…</div>}>
-          {tab === "insider" ? (
-            // No props — InsiderTape owns its filters/state now
-            <InsiderTape />
-          ) : (
-            <CryptoDashboard />
-          )}
-        </Suspense>
-      </section>
+      {tab === "insider" ? (
+        <InsiderTape />
+      ) : (
+        <section className="rounded-2xl border bg-white p-4 md:p-5">
+          {CryptoDashboard ? <CryptoDashboard /> : <div className="text-sm text-gray-500">Loading…</div>}
+        </section>
+      )}
     </main>
   );
 }
