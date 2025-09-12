@@ -3,12 +3,20 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 
-export type TxnFilter = "ALL" | "A" | "D";
+/** Props expected by ClientScreener */
+type InsiderTapeProps = {
+  symbol?: string;
+  start?: string;   // YYYY-MM-DD
+  end?: string;     // YYYY-MM-DD
+  txnType?: "ALL" | "A" | "D";
+  queryKey?: string; // optional re-fetch key (ignored by fetch, used to trigger useEffect)
+};
 
+/** Row shape coming back from /api/insider */
 type Row = {
   source: "fmp" | "sec";
-  table?: "I" | "II";        // Table I or II
-  security?: string;         // Security title (Common, RSU, Option…)
+  table?: "I" | "II";
+  security?: string;
   insider: string;
   insiderTitle?: string;
   issuer: string;
@@ -25,16 +33,17 @@ type Row = {
   indexUrl?: string;
 };
 
-export default function InsiderTape() {
-  // ------- filters -------
-  const [symbol, setSymbol] = useState<string>("");
+export default function InsiderTape(props: InsiderTapeProps) {
+  // ------- filters (initialize from props; user can edit in-place) -------
+  const [symbol, setSymbol] = useState<string>(props.symbol?.toUpperCase?.() || "");
   const [start, setStart] = useState<string>(() => {
+    if (props.start) return props.start;
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
     return d.toISOString().slice(0, 10);
   });
-  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
-  const [txnType, setTxnType] = useState<TxnFilter>("ALL");
+  const [end, setEnd] = useState<string>(props.end || new Date().toISOString().slice(0, 10));
+  const [txnType, setTxnType] = useState<"ALL" | "A" | "D">(props.txnType || "ALL");
   const [q, setQ] = useState<string>(""); // free-text filter for insider/issuer/security
 
   // ------- pagination -------
@@ -47,7 +56,17 @@ export default function InsiderTape() {
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<any>(null);
 
-  // Reset to page 1 when filters change
+  // When parent changes initial props (including queryKey), update local filters and reset page
+  useEffect(() => {
+    if (props.symbol !== undefined) setSymbol(props.symbol.toUpperCase?.() || "");
+    if (props.start) setStart(props.start);
+    if (props.end) setEnd(props.end);
+    if (props.txnType) setTxnType(props.txnType);
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.symbol, props.start, props.end, props.txnType, props.queryKey]);
+
+  // Reset to page 1 when local filters change
   useEffect(() => {
     setPage(1);
   }, [symbol, start, end, txnType]);
@@ -69,8 +88,7 @@ export default function InsiderTape() {
         page: String(page),
         perPage: String(perPage),
       });
-      const url = `/api/insider?${params.toString()}`;
-      const r = await fetch(url, { cache: "no-store" });
+      const r = await fetch(`/api/insider?${params.toString()}`, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok || j?.ok === false) throw new Error(j?.error || "Fetch failed");
       setRows(Array.isArray(j.rows) ? j.rows : []);
@@ -84,6 +102,7 @@ export default function InsiderTape() {
     }
   }
 
+  // Refetch on any dependency
   useEffect(() => {
     fetchTape();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,7 +161,7 @@ export default function InsiderTape() {
           <div className="mb-1 text-xs text-gray-700">Type</div>
           <select
             value={txnType}
-            onChange={(e) => setTxnType(e.target.value as TxnFilter)}
+            onChange={(e) => setTxnType(e.target.value as any)}
             className="w-full rounded-md border px-3 py-2"
           >
             <option value="ALL">All</option>
