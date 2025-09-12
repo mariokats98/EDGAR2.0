@@ -3,31 +3,34 @@ import { NextRequest, NextResponse } from "next/server";
 
 const FMP_API_KEY = process.env.FMP_API_KEY || "";
 
+/** Normalized row we return to the UI */
 type InsiderRow = {
   source: "fmp" | "sec";
-  table?: "I" | "II";
-  security?: string;
   insider: string;
   insiderTitle?: string;
   issuer: string;
   symbol?: string;
   cik?: string;
-  filedAt?: string;
-  transDate?: string;
-  txnType?: "A" | "D" | "—";
-  shares?: number;
-  price?: number;
-  value?: number;
-  ownedAfter?: number;
-  formUrl?: string;
-  indexUrl?: string;
+  filedAt?: string;      // filing date
+  transDate?: string;    // transaction date
+  txnType?: "A" | "D";   // derived A/D when unambiguous
+  transactionCode?: string; // raw Form 4 code (P,S,A,D,M,G,F,...)
+  transactionText?: string; // optional human text from provider
+  shares?: number;       // amount transacted (Table I usually)
+  price?: number;        // cash price; often absent for awards/options
+  value?: number;        // shares * price (if both exist)
+  ownedAfter?: number;   // beneficially owned after
+  security?: string;     // best-effort security name/title
+  formUrl?: string;      // direct file if known (best-effort)
+  indexUrl?: string;     // SEC index for the accession (best-effort)
 };
 
+// ---------- small helpers ----------
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
 }
 function err(message: string, status = 400) {
-  return json({ error: message }, { status });
+  return json({ ok: false, error: message }, { status });
 }
 function asNum(x: any): number | undefined {
   if (x === null || x === undefined || x === "") return undefined;
@@ -52,6 +55,18 @@ function buildSecUrls(cik?: string, accNoRaw?: string) {
   };
 }
 
+// Unambiguous mapping: show A/D only when we’re sure.
+function mapTxnTypeFromCode(raw?: string): "A" | "D" | undefined {
+  const code = (raw || "").toUpperCase().trim();
+  if (code === "P") return "A"; // open-market Purchase
+  if (code === "S") return "D"; // open-market Sale
+  if (code === "A") return "A"; // Award/Acquired
+  if (code === "D") return "D"; // Disposed (not the same as 'S', but still D)
+  // M, G, F, X, C, W... are ambiguous—leave undefined
+  return undefined;
+}
+
+// ---------- FMP primary ----------
 async function fetchFromFMP(params: {
   symbol?: string;
   start?: string;
@@ -60,7 +75,9 @@ async function fetchFromFMP(params: {
   page?: number;
   perPage?: number;
 }) {
-  if (!FMP_API_KEY) return { rows: [], meta: { source: "fmp", note: "missing FMP key" } };
+  if (!FMP_API_KEY) {
+    return { rows: [] as InsiderRow[], meta: { source: "fmp", note: "missing FMP key" } };
+  }
 
   const { symbol, start, end, txnType = "ALL", page = 1, perPage = 50 } = params;
 
@@ -81,24 +98,8 @@ async function fetchFromFMP(params: {
 
   if (!Array.isArray(arr)) return { rows: [], meta: { source: "fmp", count: 0 } };
 
-  let filtered = arr as any[];
-  if (txnType !== "ALL") {
-    filtered = filtered.filter((t) => {
-      const acqDisp =
-        t.acquisitionOrDisposition ||
-        t.transactionType ||
-        t.type ||
-        t.ad ||
-        t.transactionCode ||
-        "";
-      const code = (acqDisp || "").toString().toUpperCase();
-      if (txnType === "A") return code.startsWith("A") || /PURCHASE|ACQ/.test(code);
-      if (txnType === "D") return code.startsWith("D") || /SALE|DISP/.test(code);
-      return true;
-    });
-  }
-
-  const rows: InsiderRow[] = filtered.map((t) => {
+  // normalize + optional (light) filter
+  const normalized: InsiderRow[] = arr.map((t: any) => {
     const cik = t.cik || t.issuerCik || t.cikIssuer;
     const acc = t.accNo || t.accessionNumber || t.accession;
     const { formUrl, indexUrl } = buildSecUrls(cik, acc);
@@ -107,31 +108,34 @@ async function fetchFromFMP(params: {
       asNum(t.shares) ??
       asNum(t.securitiesTransacted) ??
       asNum(t.amountOfSecuritiesTransacted);
+
     const price = asNum(t.price) ?? asNum(t.transactionPrice);
     const ownedAfter =
       asNum(t.sharesOwnedFollowingTransaction) ??
       asNum(t.securitiesOwnedFollowingTransaction);
 
-    const acqDisp =
-      t.acquisitionOrDisposition ||
-      t.transactionType ||
-      t.type ||
-      t.ad ||
-      t.transactionCode ||
-      "";
-    let txnTypeNorm: "A" | "D" | "—" = "—";
-    const code = (acqDisp || "").toString().toUpperCase();
-    if (code.startsWith("A") || /PURCHASE|ACQ/.test(code)) txnTypeNorm = "A";
-    else if (code.startsWith("D") || /SALE|DISP/.test(code)) txnTypeNorm = "D";
+    const rawCode =
+      (t.transactionCode ||
+        t.transaction_type ||
+        t.type ||
+        t.transactionType ||
+        t.ad) &&
+      String(
+        t.transactionCode ||
+          t.transaction_type ||
+          t.type ||
+          t.transactionType ||
+          t.ad
+      ).toUpperCase();
+
+    const txnTypeNorm =
+      mapTxnTypeFromCode(rawCode) ??
+      // super-light textual fallback
+      ((/PURCHASE|ACQ/i.test(String(t.transactionText || t.transaction_type || "")) && "A") ||
+        (/SALE|DISP/i.test(String(t.transactionText || t.transaction_type || "")) && "D") ||
+        undefined);
 
     const val = shares && price ? shares * price : undefined;
-
-    // Try to surface security + table if FMP returns them (varies by plan/endpoints).
-    const security = cleanStr(t.securityTitle || t.security || t.derivativeSecurityTitle);
-    let table: "I" | "II" | undefined = undefined;
-    const tbl = cleanStr(t.table) || cleanStr(t.tableType) || cleanStr(t.formTable);
-    if (tbl && /ii\b|table *ii/i.test(tbl)) table = "II";
-    else if (tbl) table = "I";
 
     return {
       source: "fmp",
@@ -147,23 +151,37 @@ async function fetchFromFMP(params: {
       filedAt: cleanStr(t.filingDate),
       transDate: cleanStr(t.transactionDate) || cleanStr(t.transactionDate2),
       txnType: txnTypeNorm,
+      transactionCode: cleanStr(rawCode),
+      transactionText:
+        cleanStr(t.transactionText) ||
+        cleanStr(t.transaction_type) ||
+        cleanStr(t.type),
       shares,
       price,
       value: val,
       ownedAfter,
+      security:
+        cleanStr(t.securityName) ||
+        cleanStr(t.securityTitle) ||
+        cleanStr(t.derivativeTitle),
       formUrl: cleanStr(t.link) || formUrl,
       indexUrl,
-      security,
-      table,
     };
   });
 
+  // Optional filter on derived A/D
+  const filtered =
+    txnType === "ALL"
+      ? normalized
+      : normalized.filter((r) => r.txnType === txnType);
+
   return {
-    rows,
-    meta: { source: "fmp", count: rows.length, page, perPage },
+    rows: filtered,
+    meta: { source: "fmp", count: filtered.length, page, perPage },
   };
 }
 
+// ---------- SEC fallback: simple pointer ----------
 async function fetchFromSEC(params: { symbol?: string }) {
   const { symbol } = params;
   if (!symbol) return { rows: [], meta: { source: "sec", note: "no symbol" } };
@@ -183,6 +201,7 @@ async function fetchFromSEC(params: { symbol?: string }) {
   return { rows: [row], meta: { source: "sec", note: "search pointer" } };
 }
 
+// ---------- Handler ----------
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -190,13 +209,19 @@ export async function GET(req: NextRequest) {
     const start = cleanStr(searchParams.get("start") || "");
     const end = cleanStr(searchParams.get("end") || "");
     const txnTypeRaw = (searchParams.get("txnType") || "ALL").toUpperCase();
-    const txnType = ["A", "D"].includes(txnTypeRaw) ? (txnTypeRaw as "A" | "D") : "ALL";
+    const txnType: "ALL" | "A" | "D" = ["A", "D"].includes(txnTypeRaw)
+      ? (txnTypeRaw as "A" | "D")
+      : "ALL";
     const page = Number(searchParams.get("page") || "1") || 1;
     const perPage = Math.min(200, Number(searchParams.get("perPage") || "50") || 50);
 
+    // 1) FMP
     const fmp = await fetchFromFMP({ symbol, start, end, txnType, page, perPage });
-    if (fmp.rows.length > 0) return json({ ok: true, rows: fmp.rows, meta: fmp.meta });
+    if (fmp.rows.length > 0) {
+      return json({ ok: true, rows: fmp.rows, meta: fmp.meta });
+    }
 
+    // 2) SEC pointer
     const sec = await fetchFromSEC({ symbol });
     return json({ ok: true, rows: sec.rows, meta: sec.meta });
   } catch (e: any) {
