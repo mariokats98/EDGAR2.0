@@ -1,120 +1,169 @@
 // app/components/InsiderTape.tsx
 "use client";
 
-import React from "react";
+import { useEffect, useMemo, useState } from "react";
 
-export type TxnType = "ALL" | "A" | "D";
-
-export interface InsiderRow {
-  id?: string | number;
-  insider?: string;
-  issuer?: string;
-  symbol?: string;
-  transactionCode?: string; // e.g. "P", "S", etc.
-  txnCode?: string;
-  filedAt?: string;         // ISO or display date
-  date?: string;
-  link?: string;            // URL to filing (optional)
-}
-
-export interface InsiderTapeProps {
-  symbol?: string;      // optional: filter to a ticker
-  start: string;        // YYYY-MM-DD
-  end: string;          // YYYY-MM-DD
-  txnType: TxnType;     // "ALL" | "A" | "D"
-  /** change this to force refetch */
-  queryKey?: string;
-}
-
-const API_URL = "/api/insider";
-
-/** Renders insider transactions list */
-const InsiderTape: React.FC<InsiderTapeProps> = ({
-  symbol = "",
-  start,
-  end,
-  txnType,
-  queryKey,
-}) => {
-  const [rows, setRows] = React.useState<InsiderRow[]>([]);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-
-  const qs = React.useMemo(() => {
-    const p = new URLSearchParams({ start, end });
-    if (symbol.trim()) p.set("symbol", symbol.trim().toUpperCase());
-    if (txnType && txnType !== "ALL") p.set("txnType", txnType);
-    return p.toString();
-  }, [symbol, start, end, txnType]);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch(`${API_URL}?${qs}`, { cache: "no-store" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const j = await res.json();
-        const data: InsiderRow[] = Array.isArray(j?.data) ? j.data : [];
-        if (!cancelled) setRows(data);
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || "Fetch failed");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [qs, queryKey]);
-
-  return (
-    <div className="mt-4">
-      {loading && <div className="text-sm text-gray-600">Loading…</div>}
-      {error && (
-        <div className="text-sm text-red-600">Error: {String(error)}</div>
-      )}
-      {!loading && !error && rows.length === 0 && (
-        <div className="text-sm text-gray-600">No trades found.</div>
-      )}
-
-      <ul className="space-y-3">
-        {rows.map((r, idx) => {
-          const code = r.transactionCode ?? r.txnCode ?? "—";
-          const when = r.filedAt ?? r.date ?? "—";
-          return (
-            <li key={r.id ?? `${r.symbol}-${idx}`} className="rounded-xl border bg-white p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-xs text-gray-500">
-                    {r.issuer ?? "—"} {r.symbol ? `(${r.symbol})` : ""}
-                  </div>
-                  <div className="font-medium">
-                    {r.insider ?? "—"} • {code}
-                  </div>
-                  <div className="text-xs text-gray-500">{when}</div>
-                </div>
-
-                {r.link ? (
-                  <a
-                    href={r.link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="rounded-full bg-black text-white px-3 py-1.5 text-sm hover:opacity-90"
-                  >
-                    Open filing
-                  </a>
-                ) : (
-                  <span className="text-xs text-gray-400">No link</span>
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
+type InsiderRow = {
+  id: string;
+  symbol: string;
+  issuer: string;
+  insider: string;
+  ad: "A" | "D" | "?";
+  transactionDate: string;
+  filingDate: string;
+  shares: number | null;
+  price: number | null;
+  value: number | null;
+  ownedAfter: number | null;
+  formType: string;
+  documentUrl?: string;
 };
 
-export default InsiderTape;
+export type InsiderTapeProps = {
+  symbol: string;
+  start: string;
+  end: string;
+  txnType: "ALL" | "A" | "D";
+  /** change key to force refetch from parent */
+  queryKey?: string;
+};
+
+function fmtNum(n: number | null | undefined, opts: Intl.NumberFormatOptions = {}) {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, ...opts }).format(n);
+}
+
+function Pill({ kind }: { kind: "A" | "D" | "?" }) {
+  const map = {
+    A: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    D: "bg-rose-50 text-rose-700 border-rose-200",
+    "?": "bg-gray-50 text-gray-700 border-gray-200",
+  } as const;
+  const label = kind === "A" ? "Acquired (A)" : kind === "D" ? "Disposed (D)" : "Other";
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${map[kind]}`}>
+      {label}
+    </span>
+  );
+}
+
+export default function InsiderTape({ symbol, start, end, txnType, queryKey }: InsiderTapeProps) {
+  const [rows, setRows] = useState<InsiderRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const url = useMemo(() => {
+    const p = new URLSearchParams();
+    if (symbol) p.set("symbol", symbol.toUpperCase());
+    if (start) p.set("start", start);
+    if (end) p.set("end", end);
+    if (txnType) p.set("txnType", txnType);
+    p.set("limit", "50");
+    return `/api/insider?${p.toString()}`;
+  }, [symbol, start, end, txnType, queryKey]);
+
+  useEffect(() => {
+    let stop = false;
+    async function run() {
+      setLoading(true);
+      setErr(null);
+      try {
+        const r = await fetch(url, { cache: "no-store" });
+        const j = await r.json();
+        if (!r.ok || j?.ok === false) {
+          throw new Error(j?.error || `Fetch failed (${r.status})`);
+        }
+        if (!stop) setRows(j.data as InsiderRow[]);
+      } catch (e: any) {
+        if (!stop) setErr(e?.message || "Unexpected error");
+      } finally {
+        if (!stop) setLoading(false);
+      }
+    }
+    run();
+    return () => {
+      stop = true;
+    };
+  }, [url]);
+
+  return (
+    <div className="grid gap-3">
+      {/* header */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm text-gray-600">
+          {loading ? "Loading…" : `${rows.length} transaction${rows.length === 1 ? "" : "s"} loaded`}
+          {symbol ? ` • ${symbol}` : ""}
+          {txnType !== "ALL" ? ` • ${txnType === "A" ? "Acquisitions" : "Dispositions"}` : ""}
+        </div>
+        <div className="text-xs text-gray-500">Range: {start} → {end}</div>
+      </div>
+
+      {/* error */}
+      {err && (
+        <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+          {err}
+        </div>
+      )}
+
+      {/* empty */}
+      {!loading && !err && rows.length === 0 && (
+        <div className="rounded-xl border bg-white p-6 text-sm text-gray-600">
+          No insider transactions found for the selected filters.
+        </div>
+      )}
+
+      {/* list */}
+      {rows.map((r) => (
+        <article key={r.id} className="rounded-xl border bg-white p-4">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Pill kind={r.ad} />
+                <div className="text-sm text-gray-600 truncate">{r.insider}</div>
+              </div>
+              <div className="mt-0.5 font-medium truncate">
+                {r.issuer} <span className="text-gray-400">•</span> {r.symbol || "—"}
+              </div>
+              <div className="text-xs text-gray-500">
+                Txn: {r.transactionDate} <span className="text-gray-300">•</span> Filed: {r.filingDate}
+                {r.formType ? <span> <span className="text-gray-300">•</span> Form {r.formType}</span> : null}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4 text-right text-sm">
+              <div>
+                <div className="text-gray-500">Shares (A/D)</div>
+                <div className="font-medium">
+                  {fmtNum(r.shares)} <span className="text-gray-400">({r.ad})</span>
+                </div>
+              </div>
+              <div>
+                <div className="text-gray-500">Price</div>
+                <div className="font-medium">${fmtNum(r.price)}</div>
+              </div>
+              <div>
+                <div className="text-gray-500">Value</div>
+                <div className="font-medium">${fmtNum(r.value)}</div>
+              </div>
+            </div>
+
+            <div className="text-right">
+              <div className="text-xs text-gray-500">Beneficially Owned (after)</div>
+              <div className="font-medium">{fmtNum(r.ownedAfter)}</div>
+              {r.documentUrl && (
+                <a
+                  href={r.documentUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-flex items-center rounded-full bg-black text-white px-3 py-1.5 text-xs hover:opacity-90"
+                >
+                  Open Form 4
+                </a>
+              )}
+            </div>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
