@@ -3,16 +3,16 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 
-/** Props expected by ClientScreener */
+// Props expected by the parent page
 type InsiderTapeProps = {
   symbol?: string;
   start?: string;   // YYYY-MM-DD
   end?: string;     // YYYY-MM-DD
   txnType?: "ALL" | "A" | "D";
-  queryKey?: string; // optional re-fetch key (ignored by fetch, used to trigger useEffect)
+  queryKey?: string; // used to trigger re-fetch on parent changes
 };
 
-/** Row shape coming back from /api/insider */
+// Row shape coming back from /api/insider
 type Row = {
   source: "fmp" | "sec";
   table?: "I" | "II";
@@ -33,17 +33,23 @@ type Row = {
   indexUrl?: string;
 };
 
-export default function InsiderTape(props: InsiderTapeProps) {
+const InsiderTape: React.FC<InsiderTapeProps> = ({
+  symbol: symbolProp,
+  start: startProp,
+  end: endProp,
+  txnType: txnTypeProp,
+  queryKey,
+}) => {
   // ------- filters (initialize from props; user can edit in-place) -------
-  const [symbol, setSymbol] = useState<string>(props.symbol?.toUpperCase?.() || "");
+  const [symbol, setSymbol] = useState<string>(symbolProp?.toUpperCase?.() || "");
   const [start, setStart] = useState<string>(() => {
-    if (props.start) return props.start;
+    if (startProp) return startProp;
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
     return d.toISOString().slice(0, 10);
   });
-  const [end, setEnd] = useState<string>(props.end || new Date().toISOString().slice(0, 10));
-  const [txnType, setTxnType] = useState<"ALL" | "A" | "D">(props.txnType || "ALL");
+  const [end, setEnd] = useState<string>(endProp || new Date().toISOString().slice(0, 10));
+  const [txnType, setTxnType] = useState<"ALL" | "A" | "D">(txnTypeProp || "ALL");
   const [q, setQ] = useState<string>(""); // free-text filter for insider/issuer/security
 
   // ------- pagination -------
@@ -56,15 +62,15 @@ export default function InsiderTape(props: InsiderTapeProps) {
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<any>(null);
 
-  // When parent changes initial props (including queryKey), update local filters and reset page
+  // When parent props change, sync and reset page
   useEffect(() => {
-    if (props.symbol !== undefined) setSymbol(props.symbol.toUpperCase?.() || "");
-    if (props.start) setStart(props.start);
-    if (props.end) setEnd(props.end);
-    if (props.txnType) setTxnType(props.txnType);
+    if (symbolProp !== undefined) setSymbol(symbolProp.toUpperCase?.() || "");
+    if (startProp) setStart(startProp);
+    if (endProp) setEnd(endProp);
+    if (txnTypeProp) setTxnType(txnTypeProp);
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.symbol, props.start, props.end, props.txnType, props.queryKey]);
+  }, [symbolProp, startProp, endProp, txnTypeProp, queryKey]);
 
   // Reset to page 1 when local filters change
   useEffect(() => {
@@ -102,7 +108,6 @@ export default function InsiderTape(props: InsiderTapeProps) {
     }
   }
 
-  // Refetch on any dependency
   useEffect(() => {
     fetchTape();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -349,4 +354,6 @@ export default function InsiderTape(props: InsiderTapeProps) {
       {error && <div className="mt-3 text-xs text-rose-600">⚠ {error}</div>}
     </section>
   );
-}
+};
+
+export default InsiderTape;
