@@ -1,7 +1,7 @@
 // app/components/InsiderTape.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 export type TxnFilter = "ALL" | "A" | "D";
 
@@ -10,7 +10,7 @@ export type InsiderTapeProps = {
   start: string;
   end: string;
   txnType: TxnFilter;
-  queryKey?: string;
+  queryKey?: string; // optional cache-buster
 };
 
 type Row = {
@@ -22,14 +22,19 @@ type Row = {
   cik?: string;
   filedAt?: string;
   transDate?: string;
+
   txnType?: "A" | "D";
   transactionCode?: string;
   transactionText?: string;
+
+  table?: "I" | "II";
+  security?: string;
+
   shares?: number;
   price?: number;
   value?: number;
   ownedAfter?: number;
-  security?: string;
+
   formUrl?: string;
   indexUrl?: string;
 };
@@ -49,19 +54,18 @@ export default function InsiderTape({
   txnType,
   queryKey,
 }: InsiderTapeProps) {
+  // pagination + quick filter
   const [page, setPage] = useState<number>(1);
   const [perPage, setPerPage] = useState<number>(25);
   const [q, setQ] = useState<string>("");
 
+  // data state
   const [loading, setLoading] = useState<boolean>(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [meta, setMeta] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // reset pagination on filter change
-  useEffect(() => {
-    setPage(1);
-  }, [symbol, start, end, txnType]);
+  useEffect(() => setPage(1), [symbol, start, end, txnType]);
 
   async function fetchTape() {
     if (!symbol) {
@@ -82,9 +86,7 @@ export default function InsiderTape({
       });
       if (queryKey) params.set("_", queryKey);
 
-      const res = await fetch(`/api/insider?${params.toString()}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(`/api/insider?${params.toString()}`, { cache: "no-store" });
       const json = await res.json();
       if (!res.ok || json?.ok === false) throw new Error(json?.error || "Fetch failed");
 
@@ -104,15 +106,17 @@ export default function InsiderTape({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, start, end, txnType, page, perPage, queryKey]);
 
+  // client-side quick filter
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows;
     return rows.filter((r) => {
-      const hay = `${r.insider} ${r.insiderTitle ?? ""} ${r.issuer} ${r.symbol ?? ""}`.toLowerCase();
+      const hay = `${r.insider} ${r.insiderTitle ?? ""} ${r.issuer} ${r.symbol ?? ""} ${r.security ?? ""}`.toLowerCase();
       return hay.includes(t);
     });
   }, [rows, q]);
 
+  // ---- render ----
   return (
     <section className="rounded-2xl border bg-white p-4 md:p-5">
       <div className="flex flex-wrap items-end gap-3">
@@ -121,15 +125,14 @@ export default function InsiderTape({
           • {filtered.length} trade{filtered.length === 1 ? "" : "s"} shown
           {meta?.count !== undefined ? ` (fetched: ${meta.count})` : ""}
         </div>
-
         <div className="ml-auto flex items-end gap-2">
           <div>
             <div className="mb-1 text-xs text-gray-700">Quick filter</div>
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Filter insider/issuer/symbol"
-              className="w-48 rounded-md border px-3 py-2 text-sm"
+              placeholder="Filter insider/issuer/symbol/security"
+              className="w-56 rounded-md border px-3 py-2 text-sm"
             />
           </div>
           <div>
@@ -147,7 +150,7 @@ export default function InsiderTape({
           <button
             onClick={fetchTape}
             disabled={loading}
-            className="rounded-md bg-black px-3 py-1.5 text-xs text-white disabled:opacity-60"
+            className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
           >
             {loading ? "Loading…" : "Refresh"}
           </button>
@@ -155,8 +158,8 @@ export default function InsiderTape({
       </div>
 
       <p className="mt-2 text-xs text-gray-500">
-        <span className="font-medium">A/D</span>: A = Acquired (e.g., P/A/M), D = Disposed (e.g., S/F/G).&nbsp;
-        “Code” shows the raw Form 4 transaction code. Some codes are neutral; A/D may be blank in those cases.
+        <span className="font-medium">A/D</span>: A = Acquired (e.g., P / Awards / Option Exercise), D = Disposed (e.g., S / Tax Withholding).{" "}
+        <span className="font-medium">Code</span> shows the raw Form 4 code (P, S, A, D, M, G, F…). Some codes don’t map cleanly to A/D, so A/D may be blank.
       </p>
 
       {error && (
@@ -172,6 +175,8 @@ export default function InsiderTape({
               <th className="px-3 py-2 text-left">Date (File / Txn)</th>
               <th className="px-3 py-2 text-left">Insider</th>
               <th className="px-3 py-2 text-left">Issuer / Symbol</th>
+              <th className="px-3 py-2 text-left">Table</th>
+              <th className="px-3 py-2 text-left">Security</th>
               <th className="px-3 py-2 text-left">A/D</th>
               <th className="px-3 py-2 text-left">Code</th>
               <th className="px-3 py-2 text-right">Shares</th>
@@ -210,6 +215,8 @@ export default function InsiderTape({
                     <div className="text-gray-900">{r.issuer}</div>
                     <div className="text-gray-500 text-xs">{r.symbol ?? r.cik ?? "—"}</div>
                   </td>
+                  <td className="px-3 py-2">{r.table ?? "—"}</td>
+                  <td className="px-3 py-2">{r.security ?? "—"}</td>
                   <td className="px-3 py-2">
                     <span
                       className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${pillColor(
@@ -270,7 +277,7 @@ export default function InsiderTape({
 
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-3 py-6 text-center text-gray-500">
+                <td colSpan={12} className="px-3 py-6 text-center text-gray-500">
                   No trades found for these filters.
                 </td>
               </tr>
