@@ -3,16 +3,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-/**
- * This component expects these API routes to exist:
- *  - GET /api/crypto/quote?symbol=BTCUSD
- *      -> { ok: true, quote: { symbol, price, changesPercentage, change, ... } }
- *  - GET /api/crypto/history?symbol=BTCUSD&days=90
- *      -> { ok: true, rows: [{ date: "YYYY-MM-DD", close: number }, ...] }  (newest last or first; we normalize)
- *
- * If you need the server code, say the word and I’ll paste the handlers that call FMP.
- */
-
 type Quote = {
   symbol: string;
   price?: number;
@@ -29,6 +19,7 @@ type Quote = {
 };
 
 type Bar = { date: string; close: number };
+type Coin = { symbol: string; name?: string };
 
 // ---------- small utils ----------
 const fmtN = (v?: number, d = 2) =>
@@ -49,15 +40,10 @@ function toDailyReturns(closes: number[]) {
   for (let i = 1; i < closes.length; i++) {
     const prev = closes[i - 1];
     const cur = closes[i];
-    if (prev && isFinite(prev) && isFinite(cur)) {
-      r.push((cur - prev) / prev);
-    } else {
-      r.push(0);
-    }
+    r.push(prev ? (cur - prev) / prev : 0);
   }
   return r;
 }
-
 function maxDrawdown(series: number[]) {
   let peak = -Infinity;
   let mdd = 0;
@@ -65,9 +51,8 @@ function maxDrawdown(series: number[]) {
     peak = Math.max(peak, v);
     mdd = Math.min(mdd, (v - peak) / peak);
   }
-  return mdd; // negative number
+  return mdd;
 }
-
 function correlation(a: number[], b: number[]) {
   const n = Math.min(a.length, b.length);
   if (n < 2) return NaN;
@@ -104,7 +89,6 @@ function useContainerWidth(min = 320) {
   }, [min]);
   return { ref, width: w };
 }
-
 function minMax(values: (number | undefined | null)[]) {
   let lo = +Infinity,
     hi = -Infinity;
@@ -118,7 +102,6 @@ function minMax(values: (number | undefined | null)[]) {
   if (lo === hi) return { lo: lo - 1, hi: hi + 1 };
   return { lo, hi };
 }
-
 function linePath(
   series: (number | undefined | null)[],
   width: number,
@@ -144,7 +127,8 @@ function linePath(
 
 // ---------- component ----------
 export default function CryptoDashboard() {
-  const [symbol, setSymbol] = useState<string>(""); // user inputs, e.g., BTCUSD, ETHUSD
+  // Open on BTC by default
+  const [symbol, setSymbol] = useState<string>("BTCUSD");
   const [days, setDays] = useState<number>(90);
 
   const [quote, setQuote] = useState<Quote | null>(null);
@@ -152,8 +136,40 @@ export default function CryptoDashboard() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // list of all crypto pairs from FMP (proxied)
+  const [coins, setCoins] = useState<Coin[]>([]);
+  const [listLoading, setListLoading] = useState<boolean>(false);
+
   // optional BTC benchmark for correlation
   const [btcBars, setBtcBars] = useState<Bar[]>([]);
+
+  // load the master crypto list once
+  useEffect(() => {
+    let alive = true;
+    async function run() {
+      try {
+        setListLoading(true);
+        const r = await fetch("/api/crypto/list", { cache: "no-store" });
+        const j = await r.json();
+        if (alive && Array.isArray(j.rows)) setCoins(j.rows);
+      } catch {
+        // small fallback set if the route is missing
+        if (alive) {
+          setCoins([
+            { symbol: "BTCUSD", name: "Bitcoin / USD" },
+            { symbol: "ETHUSD", name: "Ethereum / USD" },
+            { symbol: "SOLUSD", name: "Solana / USD" },
+          ]);
+        }
+      } finally {
+        setListLoading(false);
+      }
+    }
+    run();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   async function load(sym: string) {
     if (!sym) return;
@@ -198,14 +214,22 @@ export default function CryptoDashboard() {
     }
   }
 
-  // normalize history to ascending by date
+  // auto-load BTC on first mount (and whenever default symbol changes)
+  useEffect(() => {
+    load(symbol);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // normalize to ascending
   const series = useMemo(() => {
     const arr = [...bars];
     arr.sort((a, b) => (a.date < b.date ? -1 : 1));
     return arr;
   }, [bars]);
-
-  const closes = useMemo(() => series.map((b) => b.close).filter((v) => typeof v === "number"), [series]);
+  const closes = useMemo(
+    () => series.map((b) => b.close).filter((v) => typeof v === "number"),
+    [series]
+  );
 
   // performance & risk
   const perf = useMemo(() => {
@@ -214,7 +238,6 @@ export default function CryptoDashboard() {
     const rets = toDailyReturns(closes);
     const last = closes[closes.length - 1];
     const idxOf = (d: number) => Math.max(0, closes.length - 1 - d);
-
     const retOver = (d: number) => {
       const i = idxOf(d);
       const base = closes[i];
@@ -225,13 +248,12 @@ export default function CryptoDashboard() {
     const r7d = retOver(7);
     const r30d = retOver(30);
 
-    // annualized vol from daily returns (sqrt(365))
     const mean = rets.reduce((s, x) => s + x, 0) / rets.length;
     const variance =
-      rets.reduce((s, x) => s + Math.pow(x - mean, 2), 0) / Math.max(1, rets.length - 1);
+      rets.reduce((s, x) => s + Math.pow(x - mean, 2), 0) /
+      Math.max(1, rets.length - 1);
     const volAnnual = Math.sqrt(variance) * Math.sqrt(365);
 
-    // max drawdown on price series
     const mdd = maxDrawdown(closes);
 
     // correlation vs BTC
@@ -250,26 +272,77 @@ export default function CryptoDashboard() {
     return { r24h, r7d, r30d, volAnnual, mdd, corrBTC };
   }, [closes, btcBars]);
 
-  // -------- responsive chart (price line) --------
+  // responsive chart sizing
   const box = useContainerWidth(360);
   const height = Math.max(220, Math.min(520, Math.round(box.width * 0.45)));
   const domain = useMemo(() => minMax(closes), [closes]);
 
-  // -------- render --------
+  // filter coins for suggestions
+  const [suggest, setSuggest] = useState<Coin[]>([]);
+  useEffect(() => {
+    const t = symbol.trim().toUpperCase();
+    if (!t) {
+      setSuggest(coins.slice(0, 12));
+      return;
+    }
+    const out = coins
+      .filter(
+        (c) =>
+          c.symbol.toUpperCase().includes(t) ||
+          (c.name || "").toUpperCase().includes(t)
+      )
+      .slice(0, 12);
+    setSuggest(out);
+  }, [symbol, coins]);
+
   return (
     <div className="space-y-4">
       {/* Controls */}
       <section className="rounded-2xl border bg-white p-4 md:p-5">
-        <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_auto_auto_auto]">
-          <div>
+        <div className="grid gap-3 md:grid-cols-[minmax(260px,1fr)_auto_auto]">
+          <div className="relative">
             <div className="mb-1 text-xs text-gray-700">Crypto Pair</div>
             <input
               value={symbol}
               onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") load(symbol.trim());
+              }}
               placeholder="e.g., BTCUSD, ETHUSD"
               className="w-full rounded-md border px-3 py-2"
+              aria-autocomplete="list"
+              aria-expanded="true"
+              aria-controls="crypto-suggest"
             />
+            {/* suggestions */}
+            {suggest.length > 0 && (
+              <ul
+                id="crypto-suggest"
+                className="absolute z-10 mt-1 max-h-64 w-full overflow-auto rounded-md border bg-white shadow"
+              >
+                {listLoading && (
+                  <li className="px-3 py-2 text-xs text-gray-500">Loading list…</li>
+                )}
+                {!listLoading &&
+                  suggest.map((c) => (
+                    <li
+                      key={c.symbol}
+                      className="cursor-pointer px-3 py-2 hover:bg-gray-50"
+                      onClick={() => {
+                        setSymbol(c.symbol);
+                        setTimeout(() => load(c.symbol), 0);
+                      }}
+                    >
+                      <div className="text-sm text-gray-900">{c.symbol}</div>
+                      {c.name && (
+                        <div className="text-xs text-gray-500">{c.name}</div>
+                      )}
+                    </li>
+                  ))}
+              </ul>
+            )}
           </div>
+
           <div>
             <div className="mb-1 text-xs text-gray-700">Window</div>
             <select
@@ -284,6 +357,7 @@ export default function CryptoDashboard() {
               <option value={365}>365 days</option>
             </select>
           </div>
+
           <div className="flex items-end">
             <button
               onClick={() => load(symbol.trim())}
@@ -306,13 +380,9 @@ export default function CryptoDashboard() {
       {quote && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
           <div className="flex items-center gap-4">
-            <div className="text-lg font-semibold text-gray-900">
-              {quote.symbol}
-            </div>
+            <div className="text-lg font-semibold text-gray-900">{quote.symbol}</div>
             <div className="ml-auto text-right">
-              <div className="text-2xl font-bold text-gray-900">
-                {fmtN(quote.price)}
-              </div>
+              <div className="text-2xl font-bold text-gray-900">{fmtN(quote.price)}</div>
               <div className={`text-sm ${pctClass(quote.changesPercentage)}`}>
                 {typeof quote.change === "number"
                   ? (quote.change >= 0 ? "+" : "") + quote.change.toFixed(2)
@@ -353,14 +423,15 @@ export default function CryptoDashboard() {
       {/* Price performance chart */}
       {closes.length > 1 && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <div className="text-sm font-medium text-gray-900 mb-2">
+          <div className="mb-2 text-sm font-medium text-gray-900">
             Price Performance ({days}d)
           </div>
           <div ref={box.ref} className="w-full">
-            <svg width={box.width} height={height} role="img" aria-label="Crypto price chart">
+            <svg width={box.width} height={Math.max(220, Math.min(520, Math.round(box.width * 0.45)))} role="img">
               {/* grid */}
               {Array.from({ length: 4 }).map((_, i) => {
-                const y = ((i + 1) / 5) * height;
+                const h = Math.max(220, Math.min(520, Math.round(box.width * 0.45)));
+                const y = ((i + 1) / 5) * h;
                 return (
                   <line
                     key={i}
@@ -373,9 +444,14 @@ export default function CryptoDashboard() {
                   />
                 );
               })}
-              {/* line */}
               <path
-                d={linePath(closes, box.width, height, domain.lo, domain.hi)}
+                d={linePath(
+                  closes,
+                  box.width,
+                  Math.max(220, Math.min(520, Math.round(box.width * 0.45))),
+                  minMax(closes).lo,
+                  minMax(closes).hi
+                )}
                 fill="none"
                 stroke="#0f172a"
                 strokeWidth={2}
@@ -385,64 +461,98 @@ export default function CryptoDashboard() {
         </section>
       )}
 
-      {/* Performance & Risk (replaces the old "Recent daily prices" table) */}
-      {perf && (
-        <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <div className="text-sm font-medium text-gray-900 mb-2">
-            Performance & Risk
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs text-gray-500">Return (24h)</div>
-              <div className={`text-base font-semibold ${pctClass(perf.r24h * 100)}`}>
-                {isFinite(perf.r24h) ? (perf.r24h * 100).toFixed(2) + "%" : "—"}
-              </div>
+      {/* Performance & Risk */}
+      {(() => {
+        if (!closes.length) return null;
+        const rets = toDailyReturns(closes);
+        const last = closes[closes.length - 1];
+        const retOver = (d: number) => {
+          const i = Math.max(0, closes.length - 1 - d);
+          const base = closes[i];
+          return base ? (last - base) / base : NaN;
+        };
+        const r24h = retOver(1);
+        const r7d = retOver(7);
+        const r30d = retOver(30);
+        const mean = rets.reduce((s, x) => s + x, 0) / Math.max(1, rets.length);
+        const variance =
+          rets.reduce((s, x) => s + Math.pow(x - mean, 2), 0) /
+          Math.max(1, rets.length - 1);
+        const volAnnual = Math.sqrt(variance) * Math.sqrt(365);
+        const mdd = maxDrawdown(closes);
+        let corrBTC: number | undefined = undefined;
+        if (btcBars.length > 1) {
+          const btcSeries = [...btcBars].sort((a, b) => (a.date < b.date ? -1 : 1));
+          const btcCloses = btcSeries.map((b) => b.close);
+          const n = Math.min(closes.length, btcCloses.length);
+          if (n > 5) {
+            const a = closes.slice(-n);
+            const b = btcCloses.slice(-n);
+            corrBTC = correlation(a, b);
+          }
+        }
+        return (
+          <section className="rounded-2xl border bg-white p-4 md:p-5">
+            <div className="text-sm font-medium text-gray-900 mb-2">
+              Performance & Risk
             </div>
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs text-gray-500">Return (7d)</div>
-              <div className={`text-base font-semibold ${pctClass(perf.r7d * 100)}`}>
-                {isFinite(perf.r7d) ? (perf.r7d * 100).toFixed(2) + "%" : "—"}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs text-gray-500">Return (24h)</div>
+                <div className={`text-base font-semibold ${pctClass(r24h * 100)}`}>
+                  {isFinite(r24h) ? (r24h * 100).toFixed(2) + "%" : "—"}
+                </div>
               </div>
-            </div>
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs text-gray-500">Return (30d)</div>
-              <div className={`text-base font-semibold ${pctClass(perf.r30d * 100)}`}>
-                {isFinite(perf.r30d) ? (perf.r30d * 100).toFixed(2) + "%" : "—"}
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs text-gray-500">Return (7d)</div>
+                <div className={`text-base font-semibold ${pctClass(r7d * 100)}`}>
+                  {isFinite(r7d) ? (r7d * 100).toFixed(2) + "%" : "—"}
+                </div>
               </div>
-            </div>
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs text-gray-500">Return (30d)</div>
+                <div className={`text-base font-semibold ${pctClass(r30d * 100)}`}>
+                  {isFinite(r30d) ? (r30d * 100).toFixed(2) + "%" : "—"}
+                </div>
+              </div>
 
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs text-gray-500">Volatility (annualized)</div>
-              <div className="text-base font-semibold text-gray-900">
-                {isFinite(perf.volAnnual) ? (perf.volAnnual * 100).toFixed(2) + "%" : "—"}
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs text-gray-500">Volatility (annualized)</div>
+                <div className="text-base font-semibold text-gray-900">
+                  {isFinite(volAnnual) ? (volAnnual * 100).toFixed(2) + "%" : "—"}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  From daily returns over selected window
+                </div>
               </div>
-              <div className="text-xs text-gray-500 mt-1">From daily returns over selected window</div>
-            </div>
 
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs text-gray-500">Max Drawdown</div>
-              <div className="text-base font-semibold text-gray-900">
-                {isFinite(perf.mdd) ? (perf.mdd * 100).toFixed(2) + "%" : "—"}
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs text-gray-500">Max Drawdown</div>
+                <div className="text-base font-semibold text-gray-900">
+                  {isFinite(mdd) ? (mdd * 100).toFixed(2) + "%" : "—"}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  Worst peak-to-trough loss over window
+                </div>
               </div>
-              <div className="text-xs text-gray-500 mt-1">Worst peak-to-trough loss over window</div>
-            </div>
 
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs text-gray-500">Correlation vs BTC</div>
-              <div className="text-base font-semibold text-gray-900">
-                {typeof perf.corrBTC === "number" && isFinite(perf.corrBTC)
-                  ? perf.corrBTC.toFixed(2)
-                  : symbol.toUpperCase() === "BTCUSD"
-                  ? "—"
-                  : "—"}
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                Based on closing prices over the same window
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs text-gray-500">Correlation vs BTC</div>
+                <div className="text-base font-semibold text-gray-900">
+                  {typeof corrBTC === "number" && isFinite(corrBTC)
+                    ? corrBTC.toFixed(2)
+                    : symbol.toUpperCase() === "BTCUSD"
+                    ? "—"
+                    : "—"}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  Based on closing prices over the same window
+                </div>
               </div>
             </div>
-          </div>
-        </section>
-      )}
+          </section>
+        );
+      })()}
     </div>
   );
 }
