@@ -1,19 +1,12 @@
 // app/screener/ClientScreener.tsx
 "use client";
-import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
-import InsiderTape, { TxnFilter } from "../components/InsiderTape";
-
-
-"use client";
 
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import InsiderTape, { TxnFilter } from "../components/InsiderTape";
 
-// ✅ Dynamic imports with visible fallbacks
+// Dynamic imports with visible fallbacks
 const StocksDashboard = dynamic(() => import("../components/StocksDashboard"), {
   ssr: false,
   loading: () => <div className="text-sm text-gray-500">Loading Stocks…</div>,
@@ -27,12 +20,7 @@ const ForexDashboard = dynamic(() => import("../components/ForexDashboard"), {
   loading: () => <div className="text-sm text-gray-500">Loading Forex…</div>,
 });
 
-// ✅ Proper error boundary (so you see errors instead of a blank page)
-import ErrorBoundary from "../components/ErrorBoundary";
-
 type Tab = "stocks" | "insider" | "crypto" | "forex";
-
-// URL <-> tab mapping
 const tabToPath: Record<Tab, string> = {
   stocks: "/screener/stocks",
   insider: "/screener/insider-activity",
@@ -51,7 +39,7 @@ export default function ClientScreener({ initialTab = "stocks" }: { initialTab?:
   const pathname = usePathname();
   const [tab, setTab] = useState<Tab>(initialTab);
 
-  // URL → state (supports back/forward & direct loads)
+  // URL → state
   useEffect(() => {
     const m = pathname?.match(/\/screener\/([^/?#]+)/);
     const section = m?.[1] ?? "";
@@ -59,14 +47,14 @@ export default function ClientScreener({ initialTab = "stocks" }: { initialTab?:
     if (urlTab && urlTab !== tab) setTab(urlTab);
   }, [pathname, tab]);
 
-  // state → URL (when clicking tabs)
+  // state → URL
   const go = (next: Tab) => {
     if (next === tab) return;
     setTab(next);
     router.push(tabToPath[next]);
   };
 
-  // ===== Insider filters (unchanged) =====
+  // Insider filters (unchanged)
   const [symbol, setSymbol] = useState("");
   const [start, setStart] = useState(() =>
     new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10)
@@ -88,7 +76,7 @@ export default function ClientScreener({ initialTab = "stocks" }: { initialTab?:
       {/* Panels */}
       {tab === "stocks" && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <ErrorBoundary><StocksDashboard /></ErrorBoundary>
+          <StocksDashboard />
         </section>
       )}
 
@@ -129,13 +117,13 @@ export default function ClientScreener({ initialTab = "stocks" }: { initialTab?:
 
       {tab === "crypto" && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <ErrorBoundary><CryptoDashboard /></ErrorBoundary>
+          <CryptoDashboard />
         </section>
       )}
 
       {tab === "forex" && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <ErrorBoundary><ForexDashboard /></ErrorBoundary>
+          <ForexDashboard />
         </section>
       )}
     </div>
