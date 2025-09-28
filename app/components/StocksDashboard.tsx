@@ -1,9 +1,9 @@
 // app/components/StocksDashboard.tsx
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
-// (rest unchanged)
-
-"use client";
+import Link from "next/link";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { usePathname } from "next/navigation";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
