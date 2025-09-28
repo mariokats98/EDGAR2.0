@@ -1,44 +1,12 @@
 // app/components/Header.tsx
 "use client";
 
-import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
+import { useState } from "react";
 
 export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [screenerOpen, setScreenerOpen] = useState(false); // desktop dropdown
-  const [screenerMobileOpen, setScreenerMobileOpen] = useState(false); // mobile collapsible
-  const hoverTimer = useRef<number | null>(null);
-
-  useEffect(() => {
-    const handler = () => setMobileOpen(false);
-    window.addEventListener("hashchange", handler);
-    window.addEventListener("popstate", handler);
-    return () => {
-      window.removeEventListener("hashchange", handler);
-      window.removeEventListener("popstate", handler);
-    };
-  }, []);
-
-  // Close desktop dropdown when clicking elsewhere
-  useEffect(() => {
-    const onDocClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      const within = target.closest?.("[data-screener-menu]");
-      if (!within) setScreenerOpen(false);
-    };
-    document.addEventListener("click", onDocClick);
-    return () => document.removeEventListener("click", onDocClick);
-  }, []);
-
-  const openDropdown = () => {
-    if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
-    setScreenerOpen(true);
-  };
-  const closeDropdown = () => {
-    if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
-    hoverTimer.current = window.setTimeout(() => setScreenerOpen(false), 100);
-  };
+  const [screenerMobileOpen, setScreenerMobileOpen] = useState(false);
 
   return (
     <header className="sticky top-0 z-50 border-b bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
@@ -57,52 +25,38 @@ export default function Header() {
             <NavLink href="/fred" label="FRED" />
             <NavLink href="/news" label="News" />
 
-            {/* Screener with hover dropdown (button trigger, no href) */}
-            <div
-              className="relative"
-              data-screener-menu
-              onMouseEnter={openDropdown}
-              onMouseLeave={closeDropdown}
-            >
+            {/* Screener dropdown: CSS-only (hover + focus-within); no parent link */}
+            <div className="relative group" data-screener>
               <button
                 type="button"
-                className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition inline-flex items-center gap-1"
+                className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition inline-flex items-center gap-1 focus:outline-none"
                 aria-haspopup="menu"
-                aria-expanded={screenerOpen}
+                aria-expanded="false"
               >
                 Screener
-                <svg
-                  className={`h-4 w-4 transition-transform ${screenerOpen ? "rotate-180" : ""}`}
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                  aria-hidden
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z"
-                    clipRule="evenodd"
-                  />
+                <svg className="h-4 w-4 transition-transform group-focus-within:rotate-180 group-hover:rotate-180" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+                  <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z" clipRule="evenodd" />
                 </svg>
               </button>
 
-              {/* Dropdown panel */}
+              {/* Menu */}
               <div
-                className={`absolute left-0 mt-1 w-56 rounded-md border bg-white shadow-lg transition z-[60]
-                  ${screenerOpen ? "opacity-100 visible translate-y-0" : "opacity-0 invisible -translate-y-1"}`}
+                className="pointer-events-none absolute left-0 mt-1 w-56 rounded-md border bg-white shadow-lg opacity-0 translate-y-1
+                           group-hover:pointer-events-auto group-hover:opacity-100 group-hover:translate-y-0
+                           group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-focus-within:translate-y-0
+                           transition z-[60]"
                 role="menu"
                 aria-label="Screener submenu"
               >
-                <DropdownLink href="/screener" label="All Screeners" onClickStop />
-                <DropdownLink href="/screener/stocks" label="Stocks" onClickStop />
-                <DropdownLink href="/screener/insider-activity" label="Insider Activity" onClickStop />
-                <DropdownLink href="/screener/crypto" label="Crypto" onClickStop />
-                <DropdownLink href="/screener/forex" label="Forex" onClickStop />
+                <DropdownLink href="/screener/stocks" label="Stocks" />
+                <DropdownLink href="/screener/insider-activity" label="Insider Activity" />
+                <DropdownLink href="/screener/crypto" label="Crypto" />
+                <DropdownLink href="/screener/forex" label="Forex" />
               </div>
             </div>
 
             <NavLink href="/game" label="Puzzle" />
 
-            {/* AI CTA */}
             <Link
               href="/ai"
               className="ml-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow hover:opacity-95 animate-[sheen_2.6s_infinite]"
@@ -141,22 +95,12 @@ export default function Header() {
               onClick={() => setScreenerMobileOpen(v => !v)}
             >
               <span>Screener</span>
-              <svg
-                className={`h-4 w-4 transition-transform ${screenerMobileOpen ? "rotate-180" : ""}`}
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                aria-hidden
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z"
-                  clipRule="evenodd"
-                />
+              <svg className={`h-4 w-4 transition-transform ${screenerMobileOpen ? "rotate-180" : ""}`} viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+                <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z" clipRule="evenodd" />
               </svg>
             </button>
             {screenerMobileOpen && (
               <div className="ml-2 mt-1 mb-1 space-y-1">
-                <MobileLink href="/screener" label="All Screeners" onClick={() => setMobileOpen(false)} />
                 <MobileLink href="/screener/stocks" label="Stocks" onClick={() => setMobileOpen(false)} />
                 <MobileLink href="/screener/insider-activity" label="Insider Activity" onClick={() => setMobileOpen(false)} />
                 <MobileLink href="/screener/crypto" label="Crypto" onClick={() => setMobileOpen(false)} />
@@ -187,25 +131,17 @@ function NavLink({ href, label }: { href: string; label: string }) {
   );
 }
 
-function DropdownLink({
-  href,
-  label,
-  onClickStop
-}: {
-  href: string;
-  label: string;
-  onClickStop?: boolean;
-}) {
-  // stopPropagation prevents clicks from triggering the parent trigger accidentally
-  const handleClick: React.MouseEventHandler = (e) => {
-    if (onClickStop) e.stopPropagation();
-  };
+function DropdownLink({ href, label }: { href: string; label: string }) {
   return (
     <Link
       href={href}
       role="menuitem"
-      onClick={handleClick}
       className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+      onClick={(e) => {
+        // helps close via :focus-within as soon as link is clicked
+        const container = e.currentTarget.closest("[data-screener]") as HTMLElement | null;
+        container?.blur?.();
+      }}
     >
       {label}
     </Link>
