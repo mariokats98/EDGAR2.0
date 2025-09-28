@@ -2,8 +2,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import InsiderTape, { TxnFilter } from "../components/InsiderTape";
 
 const StocksDashboard = dynamic(() => import("../components/StocksDashboard"), { ssr: false });
@@ -12,22 +12,46 @@ const ForexDashboard  = dynamic(() => import("../components/ForexDashboard"),  {
 
 type Tab = "stocks" | "insider" | "crypto" | "forex";
 
+// URL <-> tab mapping
+const tabToPath: Record<Tab, string> = {
+  stocks: "/screener/stocks",
+  insider: "/screener/insider-activity",
+  crypto: "/screener/crypto",
+  forex: "/screener/forex",
+};
+
+const pathToTab: Record<string, Tab | undefined> = {
+  "stocks": "stocks",
+  "insider-activity": "insider",
+  "crypto": "crypto",
+  "forex": "forex",
+};
+
 export default function ClientScreener({ initialTab = "stocks" }: { initialTab?: Tab }) {
   const router = useRouter();
+  const pathname = usePathname();
+
   const [tab, setTab] = useState<Tab>(initialTab);
 
+  // Keep tab in sync when the URL changes (e.g., back/forward or direct load)
+  useEffect(() => {
+    // expect paths like /screener/<section>
+    const match = pathname?.match(/\/screener\/([^/?#]+)/);
+    const section = match?.[1] ?? null;
+    const urlTab = section ? pathToTab[section] : undefined;
+    if (urlTab && urlTab !== tab) {
+      setTab(urlTab);
+    }
+  }, [pathname, tab]);
+
+  // Navigate + update state (only push when actually changing)
   const go = (next: Tab) => {
+    if (next === tab) return;
     setTab(next);
-    const tabToPath: Record<Tab, string> = {
-      stocks: "/screener/stocks",
-      insider: "/screener/insider-activity",
-      crypto: "/screener/crypto",
-      forex: "/screener/forex",
-    };
     router.push(tabToPath[next]);
   };
 
-  // Insider filters (unchanged)
+  // ====== Insider filters (as you had) ======
   const [symbol, setSymbol] = useState("");
   const [start, setStart] = useState(() =>
     new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10)
@@ -76,7 +100,7 @@ export default function ClientScreener({ initialTab = "stocks" }: { initialTab?:
         </section>
       ) : tab === "insider" ? (
         <>
-          {/* Insider filter UI */}
+          {/* Insider filter UI (unchanged) */}
           <section className="rounded-2xl border bg-white p-4 md:p-5">
             <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_repeat(2,1fr)_auto]">
               <div>
