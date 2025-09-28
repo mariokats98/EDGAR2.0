@@ -1,5 +1,12 @@
 // app/screener/ClientScreener.tsx
 "use client";
+import dynamic from "next/dynamic";
+import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import InsiderTape, { TxnFilter } from "../components/InsiderTape";
+
+
+"use client";
 
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
