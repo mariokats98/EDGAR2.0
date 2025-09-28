@@ -2,14 +2,69 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { usePathname } from "next/navigation";
 
 export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [screenerMobileOpen, setScreenerMobileOpen] = useState(false);
+  const [screenerOpen, setScreenerOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 224 });
+  const pathname = usePathname();
+
+  // Reposition the dropdown relative to the trigger
+  const calcPos = () => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setMenuPos({
+      top: Math.round(r.bottom + 6),         // a little gap below button
+      left: Math.round(r.left),              // align left edges
+      width: Math.max(224, Math.round(r.width)), // keep a min width
+    });
+  };
+
+  useLayoutEffect(() => {
+    if (screenerOpen) calcPos();
+  }, [screenerOpen]);
+
+  // Close on route change
+  useEffect(() => {
+    setScreenerOpen(false);
+    setMobileOpen(false);
+  }, [pathname]);
+
+  // Close on outside click / Escape / scroll / resize
+  useEffect(() => {
+    if (!screenerOpen) return;
+
+    const handleClick = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!triggerRef.current?.contains(t)) {
+        // since menu is portaled, any click not on trigger should close
+        setScreenerOpen(false);
+      }
+    };
+    const onEsc = (e: KeyboardEvent) => e.key === "Escape" && setScreenerOpen(false);
+    const onScroll = () => calcPos();
+    const onResize = () => calcPos();
+
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", onEsc);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", onEsc);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [screenerOpen]);
 
   return (
-    <header className="sticky top-0 z-50 border-b bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
+    <header className="sticky top-0 z-[1000] border-b bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
       <div className="mx-auto max-w-6xl px-4">
         <div className="flex h-14 items-center justify-between">
           <Link href="/" className="shrink-0 font-bold text-lg tracking-tight text-brand">
@@ -25,17 +80,19 @@ export default function Header() {
             <NavLink href="/fred" label="FRED" />
             <NavLink href="/news" label="News" />
 
-            {/* Screener dropdown: button trigger (no href) to prevent accidental navigation */}
-            <div className="relative group" data-screener>
+            {/* Screener (click to open, menu rendered in a portal) */}
+            <div className="relative">
               <button
+                ref={triggerRef}
                 type="button"
-                className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition inline-flex items-center gap-1 focus:outline-none"
+                className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition inline-flex items-center gap-1"
                 aria-haspopup="menu"
-                aria-expanded="false"
+                aria-expanded={screenerOpen}
+                onClick={() => setScreenerOpen(v => !v)}
               >
                 Screener
                 <svg
-                  className="h-4 w-4 transition-transform group-hover:rotate-180 group-focus-within:rotate-180"
+                  className={`h-4 w-4 transition-transform ${screenerOpen ? "rotate-180" : ""}`}
                   viewBox="0 0 20 20"
                   fill="currentColor"
                   aria-hidden
@@ -47,22 +104,30 @@ export default function Header() {
                   />
                 </svg>
               </button>
-
-              {/* Menu */}
-              <div
-                className="pointer-events-none absolute left-0 mt-1 w-56 rounded-md border bg-white shadow-lg opacity-0 translate-y-1
-                           group-hover:pointer-events-auto group-hover:opacity-100 group-hover:translate-y-0
-                           group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-focus-within:translate-y-0
-                           transition z-[60]"
-                role="menu"
-                aria-label="Screener submenu"
-              >
-                <DropdownLink href="/screener/stocks" label="Stocks" />
-                <DropdownLink href="/screener/insider-activity" label="Insider Activity" />
-                <DropdownLink href="/screener/crypto" label="Crypto" />
-                <DropdownLink href="/screener/forex" label="Forex" />
-              </div>
             </div>
+
+            {/* Portal menu */}
+            {screenerOpen &&
+              createPortal(
+                <div
+                  role="menu"
+                  aria-label="Screener submenu"
+                  style={{
+                    position: "fixed",
+                    top: menuPos.top,
+                    left: menuPos.left,
+                    minWidth: menuPos.width,
+                  }}
+                  className="z-[9999] rounded-md border bg-white shadow-lg p-1"
+                >
+                  <DropdownLink href="/screener/stocks" label="Stocks" onNavigate={() => setScreenerOpen(false)} />
+                  <DropdownLink href="/screener/insider-activity" label="Insider Activity" onNavigate={() => setScreenerOpen(false)} />
+                  <DropdownLink href="/screener/crypto" label="Crypto" onNavigate={() => setScreenerOpen(false)} />
+                  <DropdownLink href="/screener/forex" label="Forex" onNavigate={() => setScreenerOpen(false)} />
+                </div>,
+                document.body
+              )
+            }
 
             <NavLink href="/game" label="Puzzle" />
 
@@ -99,33 +164,24 @@ export default function Header() {
             <MobileLink href="/news" label="News" onClick={() => setMobileOpen(false)} />
 
             {/* Mobile Screener collapsible */}
-            <button
-              className="flex w-full items-center justify-between px-3 py-2 rounded-md hover:bg-gray-100 text-left"
-              aria-expanded={screenerMobileOpen}
-              onClick={() => setScreenerMobileOpen(v => !v)}
-            >
-              <span>Screener</span>
-              <svg
-                className={`h-4 w-4 transition-transform ${screenerMobileOpen ? "rotate-180" : ""}`}
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                aria-hidden
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </button>
-            {screenerMobileOpen && (
+            <details className="rounded-md">
+              <summary className="list-none flex w-full items-center justify-between px-3 py-2 rounded-md hover:bg-gray-100 cursor-pointer">
+                <span>Screener</span>
+                <svg className="h-4 w-4 transition-transform" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+                  <path
+                    fillRule="evenodd"
+                    d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </summary>
               <div className="ml-2 mt-1 mb-1 space-y-1">
                 <MobileLink href="/screener/stocks" label="Stocks" onClick={() => setMobileOpen(false)} />
                 <MobileLink href="/screener/insider-activity" label="Insider Activity" onClick={() => setMobileOpen(false)} />
                 <MobileLink href="/screener/crypto" label="Crypto" onClick={() => setMobileOpen(false)} />
                 <MobileLink href="/screener/forex" label="Forex" onClick={() => setMobileOpen(false)} />
               </div>
-            )}
+            </details>
 
             <MobileLink href="/game" label="Puzzle" onClick={() => setMobileOpen(false)} />
             <Link
@@ -152,17 +208,21 @@ function NavLink({ href, label }: { href: string; label: string }) {
   );
 }
 
-function DropdownLink({ href, label }: { href: string; label: string }) {
+function DropdownLink({
+  href,
+  label,
+  onNavigate,
+}: {
+  href: string;
+  label: string;
+  onNavigate?: () => void;
+}) {
   return (
     <Link
       href={href}
       role="menuitem"
-      className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-      onClick={(e) => {
-        // close via :focus-within as soon as a link is clicked
-        const container = e.currentTarget.closest("[data-screener]") as HTMLElement | null;
-        container?.blur?.();
-      }}
+      className="block rounded px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+      onClick={onNavigate}
     >
       {label}
     </Link>
