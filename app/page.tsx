@@ -71,7 +71,7 @@ export default function HomePage() {
 
         {/* Small helper line */}
         <p className="mt-3 text-xs text-gray-500">
-          Tip: Use the pages’ search bars to type a ticker, company, or CIK (e.g.,{" "}
+          
           <span className="font-mono">NVDA</span>).
         </p>
       </section>
