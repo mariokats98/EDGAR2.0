@@ -3,7 +3,7 @@ import "./styles/globals.css";
 import Header from "./components/Header";
 import AIChat from "./components/AIChat";
 
-// ✅ import from the Next.js export
+// ✅ Import Vercel Analytics
 import { Analytics } from "@vercel/analytics/next";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -16,7 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* Vercel Web Analytics */}
         <Analytics />
 
-        {/* your floating chat */}
+        {/* Floating chat */}
         <AIChat />
       </body>
     </html>
