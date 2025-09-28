@@ -1,11 +1,7 @@
 // app/components/StocksDashboard.tsx
 "use client";
-import Link from "next/link";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { usePathname } from "next/navigation";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // ---------- types ----------
 type Quote = {
@@ -148,7 +144,6 @@ function minMaxOfSeries(seriesList: (number | undefined | null)[][]) {
     max = 1;
   }
   if (min === max) {
-    // widen a bit so flat series are visible
     min = min - 1;
     max = max + 1;
   }
@@ -173,7 +168,7 @@ function toPath(
     if (typeof val !== "number" || !isFinite(val)) continue;
     const x = i * stepX;
     const y =
-      h - yPad - ((val - yMin) / range) * (h - 2 * yPad); // top-down SVG coords
+      h - yPad - ((val - yMin) / range) * (h - 2 * yPad);
     d += (d ? " L " : "M ") + x.toFixed(2) + " " + clamp(y, 0, h).toFixed(2);
   }
   return d || "M 0 0";
@@ -214,17 +209,49 @@ export default function StocksDashboard() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function loadAll(sym: string) {
+  // small in-memory cache to avoid re-fetching same params repeatedly
+  const cacheRef = useRef<Map<string, any>>(new Map());
+  const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  const loadAll = useCallback(async (rawSym: string) => {
+    const sym = rawSym.trim().toUpperCase();
     if (!sym) return;
+
+    const key =
+      mode === "intraday"
+        ? `q:${sym}|intra:${interval}`
+        : `q:${sym}|daily:${from}-${to}`;
+
+    // cache hit
+    if (cacheRef.current.has(key)) {
+      const { quote, profile, rows } = cacheRef.current.get(key);
+      setQuote(quote || null);
+      setProfile(profile || null);
+      setBars(Array.isArray(rows) ? rows : []);
+      setErr(null);
+      return;
+    }
+
+    // cancel previous in-flight
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
     setLoading(true);
     setErr(null);
     try {
-      // quote + profile
-      const q = await fetch(`/api/stocks/quote?symbol=${encodeURIComponent(sym)}`, { cache: "no-store" });
-      const qj = await q.json();
-      if (!q.ok || qj?.ok === false) throw new Error(qj?.error || "quote failed");
-      setQuote(qj.quote || null);
-      setProfile(qj.profile || null);
+      // quote + profile in parallel
+      const qPromise = fetch(
+        `/api/stocks/quote?symbol=${encodeURIComponent(sym)}`,
+        { cache: "no-store", signal: ac.signal }
+      ).then((r) => r.json());
 
       // history
       let url = `/api/stocks/history?symbol=${encodeURIComponent(sym)}`;
@@ -233,19 +260,35 @@ export default function StocksDashboard() {
       } else {
         url += `&from=${from}&to=${to}&limit=5000`;
       }
-      const h = await fetch(url, { cache: "no-store" });
-      const hj = await h.json();
-      if (!h.ok || hj?.ok === false) throw new Error(hj?.error || "history failed");
-      setBars(Array.isArray(hj.rows) ? hj.rows : []);
+      const hPromise = fetch(url, { cache: "no-store", signal: ac.signal }).then((r) => r.json());
+
+      const [qj, hj] = await Promise.all([qPromise, hPromise]);
+
+      if (qj?.ok === false) throw new Error(qj?.error || "quote failed");
+      if (hj?.ok === false) throw new Error(hj?.error || "history failed");
+
+      const nextQuote = qj.quote || null;
+      const nextProfile = qj.profile || null;
+      const nextRows = Array.isArray(hj.rows) ? hj.rows : [];
+
+      cacheRef.current.set(key, { quote: nextQuote, profile: nextProfile, rows: nextRows });
+
+      if (!mountedRef.current) return;
+      setQuote(nextQuote);
+      setProfile(nextProfile);
+      setBars(nextRows);
+      setErr(null);
     } catch (e: any) {
+      if (e?.name === "AbortError") return; // ignore aborts
+      if (!mountedRef.current) return;
       setErr(e?.message || "Unexpected error");
       setBars([]);
       setQuote(null);
       setProfile(null);
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
-  }
+  }, [from, to, interval, mode]);
 
   // compute indicators
   const closes = useMemo(() => bars.map((b) => b.close).filter((v) => typeof v === "number"), [bars]);
@@ -281,6 +324,9 @@ export default function StocksDashboard() {
             <input
               value={symbol}
               onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") loadAll(symbol);
+              }}
               placeholder="e.g., AAPL"
               className="w-full rounded-md border px-3 py-2"
             />
@@ -290,7 +336,11 @@ export default function StocksDashboard() {
             <div className="mb-1 text-xs text-gray-700">Mode</div>
             <select
               value={mode}
-              onChange={(e) => setMode(e.target.value as any)}
+              onChange={(e) => {
+                const next = e.target.value as "daily" | "intraday";
+                setMode(next);
+                // drop intraday interval cache pollution if switching modes
+              }}
               className="w-full rounded-md border px-3 py-2"
             >
               <option value="daily">Daily (range)</option>
@@ -338,7 +388,7 @@ export default function StocksDashboard() {
 
           <div className="flex items-end">
             <button
-              onClick={() => loadAll(symbol.trim())}
+              onClick={() => loadAll(symbol)}
               disabled={!symbol.trim() || loading}
               className="rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
             >
