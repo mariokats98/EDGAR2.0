@@ -1,4 +1,3 @@
-// app/screener/[section]/page.tsx
 import { notFound } from "next/navigation";
 import ClientScreener from "../ClientScreener";
 
@@ -11,11 +10,7 @@ const pathToTab: Record<string, Tab | undefined> = {
   "forex": "forex",
 };
 
-export default function ScreenerSection({
-  params,
-}: {
-  params: { section: string };
-}) {
+export default function ScreenerSection({ params }: { params: { section: string } }) {
   const tab = pathToTab[params.section];
   if (!tab) return notFound();
 
