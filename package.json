@@ -15,7 +15,8 @@
     "postcss": "^8.4.41",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "tailwindcss": "^3.4.10"
+    "tailwindcss": "^3.4.10",
+    "@vercel/analytics": "latest"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
@@ -24,4 +25,3 @@
     "@types/react-dom": "^18.3.0"
   }
 }
-
