@@ -3,46 +3,66 @@
 
 import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import InsiderTape, { TxnFilter } from "../components/InsiderTape";
 
 const StocksDashboard = dynamic(() => import("../components/StocksDashboard"), { ssr: false });
 const CryptoDashboard = dynamic(() => import("../components/CryptoDashboard"), { ssr: false });
 const ForexDashboard  = dynamic(() => import("../components/ForexDashboard"),  { ssr: false });
 
-export default function ClientScreener() {
-  const [tab, setTab] = useState<"stocks" | "insider" | "crypto" | "forex">("stocks");
+type Tab = "stocks" | "insider" | "crypto" | "forex";
 
-  // Insider filters you already maintain
+export default function ClientScreener({ initialTab = "stocks" }: { initialTab?: Tab }) {
+  const router = useRouter();
+  const [tab, setTab] = useState<Tab>(initialTab);
+
+  const go = (next: Tab) => {
+    setTab(next);
+    const tabToPath: Record<Tab, string> = {
+      stocks: "/screener/stocks",
+      insider: "/screener/insider-activity",
+      crypto: "/screener/crypto",
+      forex: "/screener/forex",
+    };
+    router.push(tabToPath[next]);
+  };
+
+  // Insider filters (unchanged)
   const [symbol, setSymbol] = useState("");
-  const [start, setStart] = useState(() => new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString().slice(0,10));
-  const [end, setEnd] = useState(() => new Date().toISOString().slice(0,10));
+  const [start, setStart] = useState(() =>
+    new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10)
+  );
+  const [end, setEnd] = useState(() => new Date().toISOString().slice(0, 10));
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
-  const queryKey = useMemo(() => `${symbol}-${start}-${end}-${txnType}`, [symbol, start, end, txnType]);
+  const queryKey = useMemo(
+    () => `${symbol}-${start}-${end}-${txnType}`,
+    [symbol, start, end, txnType]
+  );
 
   return (
     <div className="space-y-4">
       {/* Tabs */}
       <div className="flex gap-2">
         <button
-          onClick={() => setTab("stocks")}
+          onClick={() => go("stocks")}
           className={`rounded-full px-4 py-2 text-sm border ${tab === "stocks" ? "bg-black text-white" : "bg-white"}`}
         >
           Stocks
         </button>
         <button
-          onClick={() => setTab("insider")}
+          onClick={() => go("insider")}
           className={`rounded-full px-4 py-2 text-sm border ${tab === "insider" ? "bg-black text-white" : "bg-white"}`}
         >
           Insider Activity
         </button>
         <button
-          onClick={() => setTab("crypto")}
+          onClick={() => go("crypto")}
           className={`rounded-full px-4 py-2 text-sm border ${tab === "crypto" ? "bg-black text-white" : "bg-white"}`}
         >
           Crypto
         </button>
         <button
-          onClick={() => setTab("forex")}
+          onClick={() => go("forex")}
           className={`rounded-full px-4 py-2 text-sm border ${tab === "forex" ? "bg-black text-white" : "bg-white"}`}
         >
           Forex
@@ -56,7 +76,7 @@ export default function ClientScreener() {
         </section>
       ) : tab === "insider" ? (
         <>
-          {/* Keep your Insider filter UI here (unchanged) */}
+          {/* Insider filter UI */}
           <section className="rounded-2xl border bg-white p-4 md:p-5">
             <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_repeat(2,1fr)_auto]">
               <div>
@@ -70,15 +90,29 @@ export default function ClientScreener() {
               </div>
               <div>
                 <div className="mb-1 text-xs text-gray-700">Start</div>
-                <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="w-full rounded-md border px-3 py-2" />
+                <input
+                  type="date"
+                  value={start}
+                  onChange={(e) => setStart(e.target.value)}
+                  className="w-full rounded-md border px-3 py-2"
+                />
               </div>
               <div>
                 <div className="mb-1 text-xs text-gray-700">End</div>
-                <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="w-full rounded-md border px-3 py-2" />
+                <input
+                  type="date"
+                  value={end}
+                  onChange={(e) => setEnd(e.target.value)}
+                  className="w-full rounded-md border px-3 py-2"
+                />
               </div>
               <div>
                 <div className="mb-1 text-xs text-gray-700">Type</div>
-                <select value={txnType} onChange={(e) => setTxnType(e.target.value as TxnFilter)} className="w-full rounded-md border px-3 py-2">
+                <select
+                  value={txnType}
+                  onChange={(e) => setTxnType(e.target.value as TxnFilter)}
+                  className="w-full rounded-md border px-3 py-2"
+                >
                   <option value="ALL">All</option>
                   <option value="A">Acquired (A)</option>
                   <option value="D">Disposed (D)</option>
@@ -88,7 +122,13 @@ export default function ClientScreener() {
           </section>
 
           {symbol.trim() ? (
-            <InsiderTape symbol={symbol.trim()} start={start} end={end} txnType={txnType} queryKey={queryKey} />
+            <InsiderTape
+              symbol={symbol.trim()}
+              start={start}
+              end={end}
+              txnType={txnType}
+              queryKey={queryKey}
+            />
           ) : (
             <div className="rounded-2xl border bg-white p-8 text-center text-sm text-gray-500">
               Enter a symbol to begin.
