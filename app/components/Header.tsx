@@ -1,11 +1,5 @@
 // app/components/Header.tsx
 "use client";
-import Link from "next/link";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { usePathname } from "next/navigation";
-
-"use client";
 
 import Link from "next/link";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -15,12 +9,12 @@ import { usePathname } from "next/navigation";
 export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [screenerOpen, setScreenerOpen] = useState(false);
-  const [mounted, setMounted] = useState(false); // ✅ guard portals until client mount
+  const [mounted, setMounted] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number }>({
     top: 0,
     left: 0,
-    width: 224
+    width: 224,
   });
   const pathname = usePathname();
 
@@ -39,16 +33,13 @@ export default function Header() {
 
   useLayoutEffect(() => {
     if (screenerOpen) calcPos();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screenerOpen]);
 
-  // Close menus on route change
   useEffect(() => {
     setScreenerOpen(false);
     setMobileOpen(false);
   }, [pathname]);
 
-  // Close / reposition listeners
   useEffect(() => {
     if (!screenerOpen) return;
 
@@ -71,7 +62,6 @@ export default function Header() {
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screenerOpen]);
 
   return (
@@ -117,18 +107,13 @@ export default function Header() {
               </button>
             </div>
 
-            {/* Portaled menu (fixed; cannot be clipped). Render only after mount. */}
+            {/* Portaled menu */}
             {mounted && screenerOpen &&
               createPortal(
                 <div
                   role="menu"
                   aria-label="Screener submenu"
-                  style={{
-                    position: "fixed",
-                    top: menuPos.top,
-                    left: menuPos.left,
-                    minWidth: menuPos.width,
-                  }}
+                  style={{ position: "fixed", top: menuPos.top, left: menuPos.left, minWidth: menuPos.width }}
                   className="z-[9999] rounded-md border bg-white shadow-lg p-1"
                 >
                   <DropdownLink href="/screener/stocks" label="Stocks" onNavigate={() => setScreenerOpen(false)} />
@@ -241,7 +226,7 @@ function DropdownLink({
 function MobileLink({
   href,
   label,
-  onClick
+  onClick,
 }: {
   href: string;
   label: string;
