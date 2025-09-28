@@ -1,5 +1,11 @@
 // app/components/Header.tsx
 "use client";
+import Link from "next/link";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { usePathname } from "next/navigation";
+
+"use client";
 
 import Link from "next/link";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
