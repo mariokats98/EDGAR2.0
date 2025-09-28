@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import InsiderTape, { TxnFilter } from "../components/InsiderTape";
 
-// ✅ Visible fallbacks while loading
+// ✅ Dynamic imports with visible fallbacks
 const StocksDashboard = dynamic(() => import("../components/StocksDashboard"), {
   ssr: false,
   loading: () => <div className="text-sm text-gray-500">Loading Stocks…</div>,
@@ -20,38 +20,12 @@ const ForexDashboard = dynamic(() => import("../components/ForexDashboard"), {
   loading: () => <div className="text-sm text-gray-500">Loading Forex…</div>,
 });
 
-// ✅ Tiny error boundary (inline)
-function ErrorBox({ children }: { children: React.ReactNode }) {
-  const [err, setErr] = useState<string | null>(null);
-  return (
-    <div>
-      {err ? (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          Something went wrong: {err}
-        </div>
-      ) : (
-        <ErrorCatcher onError={setErr}>{children}</ErrorCatcher>
-      )}
-    </div>
-  );
-}
-function ErrorCatcher({
-  children,
-  onError,
-}: {
-  children: React.ReactNode;
-  onError: (msg: string) => void;
-}) {
-  // simple runtime guard
-  try {
-    return <>{children}</>;
-  } catch (e: any) {
-    onError(e?.message || String(e));
-    return null;
-  }
-}
+// ✅ Proper error boundary (so you see errors instead of a blank page)
+import ErrorBoundary from "../components/ErrorBoundary";
 
 type Tab = "stocks" | "insider" | "crypto" | "forex";
+
+// URL <-> tab mapping
 const tabToPath: Record<Tab, string> = {
   stocks: "/screener/stocks",
   insider: "/screener/insider-activity",
@@ -59,10 +33,10 @@ const tabToPath: Record<Tab, string> = {
   forex: "/screener/forex",
 };
 const pathToTab: Record<string, Tab | undefined> = {
-  "stocks": "stocks",
+  stocks: "stocks",
   "insider-activity": "insider",
-  "crypto": "crypto",
-  "forex": "forex",
+  crypto: "crypto",
+  forex: "forex",
 };
 
 export default function ClientScreener({ initialTab = "stocks" }: { initialTab?: Tab }) {
@@ -70,7 +44,7 @@ export default function ClientScreener({ initialTab = "stocks" }: { initialTab?:
   const pathname = usePathname();
   const [tab, setTab] = useState<Tab>(initialTab);
 
-  // URL → state (supports back/forward)
+  // URL → state (supports back/forward & direct loads)
   useEffect(() => {
     const m = pathname?.match(/\/screener\/([^/?#]+)/);
     const section = m?.[1] ?? "";
@@ -92,10 +66,7 @@ export default function ClientScreener({ initialTab = "stocks" }: { initialTab?:
   );
   const [end, setEnd] = useState(() => new Date().toISOString().slice(0, 10));
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
-  const queryKey = useMemo(
-    () => `${symbol}-${start}-${end}-${txnType}`,
-    [symbol, start, end, txnType]
-  );
+  const queryKey = useMemo(() => `${symbol}-${start}-${end}-${txnType}`, [symbol, start, end, txnType]);
 
   return (
     <div className="space-y-4">
@@ -110,7 +81,7 @@ export default function ClientScreener({ initialTab = "stocks" }: { initialTab?:
       {/* Panels */}
       {tab === "stocks" && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <ErrorBox><StocksDashboard /></ErrorBox>
+          <ErrorBoundary><StocksDashboard /></ErrorBoundary>
         </section>
       )}
 
@@ -151,13 +122,13 @@ export default function ClientScreener({ initialTab = "stocks" }: { initialTab?:
 
       {tab === "crypto" && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <ErrorBox><CryptoDashboard /></ErrorBox>
+          <ErrorBoundary><CryptoDashboard /></ErrorBoundary>
         </section>
       )}
 
       {tab === "forex" && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <ErrorBox><ForexDashboard /></ErrorBox>
+          <ErrorBoundary><ForexDashboard /></ErrorBoundary>
         </section>
       )}
     </div>
