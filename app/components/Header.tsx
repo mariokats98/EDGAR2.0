@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
+import Link from "next/link";
 
 export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -43,9 +44,9 @@ export default function Header() {
     <header className="sticky top-0 z-50 border-b bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
       <div className="mx-auto max-w-6xl px-4">
         <div className="flex h-14 items-center justify-between">
-          <a href="/" className="shrink-0 font-bold text-lg tracking-tight text-brand">
+          <Link href="/" className="shrink-0 font-bold text-lg tracking-tight text-brand">
             Herevna.io
-          </a>
+          </Link>
 
           {/* Desktop nav */}
           <nav className="hidden md:flex items-center gap-1">
@@ -56,15 +57,15 @@ export default function Header() {
             <NavLink href="/fred" label="FRED" />
             <NavLink href="/news" label="News" />
 
-            {/* Screener with hover dropdown */}
+            {/* Screener with hover dropdown (button trigger, no href) */}
             <div
               className="relative"
               data-screener-menu
               onMouseEnter={openDropdown}
               onMouseLeave={closeDropdown}
             >
-              <a
-                href="/screener"
+              <button
+                type="button"
                 className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition inline-flex items-center gap-1"
                 aria-haspopup="menu"
                 aria-expanded={screenerOpen}
@@ -82,31 +83,32 @@ export default function Header() {
                     clipRule="evenodd"
                   />
                 </svg>
-              </a>
+              </button>
 
               {/* Dropdown panel */}
               <div
-                className={`absolute left-0 mt-1 w-56 rounded-md border bg-white shadow-lg transition
+                className={`absolute left-0 mt-1 w-56 rounded-md border bg-white shadow-lg transition z-[60]
                   ${screenerOpen ? "opacity-100 visible translate-y-0" : "opacity-0 invisible -translate-y-1"}`}
                 role="menu"
                 aria-label="Screener submenu"
               >
-                <DropdownLink href="/screener/stocks" label="Stocks" />
-                <DropdownLink href="/screener/insider-activity" label="Insider Activity" />
-                <DropdownLink href="/screener/crypto" label="Crypto" />
-                <DropdownLink href="/screener/forex" label="Forex" />
+                <DropdownLink href="/screener" label="All Screeners" onClickStop />
+                <DropdownLink href="/screener/stocks" label="Stocks" onClickStop />
+                <DropdownLink href="/screener/insider-activity" label="Insider Activity" onClickStop />
+                <DropdownLink href="/screener/crypto" label="Crypto" onClickStop />
+                <DropdownLink href="/screener/forex" label="Forex" onClickStop />
               </div>
             </div>
 
             <NavLink href="/game" label="Puzzle" />
 
             {/* AI CTA */}
-            <a
+            <Link
               href="/ai"
               className="ml-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow hover:opacity-95 animate-[sheen_2.6s_infinite]"
             >
               ✨ Herevna AI
-            </a>
+            </Link>
           </nav>
 
           {/* Mobile hamburger */}
@@ -154,6 +156,7 @@ export default function Header() {
             </button>
             {screenerMobileOpen && (
               <div className="ml-2 mt-1 mb-1 space-y-1">
+                <MobileLink href="/screener" label="All Screeners" onClick={() => setMobileOpen(false)} />
                 <MobileLink href="/screener/stocks" label="Stocks" onClick={() => setMobileOpen(false)} />
                 <MobileLink href="/screener/insider-activity" label="Insider Activity" onClick={() => setMobileOpen(false)} />
                 <MobileLink href="/screener/crypto" label="Crypto" onClick={() => setMobileOpen(false)} />
@@ -162,13 +165,13 @@ export default function Header() {
             )}
 
             <MobileLink href="/game" label="Puzzle" onClick={() => setMobileOpen(false)} />
-            <a
+            <Link
               href="/ai"
               onClick={() => setMobileOpen(false)}
               className="mt-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow animate-[sheen_2.6s_infinite]"
             >
               ✨ Herevna AI
-            </a>
+            </Link>
           </nav>
         </div>
       )}
@@ -178,29 +181,50 @@ export default function Header() {
 
 function NavLink({ href, label }: { href: string; label: string }) {
   return (
-    <a href={href} className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition">
+    <Link href={href} className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition">
       {label}
-    </a>
+    </Link>
   );
 }
 
-function DropdownLink({ href, label }: { href: string; label: string }) {
+function DropdownLink({
+  href,
+  label,
+  onClickStop
+}: {
+  href: string;
+  label: string;
+  onClickStop?: boolean;
+}) {
+  // stopPropagation prevents clicks from triggering the parent trigger accidentally
+  const handleClick: React.MouseEventHandler = (e) => {
+    if (onClickStop) e.stopPropagation();
+  };
   return (
-    <a
+    <Link
       href={href}
       role="menuitem"
+      onClick={handleClick}
       className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
     >
       {label}
-    </a>
+    </Link>
   );
 }
 
-function MobileLink({ href, label, onClick }: { href: string; label: string; onClick?: () => void }) {
+function MobileLink({
+  href,
+  label,
+  onClick
+}: {
+  href: string;
+  label: string;
+  onClick?: () => void;
+}) {
   return (
-    <a href={href} onClick={onClick} className="block w-full px-3 py-2 rounded-md hover:bg-gray-100">
+    <Link href={href} onClick={onClick} className="block w-full px-3 py-2 rounded-md hover:bg-gray-100">
       {label}
-    </a>
+    </Link>
   );
 }
 
