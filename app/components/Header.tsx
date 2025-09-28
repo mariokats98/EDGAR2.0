@@ -25,7 +25,7 @@ export default function Header() {
             <NavLink href="/fred" label="FRED" />
             <NavLink href="/news" label="News" />
 
-            {/* Screener dropdown: CSS-only (hover + focus-within); no parent link */}
+            {/* Screener dropdown: button trigger (no href) to prevent accidental navigation */}
             <div className="relative group" data-screener>
               <button
                 type="button"
@@ -34,8 +34,17 @@ export default function Header() {
                 aria-expanded="false"
               >
                 Screener
-                <svg className="h-4 w-4 transition-transform group-focus-within:rotate-180 group-hover:rotate-180" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
-                  <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+                <svg
+                  className="h-4 w-4 transition-transform group-hover:rotate-180 group-focus-within:rotate-180"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z"
+                    clipRule="evenodd"
+                  />
                 </svg>
               </button>
 
@@ -57,6 +66,7 @@ export default function Header() {
 
             <NavLink href="/game" label="Puzzle" />
 
+            {/* AI CTA */}
             <Link
               href="/ai"
               className="ml-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow hover:opacity-95 animate-[sheen_2.6s_infinite]"
@@ -95,8 +105,17 @@ export default function Header() {
               onClick={() => setScreenerMobileOpen(v => !v)}
             >
               <span>Screener</span>
-              <svg className={`h-4 w-4 transition-transform ${screenerMobileOpen ? "rotate-180" : ""}`} viewBox="0 0 20 20" fill="currentColor" aria-hidden>
-                <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+              <svg
+                className={`h-4 w-4 transition-transform ${screenerMobileOpen ? "rotate-180" : ""}`}
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z"
+                  clipRule="evenodd"
+                />
               </svg>
             </button>
             {screenerMobileOpen && (
@@ -123,6 +142,8 @@ export default function Header() {
   );
 }
 
+/* ——— Small helpers ——— */
+
 function NavLink({ href, label }: { href: string; label: string }) {
   return (
     <Link href={href} className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition">
@@ -138,7 +159,7 @@ function DropdownLink({ href, label }: { href: string; label: string }) {
       role="menuitem"
       className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
       onClick={(e) => {
-        // helps close via :focus-within as soon as link is clicked
+        // close via :focus-within as soon as a link is clicked
         const container = e.currentTarget.closest("[data-screener]") as HTMLElement | null;
         container?.blur?.();
       }}
