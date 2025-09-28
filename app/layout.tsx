@@ -3,7 +3,7 @@ import "./styles/globals.css";
 import Header from "./components/Header";
 import AIChat from "./components/AIChat";
 
-// ⬇️ add this import
+// ✅ import from the Next.js export
 import { Analytics } from "@vercel/analytics/next";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
