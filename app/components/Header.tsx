@@ -9,58 +9,63 @@ import { usePathname } from "next/navigation";
 export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [screenerOpen, setScreenerOpen] = useState(false);
+  const [mounted, setMounted] = useState(false); // ✅ guard portals until client mount
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 224 });
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number }>({
+    top: 0,
+    left: 0,
+    width: 224
+  });
   const pathname = usePathname();
 
-  // Reposition the dropdown relative to the trigger
+  useEffect(() => setMounted(true), []);
+
   const calcPos = () => {
     const el = triggerRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
     setMenuPos({
-      top: Math.round(r.bottom + 6),         // a little gap below button
-      left: Math.round(r.left),              // align left edges
-      width: Math.max(224, Math.round(r.width)), // keep a min width
+      top: Math.round(r.bottom + 6),
+      left: Math.round(r.left),
+      width: Math.max(224, Math.round(r.width)),
     });
   };
 
   useLayoutEffect(() => {
     if (screenerOpen) calcPos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screenerOpen]);
 
-  // Close on route change
+  // Close menus on route change
   useEffect(() => {
     setScreenerOpen(false);
     setMobileOpen(false);
   }, [pathname]);
 
-  // Close on outside click / Escape / scroll / resize
+  // Close / reposition listeners
   useEffect(() => {
     if (!screenerOpen) return;
 
-    const handleClick = (e: MouseEvent) => {
+    const onDocClick = (e: MouseEvent) => {
       const t = e.target as Node;
-      if (!triggerRef.current?.contains(t)) {
-        // since menu is portaled, any click not on trigger should close
-        setScreenerOpen(false);
-      }
+      if (!triggerRef.current?.contains(t)) setScreenerOpen(false);
     };
     const onEsc = (e: KeyboardEvent) => e.key === "Escape" && setScreenerOpen(false);
     const onScroll = () => calcPos();
     const onResize = () => calcPos();
 
-    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("mousedown", onDocClick);
     document.addEventListener("keydown", onEsc);
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onResize);
 
     return () => {
-      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("mousedown", onDocClick);
       document.removeEventListener("keydown", onEsc);
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screenerOpen]);
 
   return (
@@ -80,7 +85,7 @@ export default function Header() {
             <NavLink href="/fred" label="FRED" />
             <NavLink href="/news" label="News" />
 
-            {/* Screener (click to open, menu rendered in a portal) */}
+            {/* Screener trigger */}
             <div className="relative">
               <button
                 ref={triggerRef}
@@ -106,8 +111,8 @@ export default function Header() {
               </button>
             </div>
 
-            {/* Portal menu */}
-            {screenerOpen &&
+            {/* Portaled menu (fixed; cannot be clipped). Render only after mount. */}
+            {mounted && screenerOpen &&
               createPortal(
                 <div
                   role="menu"
@@ -131,7 +136,6 @@ export default function Header() {
 
             <NavLink href="/game" label="Puzzle" />
 
-            {/* AI CTA */}
             <Link
               href="/ai"
               className="ml-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 text-sm shadow hover:opacity-95 animate-[sheen_2.6s_infinite]"
@@ -163,11 +167,10 @@ export default function Header() {
             <MobileLink href="/fred" label="FRED" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/news" label="News" onClick={() => setMobileOpen(false)} />
 
-            {/* Mobile Screener collapsible */}
             <details className="rounded-md">
               <summary className="list-none flex w-full items-center justify-between px-3 py-2 rounded-md hover:bg-gray-100 cursor-pointer">
                 <span>Screener</span>
-                <svg className="h-4 w-4 transition-transform" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+                <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
                   <path
                     fillRule="evenodd"
                     d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z"
