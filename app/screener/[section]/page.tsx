@@ -1,3 +1,4 @@
+// app/screener/[section]/page.tsx
 import { notFound } from "next/navigation";
 import ClientScreener from "../ClientScreener";
 
@@ -13,7 +14,6 @@ const pathToTab: Record<string, Tab | undefined> = {
 export default function ScreenerSection({ params }: { params: { section: string } }) {
   const tab = pathToTab[params.section];
   if (!tab) return notFound();
-
   return (
     <main className="mx-auto max-w-6xl p-6">
       <ClientScreener initialTab={tab} />
