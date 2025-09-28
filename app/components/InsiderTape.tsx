@@ -3,8 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 // (rest unchanged)
 
-"use client";
-
 import { useEffect, useMemo, useState } from "react";
 
 export type TxnFilter = "ALL" | "A" | "D";
