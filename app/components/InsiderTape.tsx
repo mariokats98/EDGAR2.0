@@ -1,337 +1,142 @@
 // app/components/InsiderTape.tsx
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-/** ---------- Types ---------- */
-type Txn = {
-  date?: string | null;
-  insider?: string | null;
-  ticker?: string | null;
-  company?: string | null;
-  action?: "A" | "D" | string | null; // A=Acquire (Buy), D=Dispose (Sell)
-  shares?: number | null;
-  price?: number | null;
-  value?: number | null;
+/** ---------- types the table expects ---------- */
+type Row = {
+  date: string | null;
+  insider: string | null;   // <-- render this
+  ticker: string | null;
+  company: string | null;
+  action: "A" | "D" | string | null;
+  shares: number | null;    // <-- render this
+  price: number | null;     // <-- render this
+  value: number | null;     // <-- render this (shares * price)
   link?: string | null;
-  _raw?: any;
 };
 
-type ActionFilter = "ALL" | "A" | "D";
+type TxnFilter = "ALL" | "A" | "D";
 
-/** ---------- Utils ---------- */
-const iso = (d = new Date()) => d.toISOString().slice(0, 10);
-const DEFAULT_TO = iso();
-const DEFAULT_FROM = (() => {
-  const d = new Date();
-  d.setDate(d.getDate() - 14); // 2 weeks default like many feeds
-  return iso(d);
-})();
-
-function n(v?: number | null, d = 2) {
-  return typeof v === "number" && isFinite(v) ? v.toFixed(d) : "—";
+function fmtNum(n?: number | null) {
+  return typeof n === "number" && isFinite(n) ? n.toLocaleString() : "—";
 }
-function money(v?: number | null) {
-  return typeof v === "number" && isFinite(v) ? `$${v.toLocaleString()}` : "—";
+function fmtMoney(n?: number | null) {
+  return typeof n === "number" && isFinite(n)
+    ? n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 })
+    : "—";
 }
-function cls(...xs: Array<string | false | null | undefined>) {
-  return xs.filter(Boolean).join(" ");
-}
-function toNumber(x: any): number | null {
-  if (typeof x === "number" && Number.isFinite(x)) return x;
-  const n = +x;
-  return Number.isFinite(n) ? n : null;
-}
-function normalizeAction(x: any): "A" | "D" | string | null {
-  if (!x && x !== 0) return null;
-  if (typeof x === "string") {
-    const s = x.trim().toUpperCase();
-    if (s === "A" || s.startsWith("BUY") || s === "ACQUIRE" || s === "PURCHASE") return "A";
-    if (s === "D" || s.startsWith("SELL") || s === "DISPOSE") return "D";
-    return s;
+function badge(action?: Row["action"]) {
+  const a = (action || "").toString().toUpperCase();
+  if (a === "A") {
+    return (
+      <span className="rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
+        Purchase
+      </span>
+    );
   }
-  return null;
-}
-
-function normalizeTxn(r: Record<string, any>): Txn {
-  const date =
-    r.transactionDate ||
-    r.tradeDate ||
-    r.filingDate ||
-    r.disclosureDate ||
-    r.date ||
-    null;
-
-  const insider =
-    r.insiderName ||
-    r.reporter ||
-    r.owner ||
-    r.reportingOwner ||
-    r.reportingOwnerName ||
-    r.name ||
-    r.person ||
-    null;
-
-  const ticker = (r.symbol || r.ticker || r.securityTicker || null) ?? null;
-  const company =
-    r.company ||
-    r.companyName ||
-    r.issuer ||
-    r.issuerName ||
-    r.securityName ||
-    null;
-
-  const action = normalizeAction(
-    r.transactionCode || r.action || r.transactionType || r.type || r.side
+  if (a === "D") {
+    return (
+      <span className="rounded bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700 ring-1 ring-rose-200">
+        Sale
+      </span>
+    );
+  }
+  return (
+    <span className="rounded bg-gray-50 px-2 py-0.5 text-xs font-medium text-gray-700 ring-1 ring-gray-200">
+      {a || "—"}
+    </span>
   );
-
-  const shares =
-    toNumber(r.shares) ??
-    toNumber(r.sharesTransacted) ??
-    toNumber(r.amount) ??
-    toNumber(r.quantity) ??
-    null;
-
-  const price =
-    toNumber(r.price) ??
-    toNumber(r.transactionPrice) ??
-    toNumber(r.avgPrice) ??
-    null;
-
-  const value =
-    toNumber(r.value) ??
-    (shares && price ? shares * price : null);
-
-  const link =
-    r.link ||
-    r.url ||
-    r.form4Url ||
-    r.source ||
-    null;
-
-  return { date, insider, ticker, company, action, shares, price, value, link, _raw: r };
 }
 
-function inRangeISO(isoDate?: string | null, from?: string, to?: string) {
-  if (!isoDate) return false;
-  const d = String(isoDate).slice(0, 10);
-  if (from && d < from) return false;
-  if (to && d > to) return false;
-  return true;
-}
-
-/** ---------- Component ---------- */
+/** ---------- component ---------- */
 export default function InsiderTape() {
-  // filters
-  const [ticker, setTicker] = useState("");
-  const [insider, setInsider] = useState("");
-  const [action, setAction] = useState<ActionFilter>("ALL");
-  const [from, setFrom] = useState(DEFAULT_FROM);
-  const [to, setTo] = useState(DEFAULT_TO);
+  // server query controls
+  const [tickerQ, setTickerQ] = useState("");
+  const [insiderQ, setInsiderQ] = useState("");
+  const [from, setFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 14);
+    return d.toISOString().slice(0, 10);
+  });
+  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [filter, setFilter] = useState<TxnFilter>("ALL");
 
   // data
-  const [rows, setRows] = useState<Txn[]>([]);
+  const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [queried, setQueried] = useState(false);
 
-  // Build query string (be permissive on keys so the API route matches)
-  const buildQuery = useCallback(() => {
-    const sp = new URLSearchParams();
-    const sym = ticker.trim().toUpperCase();
-    const name = insider.trim();
-
-    if (sym) {
-      sp.set("symbol", sym);
-      sp.set("ticker", sym);
-      sp.set("q", sym);
-      sp.set("companyTicker", sym);
-    }
-    if (name) {
-      sp.set("insider", name);
-      sp.set("name", name);
-      sp.set("owner", name);
-      sp.set("reportingOwnerName", name);
-      sp.set("q", name);
-    }
-    if (from) {
-      sp.set("from", from);
-      sp.set("startDate", from);
-    }
-    if (to) {
-      sp.set("to", to);
-      sp.set("endDate", to);
-    }
-    sp.set("limit", "500");
-    return sp.toString();
-  }, [ticker, insider, from, to]);
-
-  // Unified fetch (tries activity then generic)
-  const fetchInsider = useCallback(
-    async (qs: string) => {
-      // try /api/insider/activity
-      try {
-        const r = await fetch(`/api/insider/activity?${qs}`, { cache: "no-store" });
-        const j = await r.json().catch(() => ({} as any));
-        const list: any[] = Array.isArray(j?.rows)
-          ? j.rows
-          : Array.isArray(j)
-          ? j
-          : [];
-        if (r.ok && list.length) return list.map(normalizeTxn);
-      } catch {
-        // ignore
-      }
-
-      // fallback /api/insider
-      const r2 = await fetch(`/api/insider?${qs}`, { cache: "no-store" });
-      const j2 = await r2.json().catch(() => ({} as any));
-      if (!r2.ok || j2?.ok === false) {
-        throw new Error(j2?.error || "Request failed");
-      }
-      const list2: any[] = Array.isArray(j2?.rows)
-        ? j2.rows
-        : Array.isArray(j2)
-        ? j2
-        : [];
-      return list2.map(normalizeTxn);
-    },
-    []
-  );
-
-  const onSearch = useCallback(async () => {
+  async function load() {
     setLoading(true);
     setErr(null);
-    setQueried(true);
-    setRows([]);
-
-    const qs = buildQuery();
-
     try {
-      const data = await fetchInsider(qs);
-      setRows(data);
+      const params = new URLSearchParams();
+      if (tickerQ.trim()) params.set("symbol", tickerQ.trim().toUpperCase());
+      if (insiderQ.trim()) params.set("insider", insiderQ.trim());
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      params.set("limit", "500");
+
+      const res = await fetch(`/api/insider/activity?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const j = await res.json();
+      if (!res.ok || j?.ok === false) {
+        throw new Error(j?.error || "Failed to load insider activity");
+      }
+      setRows(Array.isArray(j.rows) ? j.rows : []);
     } catch (e: any) {
       setErr(e?.message || "Unexpected error");
       setRows([]);
     } finally {
       setLoading(false);
     }
-  }, [buildQuery, fetchInsider]);
+  }
 
-  const onReset = useCallback(() => {
-    setTicker("");
-    setInsider("");
-    setAction("ALL");
-    setFrom(DEFAULT_FROM);
-    setTo(DEFAULT_TO);
-    setRows([]);
-    setErr(null);
-    setQueried(false);
+  // initial load
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // AUTO-LOAD like before: recent activity for last 14 days
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      setErr(null);
-      setQueried(true);
-      const qs = new URLSearchParams([
-        ["from", DEFAULT_FROM],
-        ["to", DEFAULT_TO],
-        ["limit", "200"],
-      ]).toString();
-      try {
-        const data = await fetchInsider(qs);
-        setRows(data);
-      } catch (e: any) {
-        setErr(e?.message || "Unexpected error");
-        setRows([]);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [fetchInsider]);
-
-  // client-side filter (action + date) & sort newest first
   const filtered = useMemo(() => {
-    const arr = rows.filter((r) => {
-      if (from || to) {
-        if (!inRangeISO(r.date || null, from || undefined, to || undefined)) return false;
-      }
-      if (action !== "ALL") {
-        const a = (r.action || "").toUpperCase();
-        if (action === "A" && a !== "A") return false;
-        if (action === "D" && a !== "D") return false;
-      }
-      // if user typed a ticker or name, also ensure client-side contains (in case server ignored)
-      if (ticker.trim()) {
-        if ((r.ticker || "").toUpperCase() !== ticker.trim().toUpperCase()) return false;
-      }
-      if (insider.trim()) {
-        const q = insider.trim().toLowerCase();
-        if (!(r.insider || "").toLowerCase().includes(q)) return false;
-      }
-      return true;
-    });
+    let out = rows;
+    if (filter !== "ALL") {
+      out = out.filter((r) => (r.action || "").toString().toUpperCase() === filter);
+    }
+    return out;
+  }, [rows, filter]);
 
-    return arr.sort((a, b) => {
-      const da = (a.date || "").slice(0, 10);
-      const db = (b.date || "").slice(0, 10);
-      if (da < db) return 1;
-      if (da > db) return -1;
-      return 0;
-    });
-  }, [rows, action, from, to, ticker, insider]);
+  function onEnter(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") load();
+  }
 
   return (
     <div className="space-y-4">
-      {/* Header */}
+      {/* Controls */}
       <section className="rounded-2xl border bg-white p-4 md:p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="text-lg font-semibold text-gray-900">Insider Activity</div>
-            <div className="text-sm text-gray-600">Buy/Sell filings by corporate insiders</div>
-          </div>
-          <div className="text-sm text-gray-500">
-            {filtered.length > 0 ? `${filtered.length.toLocaleString()} results` : queried ? "0 results" : ""}
-          </div>
-        </div>
-
-        {/* Controls */}
-        <div className="mt-4 grid gap-3 md:grid-cols-7">
+        <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_minmax(180px,1fr)_auto_auto_auto_auto]">
           <div>
             <div className="mb-1 text-xs text-gray-700">Ticker</div>
             <input
-              value={ticker}
-              onChange={(e) => setTicker(e.target.value.toUpperCase())}
-              onKeyDown={(e) => e.key === "Enter" && onSearch()}
-              placeholder="e.g., AAPL"
-              className="w-full rounded-md border px-3 py-2"
-            />
-          </div>
-
-          <div className="md:col-span-2">
-            <div className="mb-1 text-xs text-gray-700">Insider Name</div>
-            <input
-              value={insider}
-              onChange={(e) => setInsider(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && onSearch()}
-              placeholder="e.g., Tim Cook, Nancy Pelosi"
+              value={tickerQ}
+              onChange={(e) => setTickerQ(e.target.value.toUpperCase())}
+              onKeyDown={onEnter}
+              placeholder="e.g., NVDA"
               className="w-full rounded-md border px-3 py-2"
             />
           </div>
 
           <div>
-            <div className="mb-1 text-xs text-gray-700">Action</div>
-            <select
-              value={action}
-              onChange={(e) => setAction(e.target.value as ActionFilter)}
+            <div className="mb-1 text-xs text-gray-700">Insider Name</div>
+            <input
+              value={insiderQ}
+              onChange={(e) => setInsiderQ(e.target.value)}
+              onKeyDown={onEnter}
+              placeholder="e.g., Tim Cook"
               className="w-full rounded-md border px-3 py-2"
-            >
-              <option value="ALL">All</option>
-              <option value="A">Buy (A)</option>
-              <option value="D">Sell (D)</option>
-            </select>
+            />
           </div>
 
           <div>
@@ -339,126 +144,119 @@ export default function InsiderTape() {
             <input
               type="date"
               value={from}
-              max={to}
               onChange={(e) => setFrom(e.target.value)}
               className="w-full rounded-md border px-3 py-2"
             />
           </div>
-
           <div>
             <div className="mb-1 text-xs text-gray-700">To</div>
             <input
               type="date"
               value={to}
-              min={from}
               onChange={(e) => setTo(e.target.value)}
               className="w-full rounded-md border px-3 py-2"
             />
           </div>
 
-          <div className="flex items-end gap-2">
+          <div>
+            <div className="mb-1 text-xs text-gray-700">Type</div>
+            <div className="flex gap-1">
+              {(["ALL", "A", "D"] as TxnFilter[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setFilter(t)}
+                  className={
+                    "rounded-md border px-3 py-2 text-sm " +
+                    (filter === t
+                      ? "border-black bg-black text-white"
+                      : "border-gray-300 bg-white text-gray-800 hover:bg-gray-50")
+                  }
+                >
+                  {t === "ALL" ? "All" : t === "A" ? "Purchases" : "Sales"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-end">
             <button
-              onClick={onSearch}
+              onClick={load}
               disabled={loading}
-              className="rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
+              className="w-full rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
             >
-              {loading ? "Searching…" : "Search"}
-            </button>
-            <button
-              onClick={onReset}
-              disabled={loading}
-              className="rounded-md border px-4 py-2 text-sm"
-            >
-              Reset
+              {loading ? "Loading…" : "Search"}
             </button>
           </div>
         </div>
+
+        {err && (
+          <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            {err}
+          </div>
+        )}
       </section>
 
       {/* Table */}
-      <section className="overflow-x-auto rounded-2xl border bg-white">
-        <table className="min-w-full text-sm">
-          <thead className="bg-gray-50 text-left text-gray-600">
-            <tr>
-              <th className="px-3 py-2 font-medium">Date</th>
-              <th className="px-3 py-2 font-medium">Insider</th>
-              <th className="px-3 py-2 font-medium">Ticker</th>
-              <th className="px-3 py-2 font-medium">Company</th>
-              <th className="px-3 py-2 font-medium">Action</th>
-              <th className="px-3 py-2 font-medium">Shares</th>
-              <th className="px-3 py-2 font-medium">Price</th>
-              <th className="px-3 py-2 font-medium">Value</th>
-              <th className="px-3 py-2 font-medium">Link</th>
-            </tr>
-          </thead>
-          <tbody>
-            {!queried ? (
+      <section className="rounded-2xl border bg-white">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-600">
               <tr>
-                <td className="px-3 py-6 text-center text-gray-600" colSpan={9}>
-                  Enter a ticker or insider name, set dates, then click <b>Search</b>.
-                </td>
+                <th className="px-3 py-2 text-left">Date</th>
+                <th className="px-3 py-2 text-left">Insider</th>
+                <th className="px-3 py-2 text-left">Ticker</th>
+                <th className="px-3 py-2 text-left">Company</th>
+                <th className="px-3 py-2 text-left">Action</th>
+                <th className="px-3 py-2 text-right">Shares</th>
+                <th className="px-3 py-2 text-right">Price</th>
+                <th className="px-3 py-2 text-right">Value</th>
+                <th className="px-3 py-2 text-left">Link</th>
               </tr>
-            ) : loading ? (
-              <tr>
-                <td className="px-3 py-6 text-center text-gray-600" colSpan={9}>
-                  Loading…
-                </td>
-              </tr>
-            ) : err ? (
-              <tr>
-                <td className="px-3 py-6 text-center text-rose-700" colSpan={9}>
-                  {err}
-                </td>
-              </tr>
-            ) : filtered.length === 0 ? (
-              <tr>
-                <td className="px-3 py-6 text-center text-gray-600" colSpan={9}>
-                  No trades match your filters.
-                </td>
-              </tr>
-            ) : (
-              filtered.map((r, i) => (
-                <tr key={i} className="hover:bg-gray-50">
-                  <td className="px-3 py-2 text-gray-700">{r.date || "—"}</td>
-                  <td className="px-3 py-2 font-medium text-gray-900">{r.insider || "—"}</td>
-                  <td className="px-3 py-2">{r.ticker || "—"}</td>
-                  <td className="px-3 py-2">{r.company || "—"}</td>
-                  <td
-                    className={cls(
-                      "px-3 py-2",
-                      r.action === "A"
-                        ? "text-emerald-700"
-                        : r.action === "D"
-                        ? "text-rose-700"
-                        : "text-gray-700"
-                    )}
-                  >
-                    {r.action === "A" ? "Buy (A)" : r.action === "D" ? "Sell (D)" : r.action || "—"}
-                  </td>
-                  <td className="px-3 py-2">
-                    {typeof r.shares === "number" ? r.shares.toLocaleString() : r.shares ?? "—"}
-                  </td>
-                  <td className="px-3 py-2">{money(r.price)}</td>
-                  <td className="px-3 py-2">{money(r.value)}</td>
-                  <td className="px-3 py-2">
-                    {r.link ? (
-                      <a
-                        className="text-blue-600 underline underline-offset-2"
-                        href={r.link}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        source
-                      </a>
-                    ) : (
-                      "—"
-                    )}
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td className="px-3 py-6 text-gray-500" colSpan={9}>
+                    {loading
+                      ? "Loading…"
+                      : "No results. Try a different date range, ticker, or insider name."}
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : (
+                filtered.map((r, i) => (
+                  <tr key={i} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 text-gray-700">{r.date || "—"}</td>
+                    <td className="px-3 py-2 font-medium text-gray-900">
+                      {r.insider || "—"}
+                    </td>
+                    <td className="px-3 py-2">{r.ticker || "—"}</td>
+                    <td className="px-3 py-2">{r.company || "—"}</td>
+                    <td className="px-3 py-2">{badge(r.action)}</td>
+                    <td className="px-3 py-2 text-right">{fmtNum(r.shares)}</td>
+                    <td className="px-3 py-2 text-right">
+                      {typeof r.price === "number" ? `$${r.price.toFixed(2)}` : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right">{fmtMoney(r.value)}</td>
+                    <td className="px-3 py-2">
+                      {r.link ? (
+                        <a
+                          href={r.link}
+                          className="text-blue-600 hover:underline"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          filing
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
   );
