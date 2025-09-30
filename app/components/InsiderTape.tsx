@@ -1,55 +1,93 @@
 // app/components/InsiderTape.tsx
 "use client";
+
 import { useEffect, useMemo, useState } from "react";
-import SectionHeader from "./SectionHeader";
 
 export type TxnFilter = "ALL" | "A" | "D";
 
-type Row = {
-  date?: string;
+type InsiderRow = {
   symbol?: string;
-  insiderName?: string;
-  relationship?: string;
-  type?: string; // "A" or "D"
+  transactionDate?: string; // "YYYY-MM-DD"
+  reportingCik?: string;
+  reportingName?: string;
+  transactionType?: string; // "P - Purchase" / "S - Sale" etc (FMP formats vary)
+  securitiesOwned?: number;
   shares?: number;
   price?: number;
-  value?: number;
+  link?: string;
 };
 
+function cls(...xs: Array<string | false | null | undefined>) {
+  return xs.filter(Boolean).join(" ");
+}
+
+function toISO(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+
+const DEFAULT_FROM = (() => {
+  const d = new Date();
+  d.setMonth(d.getMonth() - 3);
+  return toISO(d);
+})();
+const DEFAULT_TO = toISO(new Date());
+
 export default function InsiderTape() {
-  const [symbol, setSymbol] = useState("");
-  const [type, setType] = useState<TxnFilter>("ALL");
-  const [rows, setRows] = useState<Row[]>([]);
+  const [symbol, setSymbol] = useState<string>("");
+  const [from, setFrom] = useState<string>(DEFAULT_FROM);
+  const [to, setTo] = useState<string>(DEFAULT_TO);
+  const [filter, setFilter] = useState<TxnFilter>("ALL");
+  const [rows, setRows] = useState<InsiderRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const filtered = useMemo(() => {
-    return rows.filter((r) => (type === "ALL" ? true : r.type === type));
-  }, [rows, type]);
+  // Build the request URL whenever inputs change
+  const url = useMemo(() => {
+    const params = new URLSearchParams();
+    if (symbol.trim()) params.set("symbol", symbol.trim().toUpperCase());
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    params.set("limit", "500");
+    return `/api/insider/activity?${params.toString()}`;
+  }, [symbol, from, to]);
 
-  async function load(sym: string) {
-    const s = sym.trim();
-    if (!s) return;
-    setLoading(true);
-    setErr(null);
-    try {
-      const r = await fetch(`/api/insider/activity?symbol=${encodeURIComponent(s)}`, { cache: "no-store" });
-      const j = await r.json();
-      if (!r.ok || j?.ok === false) throw new Error(j?.error || "Failed");
-      setRows(Array.isArray(j.rows) ? j.rows : []);
-    } catch (e: any) {
-      setErr(e?.message || "Unexpected error");
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
-  }
+  // Fetch with small debounce so typing feels smooth
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      setLoading(true);
+      setErr(null);
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        const j = await res.json();
+        if (!res.ok || j?.ok === false) throw new Error(j?.error || "Request failed");
+        const list: InsiderRow[] = Array.isArray(j.rows) ? j.rows : [];
+        setRows(list);
+      } catch (e: any) {
+        setErr(e?.message || "Unexpected error");
+        setRows([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [url]);
+
+  const filtered = useMemo(() => {
+    if (filter === "ALL") return rows;
+    // FMP returns transaction type strings; we map common cases to A/D
+    return rows.filter((r) => {
+      const t = (r.transactionType || "").toUpperCase();
+      const isBuy = t.includes("P") || t.includes("BUY") || t.includes("ACQ");
+      const isSell = t.includes("S") || t.includes("SELL") || t.includes("DISP");
+      return filter === "A" ? isBuy : isSell;
+    });
+  }, [rows, filter]);
 
   return (
     <div className="space-y-4">
+      {/* Controls */}
       <section className="rounded-2xl border bg-white p-4 md:p-5">
-        <SectionHeader title="Insider Activity" subtitle="Form 4 trading disclosures" icon={"🧑‍💼"} />
-        <div className="grid gap-3 md:grid-cols-[minmax(200px,1fr)_auto_auto]">
+        <div className="grid gap-3 md:grid-cols-[minmax(180px,1fr)_auto_auto_auto_auto]">
           <div>
             <div className="mb-1 text-xs text-gray-700">Ticker</div>
             <input
@@ -59,25 +97,58 @@ export default function InsiderTape() {
               className="w-full rounded-md border px-3 py-2"
             />
           </div>
+
           <div>
-            <div className="mb-1 text-xs text-gray-700">Type</div>
-            <select
-              value={type}
-              onChange={(e) => setType(e.target.value as TxnFilter)}
+            <div className="mb-1 text-xs text-gray-700">From</div>
+            <input
+              type="date"
+              value={from}
+              max={to}
+              onChange={(e) => setFrom(e.target.value)}
               className="w-full rounded-md border px-3 py-2"
-            >
-              <option value="ALL">All</option>
-              <option value="A">Acquisitions (A)</option>
-              <option value="D">Disposals (D)</option>
-            </select>
+            />
           </div>
+
+          <div>
+            <div className="mb-1 text-xs text-gray-700">To</div>
+            <input
+              type="date"
+              value={to}
+              min={from}
+              onChange={(e) => setTo(e.target.value)}
+              className="w-full rounded-md border px-3 py-2"
+            />
+          </div>
+
+          <div>
+            <div className="mb-1 text-xs text-gray-700">Filter</div>
+            <div className="flex rounded-md border p-1">
+              {(["ALL", "A", "D"] as TxnFilter[]).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={cls(
+                    "w-full rounded px-3 py-1 text-xs font-medium",
+                    filter === f ? "bg-black text-white" : "text-gray-700 hover:bg-gray-100"
+                  )}
+                  aria-pressed={filter === f}
+                >
+                  {f === "ALL" ? "All" : f === "A" ? "Buys (A)" : "Sells (D)"}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="flex items-end">
             <button
-              onClick={() => load(symbol)}
-              disabled={!symbol.trim() || loading}
-              className="rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
+              onClick={() => {
+                // force refetch by nudging symbol (no-op but retriggers effect)
+                setSymbol((s) => s.trim());
+              }}
+              className="rounded-md bg-black px-4 py-2 text-sm text-white"
+              disabled={loading}
             >
-              {loading ? "Loading…" : "Load"}
+              {loading ? "Loading…" : "Refresh"}
             </button>
           </div>
         </div>
@@ -89,41 +160,33 @@ export default function InsiderTape() {
         )}
       </section>
 
-      <section className="rounded-2xl border bg-white p-4 md:p-5">
-        <SectionHeader title="Recent trades" icon={"📃"} />
-        <div className="overflow-x-auto">
-          <table className="min-w-[720px] w-full text-sm">
-            <thead>
-              <tr className="text-xs text-gray-500">
-                <th className="px-3 py-2 text-left">Date</th>
-                <th className="px-3 py-2 text-left">Insider</th>
-                <th className="px-3 py-2 text-left">Relation</th>
-                <th className="px-3 py-2 text-left">Type</th>
-                <th className="px-3 py-2 text-left">Ticker</th>
-                <th className="px-3 py-2 text-right">Shares</th>
-                <th className="px-3 py-2 text-right">Price</th>
-                <th className="px-3 py-2 text-right">Value</th>
+      {/* Table */}
+      <section className="overflow-x-auto rounded-2xl border bg-white">
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-50 text-left text-gray-600">
+            <tr>
+              <th className="px-3 py-2 font-medium">Date</th>
+              <th className="px-3 py-2 font-medium">Insider</th>
+              <th className="px-3 py-2 font-medium">Ticker</th>
+              <th className="px-3 py-2 font-medium">Action</th>
+              <th className="px-3 py-2 font-medium">Shares</th>
+              <th className="px-3 py-2 font-medium">Price</th>
+              <th className="px-3 py-2 font-medium">Owned After</th>
+              <th className="px-3 py-2 font-medium">Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr>
+                <td className="px-3 py-6 text-center text-gray-600" colSpan={8}>
+                  Loading…
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 ? (
-                <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-500">No data</td></tr>
-              ) : filtered.map((r, i) => (
-                <tr key={i} className="hover:bg-gray-50">
-                  <td className="px-3 py-2">{r.date || "—"}</td>
-                  <td className="px-3 py-2 font-medium text-gray-900">{r.insiderName || "—"}</td>
-                  <td className="px-3 py-2">{r.relationship || "—"}</td>
-                  <td className="px-3 py-2">{r.type || "—"}</td>
-                  <td className="px-3 py-2">{r.symbol || "—"}</td>
-                  <td className="px-3 py-2 text-right">{r.shares?.toLocaleString() ?? "—"}</td>
-                  <td className="px-3 py-2 text-right">{typeof r.price === "number" ? r.price.toFixed(2) : "—"}</td>
-                  <td className="px-3 py-2 text-right">{typeof r.value === "number" ? r.value.toLocaleString() : "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
-  );
-}
+            ) : filtered.length === 0 ? (
+              <tr>
+                <td className="px-3 py-6 text-center text-gray-600" colSpan={8}>
+                  No insider trades{symbol ? ` for ${symbol}` : ""} in this range.
+                </td>
+              </tr>
+            ) : (
+              filtered.map
