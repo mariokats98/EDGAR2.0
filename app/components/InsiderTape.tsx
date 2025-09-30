@@ -1,7 +1,7 @@
 // app/components/InsiderTape.tsx
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 /** ---------- Types ---------- */
 type Txn = {
@@ -24,7 +24,7 @@ const iso = (d = new Date()) => d.toISOString().slice(0, 10);
 const DEFAULT_TO = iso();
 const DEFAULT_FROM = (() => {
   const d = new Date();
-  d.setMonth(d.getMonth() - 1);
+  d.setDate(d.getDate() - 14); // 2 weeks default like many feeds
   return iso(d);
 })();
 
@@ -54,7 +54,6 @@ function normalizeAction(x: any): "A" | "D" | string | null {
 }
 
 function normalizeTxn(r: Record<string, any>): Txn {
-  // date
   const date =
     r.transactionDate ||
     r.tradeDate ||
@@ -63,17 +62,16 @@ function normalizeTxn(r: Record<string, any>): Txn {
     r.date ||
     null;
 
-  // insider name
   const insider =
     r.insiderName ||
     r.reporter ||
     r.owner ||
     r.reportingOwner ||
+    r.reportingOwnerName ||
     r.name ||
     r.person ||
     null;
 
-  // ticker & company
   const ticker = (r.symbol || r.ticker || r.securityTicker || null) ?? null;
   const company =
     r.company ||
@@ -83,12 +81,10 @@ function normalizeTxn(r: Record<string, any>): Txn {
     r.securityName ||
     null;
 
-  // action (buy/sell)
   const action = normalizeAction(
     r.transactionCode || r.action || r.transactionType || r.type || r.side
   );
 
-  // shares, price, value
   const shares =
     toNumber(r.shares) ??
     toNumber(r.sharesTransacted) ??
@@ -106,7 +102,6 @@ function normalizeTxn(r: Record<string, any>): Txn {
     toNumber(r.value) ??
     (shares && price ? shares * price : null);
 
-  // link if available
   const link =
     r.link ||
     r.url ||
@@ -138,27 +133,27 @@ export default function InsiderTape() {
   const [rows, setRows] = useState<Txn[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [queried, setQueried] = useState(false); // to show “No results” only after a search
+  const [queried, setQueried] = useState(false);
 
-  // Build query string that is compatible with both of your server routes
+  // Build query string (be permissive on keys so the API route matches)
   const buildQuery = useCallback(() => {
     const sp = new URLSearchParams();
     const sym = ticker.trim().toUpperCase();
     const name = insider.trim();
 
-    // Be permissive: set multiple names so whichever your API expects will match
     if (sym) {
       sp.set("symbol", sym);
       sp.set("ticker", sym);
       sp.set("q", sym);
+      sp.set("companyTicker", sym);
     }
     if (name) {
       sp.set("insider", name);
       sp.set("name", name);
-      sp.set("q", name); // for servers that key off q
+      sp.set("owner", name);
+      sp.set("reportingOwnerName", name);
+      sp.set("q", name);
     }
-
-    // Dates — support both pairs
     if (from) {
       sp.set("from", from);
       sp.set("startDate", from);
@@ -167,37 +162,28 @@ export default function InsiderTape() {
       sp.set("to", to);
       sp.set("endDate", to);
     }
-
     sp.set("limit", "500");
     return sp.toString();
   }, [ticker, insider, from, to]);
 
-  const onSearch = useCallback(async () => {
-    setLoading(true);
-    setErr(null);
-    setQueried(true);
-    setRows([]);
-
-    const qs = buildQuery();
-
-    try {
-      // Prefer the “activity” route first
-      const r1 = await fetch(`/api/insider/activity?${qs}`, { cache: "no-store" });
-      const j1 = await r1.json().catch(() => ({} as any));
-      const list1: any[] = Array.isArray(j1?.rows)
-        ? j1.rows
-        : Array.isArray(j1)
-        ? j1
-        : [];
-
-      if (r1.ok && list1.length > 0) {
-        const mapped = list1.map(normalizeTxn);
-        setRows(mapped);
-        setLoading(false);
-        return;
+  // Unified fetch (tries activity then generic)
+  const fetchInsider = useCallback(
+    async (qs: string) => {
+      // try /api/insider/activity
+      try {
+        const r = await fetch(`/api/insider/activity?${qs}`, { cache: "no-store" });
+        const j = await r.json().catch(() => ({} as any));
+        const list: any[] = Array.isArray(j?.rows)
+          ? j.rows
+          : Array.isArray(j)
+          ? j
+          : [];
+        if (r.ok && list.length) return list.map(normalizeTxn);
+      } catch {
+        // ignore
       }
 
-      // Fallback generic insider route
+      // fallback /api/insider
       const r2 = await fetch(`/api/insider?${qs}`, { cache: "no-store" });
       const j2 = await r2.json().catch(() => ({} as any));
       if (!r2.ok || j2?.ok === false) {
@@ -208,15 +194,29 @@ export default function InsiderTape() {
         : Array.isArray(j2)
         ? j2
         : [];
-      const mapped2 = list2.map(normalizeTxn);
-      setRows(mapped2);
+      return list2.map(normalizeTxn);
+    },
+    []
+  );
+
+  const onSearch = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    setQueried(true);
+    setRows([]);
+
+    const qs = buildQuery();
+
+    try {
+      const data = await fetchInsider(qs);
+      setRows(data);
     } catch (e: any) {
       setErr(e?.message || "Unexpected error");
       setRows([]);
     } finally {
       setLoading(false);
     }
-  }, [buildQuery]);
+  }, [buildQuery, fetchInsider]);
 
   const onReset = useCallback(() => {
     setTicker("");
@@ -229,6 +229,29 @@ export default function InsiderTape() {
     setQueried(false);
   }, []);
 
+  // AUTO-LOAD like before: recent activity for last 14 days
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setErr(null);
+      setQueried(true);
+      const qs = new URLSearchParams([
+        ["from", DEFAULT_FROM],
+        ["to", DEFAULT_TO],
+        ["limit", "200"],
+      ]).toString();
+      try {
+        const data = await fetchInsider(qs);
+        setRows(data);
+      } catch (e: any) {
+        setErr(e?.message || "Unexpected error");
+        setRows([]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [fetchInsider]);
+
   // client-side filter (action + date) & sort newest first
   const filtered = useMemo(() => {
     const arr = rows.filter((r) => {
@@ -240,6 +263,14 @@ export default function InsiderTape() {
         if (action === "A" && a !== "A") return false;
         if (action === "D" && a !== "D") return false;
       }
+      // if user typed a ticker or name, also ensure client-side contains (in case server ignored)
+      if (ticker.trim()) {
+        if ((r.ticker || "").toUpperCase() !== ticker.trim().toUpperCase()) return false;
+      }
+      if (insider.trim()) {
+        const q = insider.trim().toLowerCase();
+        if (!(r.insider || "").toLowerCase().includes(q)) return false;
+      }
       return true;
     });
 
@@ -250,7 +281,7 @@ export default function InsiderTape() {
       if (da > db) return -1;
       return 0;
     });
-  }, [rows, action, from, to]);
+  }, [rows, action, from, to, ticker, insider]);
 
   return (
     <div className="space-y-4">
@@ -259,7 +290,7 @@ export default function InsiderTape() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="text-lg font-semibold text-gray-900">Insider Activity</div>
-            <div className="text-sm text-gray-600">Search insider buys/sells by ticker or name</div>
+            <div className="text-sm text-gray-600">Buy/Sell filings by corporate insiders</div>
           </div>
           <div className="text-sm text-gray-500">
             {filtered.length > 0 ? `${filtered.length.toLocaleString()} results` : queried ? "0 results" : ""}
@@ -285,7 +316,7 @@ export default function InsiderTape() {
               value={insider}
               onChange={(e) => setInsider(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && onSearch()}
-              placeholder="e.g., Cook, Musk, Pelosi"
+              placeholder="e.g., Tim Cook, Nancy Pelosi"
               className="w-full rounded-md border px-3 py-2"
             />
           </div>
