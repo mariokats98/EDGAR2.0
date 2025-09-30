@@ -1,4 +1,5 @@
 // app/components/StocksDashboard.tsx
+// app/components/StocksDashboard.tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
