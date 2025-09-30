@@ -5,46 +5,76 @@ import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import InsiderTape, { TxnFilter } from "../components/InsiderTape";
 
-const StocksDashboard = dynamic(() => import("../components/StocksDashboard"), { ssr: false });
-const CryptoDashboard = dynamic(() => import("../components/CryptoDashboard"), { ssr: false });
-const CongressionalTracker = dynamic(() => import("../components/CongressionalTracker"), { ssr: false });
+// Lazy-load big dashboards
+const StocksDashboard = dynamic(() => import("../components/StocksDashboard"), {
+  ssr: false,
+  loading: () => <div className="text-sm text-gray-500">Loading Stocks…</div>,
+});
+const CryptoDashboard = dynamic(() => import("../components/CryptoDashboard"), {
+  ssr: false,
+  loading: () => <div className="text-sm text-gray-500">Loading Crypto…</div>,
+});
+const CongressionalTracker = dynamic(
+  () => import("../components/CongressionalTracker"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="text-sm text-gray-500">Loading Congressional data…</div>
+    ),
+  }
+);
 
 type TabKey = "stocks" | "insider" | "crypto" | "congress";
 
-export default function ClientScreener() {
-  const [tab, setTab] = useState<TabKey>("stocks");
+export default function ClientScreener({
+  initialTab = "stocks",
+}: {
+  initialTab?: TabKey;
+}) {
+  const [tab, setTab] = useState<TabKey>(initialTab);
 
   // Insider filters (unchanged)
   const [symbol, setSymbol] = useState("");
-  const [start, setStart] = useState(() => new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString().slice(0,10));
-  const [end, setEnd] = useState(() => new Date().toISOString().slice(0,10));
+  const [start, setStart] = useState(() =>
+    new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10)
+  );
+  const [end, setEnd] = useState(() => new Date().toISOString().slice(0, 10));
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
-  const queryKey = useMemo(() => `${symbol}-${start}-${end}-${txnType}`, [symbol, start, end, txnType]);
-
-  const tabBtn = (k: TabKey, label: string) => (
-    <button
-      key={k}
-      onClick={() => setTab(k)}
-      className={`rounded-full px-4 py-2 text-sm border ${tab === k ? "bg-black text-white" : "bg-white hover:bg-gray-50"}`}
-    >
-      {label}
-    </button>
+  const queryKey = useMemo(
+    () => `${symbol}-${start}-${end}-${txnType}`,
+    [symbol, start, end, txnType]
   );
 
   return (
     <div className="space-y-4">
-      {/* Tabs row — evenly spaced & aligned */}
-      <div className="flex flex-wrap gap-2">
-        {tabBtn("stocks", "Stocks")}
-        {tabBtn("insider", "Insider Activity")}
-        {tabBtn("crypto", "Crypto")}
-        {tabBtn("congress", "Congressional Tracker")}
-      </div>
+      {/* Top tabs */}
+      <nav className="mx-auto max-w-6xl">
+        <div className="flex justify-center gap-2">
+          <TabButton active={tab === "stocks"} onClick={() => setTab("stocks")}>
+            Stocks
+          </TabButton>
+          <TabButton
+            active={tab === "insider"}
+            onClick={() => setTab("insider")}
+          >
+            Insider Activity
+          </TabButton>
+          <TabButton active={tab === "crypto"} onClick={() => setTab("crypto")}>
+            Crypto
+          </TabButton>
+          <TabButton
+            active={tab === "congress"}
+            onClick={() => setTab("congress")}
+          >
+            Congressional Tracker
+          </TabButton>
+        </div>
+      </nav>
 
       {/* Bodies */}
       {tab === "stocks" ? (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          {StocksDashboard ? <StocksDashboard /> : <div className="text-sm text-gray-500">Loading…</div>}
+          <StocksDashboard />
         </section>
       ) : tab === "insider" ? (
         <>
@@ -61,15 +91,31 @@ export default function ClientScreener() {
               </div>
               <div>
                 <div className="mb-1 text-xs text-gray-700">Start</div>
-                <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="w-full rounded-md border px-3 py-2" />
+                <input
+                  type="date"
+                  value={start}
+                  onChange={(e) => setStart(e.target.value)}
+                  className="w-full rounded-md border px-3 py-2"
+                />
               </div>
               <div>
                 <div className="mb-1 text-xs text-gray-700">End</div>
-                <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="w-full rounded-md border px-3 py-2" />
+                <input
+                  type="date"
+                  value={end}
+                  onChange={(e) => setEnd(e.target.value)}
+                  className="w-full rounded-md border px-3 py-2"
+                />
               </div>
               <div>
                 <div className="mb-1 text-xs text-gray-700">Type</div>
-                <select value={txnType} onChange={(e) => setTxnType(e.target.value as TxnFilter)} className="w-full rounded-md border px-3 py-2">
+                <select
+                  value={txnType}
+                  onChange={(e) =>
+                    setTxnType(e.target.value as TxnFilter)
+                  }
+                  className="w-full rounded-md border px-3 py-2"
+                >
                   <option value="ALL">All</option>
                   <option value="A">Acquired (A)</option>
                   <option value="D">Disposed (D)</option>
@@ -79,7 +125,13 @@ export default function ClientScreener() {
           </section>
 
           {symbol.trim() ? (
-            <InsiderTape symbol={symbol.trim()} start={start} end={end} txnType={txnType} queryKey={queryKey} />
+            <InsiderTape
+              symbol={symbol.trim()}
+              start={start}
+              end={end}
+              txnType={txnType}
+              queryKey={queryKey}
+            />
           ) : (
             <div className="rounded-2xl border bg-white p-8 text-center text-sm text-gray-500">
               Enter a symbol to begin.
@@ -88,13 +140,34 @@ export default function ClientScreener() {
         </>
       ) : tab === "crypto" ? (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          {CryptoDashboard ? <CryptoDashboard /> : <div className="text-sm text-gray-500">Loading…</div>}
+          <CryptoDashboard />
         </section>
       ) : (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          {CongressionalTracker ? <CongressionalTracker /> : <div className="text-sm text-gray-500">Loading…</div>}
+          <CongressionalTracker />
         </section>
       )}
     </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-full px-4 py-2 text-sm border ${
+        active ? "bg-black text-white" : "bg-white"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
