@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 
 const FMP_KEY = process.env.FMP_API_KEY;
 
-// Optional: force this route to run on the Edge or Node.
 // export const runtime = "edge";
 
 export async function GET(req: Request) {
@@ -17,10 +16,14 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
   // inputs
-  const chamber = (searchParams.get("chamber") || "senate").toLowerCase();
-  const q = (searchParams.get("q") || "").trim();
+  const chamber = (searchParams.get("chamber") || "senate").toLowerCase(); // "senate" | "house"
+  const q = (searchParams.get("q") || "").trim();                          // member name or ticker
   const page = Math.max(1, Number(searchParams.get("page") || "1"));
   const limit = Math.max(1, Math.min(100, Number(searchParams.get("limit") || "25")));
+
+  // NEW: optional date filters (YYYY-MM-DD)
+  const from = (searchParams.get("from") || "").trim();
+  const to = (searchParams.get("to") || "").trim();
 
   // choose endpoint
   const base =
@@ -28,43 +31,86 @@ export async function GET(req: Request) {
       ? "https://financialmodelingprep.com/api/v4/house-trading"
       : "https://financialmodelingprep.com/api/v4/senate-trading";
 
-  const u = new URL(base);
-  u.searchParams.set("page", String(page));
-  u.searchParams.set("apikey", FMP_KEY);
-
-  // search: try both symbol & name styles FMP uses across datasets
-  if (q) {
+  // helper to try multiple param variants until we get data
+  async function tryFetchWithVariants(): Promise<any[]> {
     const looksLikeTicker = /^[A-Z.\-]{1,6}$/.test(q.toUpperCase());
-    if (looksLikeTicker) {
-      u.searchParams.set("symbol", q.toUpperCase());
-    } else {
-      // person name
-      u.searchParams.set("name", q);
-      // some endpoints accept "search"
-      u.searchParams.set("search", q);
+
+    // Build base URL with shared params
+    const buildBase = () => {
+      const u = new URL(base);
+      u.searchParams.set("page", String(page));
+      u.searchParams.set("apikey", FMP_KEY);
+
+      // page size variants — some FMP endpoints use different names
+      u.searchParams.set("limit", String(limit));
+      u.searchParams.set("size", String(limit));
+      u.searchParams.set("page_size", String(limit));
+
+      // date variants — different datasets may use different keys
+      if (from) {
+        u.searchParams.set("from", from);
+        u.searchParams.set("start", from);
+        u.searchParams.set("dateFrom", from);
+      }
+      if (to) {
+        u.searchParams.set("to", to);
+        u.searchParams.set("end", to);
+        u.searchParams.set("dateTo", to);
+      }
+
+      return u;
+    };
+
+    // Query variants we’ll attempt (in order) depending on whether q is a ticker or a name
+    const variants: Array<Record<string, string>> = looksLikeTicker
+      ? [
+          { symbol: q.toUpperCase() },
+          { ticker: q.toUpperCase() },
+          { search: q.toUpperCase() },
+        ]
+      : [
+          { name: q },            // many endpoints accept "name"
+          { search: q },          // catch-all search
+          { representative: q },  // house-flavored field in some datasets
+          { senator: q },         // senate-flavored field in some datasets
+        ];
+
+    // Always include a no-filter attempt when q is empty
+    if (!q) variants.unshift({});
+
+    // Try each variant until one returns rows
+    for (const v of variants) {
+      const u = buildBase();
+      for (const [k, val] of Object.entries(v)) u.searchParams.set(k, val);
+
+      const r = await fetch(u.toString(), { cache: "no-store" });
+      if (!r.ok) {
+        // keep trying other variants, but remember last error text
+        continue;
+      }
+      const data = await r.json();
+      const list: any[] = Array.isArray(data) ? data : data?.data || [];
+      if (list.length) return list;
     }
+
+    // Last resort: try the base URL with only shared params (no q)
+    const u = buildBase();
+    const r = await fetch(u.toString(), { cache: "no-store" });
+    if (r.ok) {
+      const data = await r.json();
+      const list: any[] = Array.isArray(data) ? data : data?.data || [];
+      return list;
+    }
+
+    return [];
   }
 
   try {
-    const r = await fetch(u.toString(), { cache: "no-store" });
+    const list = await tryFetchWithVariants();
 
-    if (!r.ok) {
-      const text = await r.text();
-      return NextResponse.json(
-        { ok: false, error: text || r.statusText },
-        { status: 502 }
-      );
-    }
-
-    // FMP sometimes returns array, sometimes {data: [...]}
-    const data = await r.json();
-    const list: any[] = Array.isArray(data) ? data : data?.data || [];
-
-    // normalize rows so UI always has consistent fields
     const rows = list.map((x: any, i: number) => {
       const first = x.first_name || x.firstName;
       const last = x.last_name || x.lastName;
-
       const politician =
         x.representative ||
         x.senator ||
@@ -118,8 +164,18 @@ export async function GET(req: Request) {
       };
     });
 
-    // Apply a simple page-size cap for the UI's "hasMore" logic
-    const pageRows = rows.slice(0, limit);
+    // If a date filter was supplied but rows came back, also do a soft client-side filter
+    const filtered = rows.filter((r) => {
+      if (!from && !to) return true;
+      const d = new Date(r.transactionDate || r.filingDate || "");
+      if (Number.isNaN(d.getTime())) return true;
+      if (from && d < new Date(from)) return false;
+      if (to && d > new Date(to)) return false;
+      return true;
+    });
+
+    // Hard cap to the requested limit
+    const pageRows = filtered.slice(0, limit);
 
     return NextResponse.json({ ok: true, rows: pageRows });
   } catch (e: any) {
