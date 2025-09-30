@@ -1,9 +1,11 @@
 // app/screener/[section]/page.tsx
-import { redirect } from "next/navigation";
+import ClientScreener from "../ClientScreener";
 
-export default function SectionPage({ params }: { params: { section: string } }) {
-  const s = (params.section || "").toLowerCase();
-  const allowed = new Set(["stocks", "insider", "crypto", "forex"]);
-  const target = allowed.has(s) ? `/screener?tab=${s}` : "/screener";
-  redirect(target);
+export default function SectionPage({
+  params,
+}: {
+  params: { section?: string };
+}) {
+  const section = (params?.section || "stocks").toLowerCase();
+  return <ClientScreener initialTab={section} />;
 }
