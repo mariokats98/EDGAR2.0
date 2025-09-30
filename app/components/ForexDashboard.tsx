@@ -1,9 +1,8 @@
 // app/components/ForexDashboard.tsx
+// app/components/ForexDashboard.tsx
 "use client";
-import { useEffect, useMemo, useState } from "react";
-// (rest unchanged)
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type FxRow = {
   symbol: string;
