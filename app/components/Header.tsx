@@ -6,66 +6,94 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 
+type Point = { top: number; left: number; width: number; height: number };
+
 export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [screenerOpen, setScreenerOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number }>({
-    top: 0,
-    left: 0,
-    width: 224,
-  });
+
+  // ---- Screener dropdown state (desktop) ----
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<Point | null>(null);
+  const triggerRef = useRef<HTMLAnchorElement | null>(null);
+  const closeTimer = useRef<number | null>(null);
+
   const pathname = usePathname();
 
-  useEffect(() => setMounted(true), []);
-
-  const calcPos = () => {
-    const el = triggerRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setMenuPos({
-      top: Math.round(r.bottom + 6),
-      left: Math.round(r.left),
-      width: Math.max(224, Math.round(r.width)),
-    });
-  };
-
-  useLayoutEffect(() => {
-    if (screenerOpen) calcPos();
-  }, [screenerOpen]);
-
+  // Close menus when route changes
   useEffect(() => {
-    setScreenerOpen(false);
+    setOpen(false);
     setMobileOpen(false);
   }, [pathname]);
 
+  // Close on ESC
   useEffect(() => {
-    if (!screenerOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
-    const onDocClick = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (!triggerRef.current?.contains(t)) setScreenerOpen(false);
-    };
-    const onEsc = (e: KeyboardEvent) => e.key === "Escape" && setScreenerOpen(false);
-    const onScroll = () => calcPos();
-    const onResize = () => calcPos();
+  // Reposition on scroll/resize
+  useLayoutEffect(() => {
+    function updatePos() {
+      if (!triggerRef.current) return;
+      const r = triggerRef.current.getBoundingClientRect();
+      setPos({ top: r.bottom + window.scrollY, left: r.left + window.scrollX, width: r.width, height: r.height });
+    }
+    if (open) {
+      updatePos();
+      window.addEventListener("scroll", updatePos, true);
+      window.addEventListener("resize", updatePos);
+      return () => {
+        window.removeEventListener("scroll", updatePos, true);
+        window.removeEventListener("resize", updatePos);
+      };
+    }
+  }, [open]);
 
+  // Helpers to manage small hover gaps
+  function safeOpen() {
+    if (closeTimer.current) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    if (!open) {
+      if (triggerRef.current) {
+        const r = triggerRef.current.getBoundingClientRect();
+        setPos({ top: r.bottom + window.scrollY, left: r.left + window.scrollX, width: r.width, height: r.height });
+      }
+      setOpen(true);
+    }
+  }
+  function delayedClose() {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => setOpen(false), 120) as unknown as number;
+  }
+
+  // Click outside to close
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!open) return;
+      const t = e.target as Node | null;
+      if (triggerRef.current && triggerRef.current.contains(t)) return;
+      // If the portal menu is clicked, it has data-attr we can check
+      const el = (t as HTMLElement | null)?.closest?.("[data-screener-menu]");
+      if (!el) setOpen(false);
+    }
     document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onEsc);
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
 
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onEsc);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
-    };
-  }, [screenerOpen]);
+  const items = [
+    { href: "/screener/stocks", label: "Stocks" },
+    { href: "/screener/insider", label: "Insider Activity" },
+    { href: "/screener/crypto", label: "Crypto" },
+    { href: "/screener/forex", label: "Forex" },
+  ];
 
   return (
-    <header className="sticky top-0 z-[1000] border-b bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
+    <header className="sticky top-0 z-50 border-b bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
       <div className="mx-auto max-w-6xl px-4">
         <div className="flex h-14 items-center justify-between">
           <Link href="/" className="shrink-0 font-bold text-lg tracking-tight text-brand">
@@ -81,49 +109,24 @@ export default function Header() {
             <NavLink href="/fred" label="FRED" />
             <NavLink href="/news" label="News" />
 
-            {/* Screener trigger */}
-            <div className="relative">
-              <button
-                ref={triggerRef}
-                type="button"
-                className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition inline-flex items-center gap-1"
-                aria-haspopup="menu"
-                aria-expanded={screenerOpen}
-                onClick={() => setScreenerOpen(v => !v)}
-              >
-                Screener
-                <svg
-                  className={`h-4 w-4 transition-transform ${screenerOpen ? "rotate-180" : ""}`}
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                  aria-hidden
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </button>
-            </div>
-
-            {/* Portaled menu */}
-            {mounted && screenerOpen &&
-              createPortal(
-                <div
-                  role="menu"
-                  aria-label="Screener submenu"
-                  style={{ position: "fixed", top: menuPos.top, left: menuPos.left, minWidth: menuPos.width }}
-                  className="z-[9999] rounded-md border bg-white shadow-lg p-1"
-                >
-                  <DropdownLink href="/screener/stocks" label="Stocks" onNavigate={() => setScreenerOpen(false)} />
-                  <DropdownLink href="/screener/insider-activity" label="Insider Activity" onNavigate={() => setScreenerOpen(false)} />
-                  <DropdownLink href="/screener/crypto" label="Crypto" onNavigate={() => setScreenerOpen(false)} />
-                  <DropdownLink href="/screener/forex" label="Forex" onNavigate={() => setScreenerOpen(false)} />
-                </div>,
-                document.body
-              )
-            }
+            {/* Screener trigger (desktop) */}
+            <a
+              href="/screener/stocks"
+              ref={triggerRef}
+              className="px-3 py-2 rounded-md text-gray-700 hover:bg-brand hover:text-white transition relative"
+              onMouseEnter={safeOpen}
+              onFocus={safeOpen}
+              onMouseLeave={delayedClose}
+              aria-haspopup="menu"
+              aria-expanded={open}
+              onClick={(e) => {
+                // Let normal click take you to Stocks; menu is for choosing others.
+                // If you prefer click to just open the menu, uncomment:
+                // e.preventDefault(); safeOpen();
+              }}
+            >
+              Screener ▾
+            </a>
 
             <NavLink href="/game" label="Puzzle" />
 
@@ -140,7 +143,7 @@ export default function Header() {
             className="md:hidden inline-flex items-center justify-center rounded-md p-2 text-gray-700 hover:bg-gray-100"
             aria-label="Toggle menu"
             aria-expanded={mobileOpen}
-            onClick={() => setMobileOpen(v => !v)}
+            onClick={() => setMobileOpen((v) => !v)}
           >
             <Burger open={mobileOpen} />
           </button>
@@ -158,26 +161,14 @@ export default function Header() {
             <MobileLink href="/fred" label="FRED" onClick={() => setMobileOpen(false)} />
             <MobileLink href="/news" label="News" onClick={() => setMobileOpen(false)} />
 
-            <details className="rounded-md">
-              <summary className="list-none flex w-full items-center justify-between px-3 py-2 rounded-md hover:bg-gray-100 cursor-pointer">
-                <span>Screener</span>
-                <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
-                  <path
-                    fillRule="evenodd"
-                    d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.08 1.04l-4.25 4.25a.75.75 0 01-1.06 0L5.21 8.27a.75.75 0 01.02-1.06z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </summary>
-              <div className="ml-2 mt-1 mb-1 space-y-1">
-                <MobileLink href="/screener/stocks" label="Stocks" onClick={() => setMobileOpen(false)} />
-                <MobileLink href="/screener/insider-activity" label="Insider Activity" onClick={() => setMobileOpen(false)} />
-                <MobileLink href="/screener/crypto" label="Crypto" onClick={() => setMobileOpen(false)} />
-                <MobileLink href="/screener/forex" label="Forex" onClick={() => setMobileOpen(false)} />
-              </div>
-            </details>
+            {/* Collapsible Screener group (mobile) */}
+            <div className="mt-1">
+              <div className="px-3 py-2 text-gray-500 text-xs uppercase tracking-wide">Screener</div>
+              {items.map((it) => (
+                <MobileLink key={it.href} href={it.href} label={it.label} onClick={() => setMobileOpen(false)} />
+              ))}
+            </div>
 
-            <MobileLink href="/game" label="Puzzle" onClick={() => setMobileOpen(false)} />
             <Link
               href="/ai"
               onClick={() => setMobileOpen(false)}
@@ -188,11 +179,40 @@ export default function Header() {
           </nav>
         </div>
       )}
+
+      {/* Desktop dropdown rendered via portal so it’s never hidden */}
+      {open && pos &&
+        createPortal(
+          <div
+            data-screener-menu
+            onMouseEnter={safeOpen}
+            onMouseLeave={delayedClose}
+            className="absolute"
+            style={{
+              position: "absolute",
+              top: pos.top + 6,
+              left: pos.left,
+              zIndex: 9999,
+            }}
+          >
+            <div className="w-56 overflow-hidden rounded-lg border bg-white shadow-xl">
+              {items.map((it, i) => (
+                <Link
+                  key={it.href}
+                  href={it.href}
+                  className={`block px-3 py-2 text-sm hover:bg-gray-50 ${i !== 0 ? "border-t" : ""}`}
+                  onClick={() => setOpen(false)}
+                >
+                  {it.label}
+                </Link>
+              ))}
+            </div>
+          </div>,
+          document.body
+        )}
     </header>
   );
 }
-
-/* ——— Small helpers ——— */
 
 function NavLink({ href, label }: { href: string; label: string }) {
   return (
@@ -202,36 +222,7 @@ function NavLink({ href, label }: { href: string; label: string }) {
   );
 }
 
-function DropdownLink({
-  href,
-  label,
-  onNavigate,
-}: {
-  href: string;
-  label: string;
-  onNavigate?: () => void;
-}) {
-  return (
-    <Link
-      href={href}
-      role="menuitem"
-      className="block rounded px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-      onClick={onNavigate}
-    >
-      {label}
-    </Link>
-  );
-}
-
-function MobileLink({
-  href,
-  label,
-  onClick,
-}: {
-  href: string;
-  label: string;
-  onClick?: () => void;
-}) {
+function MobileLink({ href, label, onClick }: { href: string; label: string; onClick?: () => void }) {
   return (
     <Link href={href} onClick={onClick} className="block w-full px-3 py-2 rounded-md hover:bg-gray-100">
       {label}
