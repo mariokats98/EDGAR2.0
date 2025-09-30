@@ -3,89 +3,61 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-/** ---------- types the table expects ---------- */
+type TxnFilter = "ALL" | "P" | "S" | "A" | "D";
+
 type Row = {
-  date: string | null;
-  insider: string | null;   // <-- render this
-  ticker: string | null;
-  company: string | null;
-  action: "A" | "D" | string | null;
-  shares: number | null;    // <-- render this
-  price: number | null;     // <-- render this
-  value: number | null;     // <-- render this (shares * price)
-  link?: string | null;
+  date?: string;
+  insider?: string;
+  ticker?: string;
+  company?: string;
+  action?: string; // e.g. "P-PURCHASE", "S-SALE", "A-ACQUIRE", "D-DISPOSE"
+  shares?: number;
+  price?: number;
+  value?: number;
+  source?: string;
 };
 
-type TxnFilter = "ALL" | "A" | "D";
-
-function fmtNum(n?: number | null) {
-  return typeof n === "number" && isFinite(n) ? n.toLocaleString() : "—";
+function fmtNum(n?: number, d = 0) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "—";
+  return n.toLocaleString(undefined, { maximumFractionDigits: d });
 }
-function fmtMoney(n?: number | null) {
-  return typeof n === "number" && isFinite(n)
-    ? n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 })
-    : "—";
+function fmtUsd(n?: number) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "—";
+  return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 }
-function badge(action?: Row["action"]) {
-  const a = (action || "").toString().toUpperCase();
-  if (a === "A") {
-    return (
-      <span className="rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
-        Purchase
-      </span>
-    );
-  }
-  if (a === "D") {
-    return (
-      <span className="rounded bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700 ring-1 ring-rose-200">
-        Sale
-      </span>
-    );
-  }
-  return (
-    <span className="rounded bg-gray-50 px-2 py-0.5 text-xs font-medium text-gray-700 ring-1 ring-gray-200">
-      {a || "—"}
-    </span>
-  );
+function clsx(...xs: (string | false | null | undefined)[]) {
+  return xs.filter(Boolean).join(" ");
 }
 
-/** ---------- component ---------- */
 export default function InsiderTape() {
-  // server query controls
-  const [tickerQ, setTickerQ] = useState("");
-  const [insiderQ, setInsiderQ] = useState("");
-  const [from, setFrom] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 14);
-    return d.toISOString().slice(0, 10);
-  });
+  // filters
+  const [symbol, setSymbol] = useState("");             // ticker filter (optional)
+  const [from, setFrom] = useState(() => new Date(new Date().setMonth(new Date().getMonth() - 6)).toISOString().slice(0, 10));
   const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
-  const [filter, setFilter] = useState<TxnFilter>("ALL");
+  const [kind, setKind] = useState<TxnFilter>("ALL");
 
   // data
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function load() {
+  async function runSearch() {
     setLoading(true);
     setErr(null);
     try {
       const params = new URLSearchParams();
-      if (tickerQ.trim()) params.set("symbol", tickerQ.trim().toUpperCase());
-      if (insiderQ.trim()) params.set("insider", insiderQ.trim());
+      if (symbol.trim()) params.set("symbol", symbol.trim().toUpperCase());
       if (from) params.set("from", from);
       if (to) params.set("to", to);
-      params.set("limit", "500");
+      // pull a healthy page by default
+      params.set("size", "200");
 
-      const res = await fetch(`/api/insider/activity?${params.toString()}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(`/api/insider/activity?${params.toString()}`, { cache: "no-store" });
       const j = await res.json();
-      if (!res.ok || j?.ok === false) {
-        throw new Error(j?.error || "Failed to load insider activity");
-      }
-      setRows(Array.isArray(j.rows) ? j.rows : []);
+      if (!res.ok || j?.ok === false) throw new Error(j?.error || "Failed to load data");
+
+      const arr: Row[] = Array.isArray(j.rows) ? j.rows : [];
+      setRows(arr);
     } catch (e: any) {
       setErr(e?.message || "Unexpected error");
       setRows([]);
@@ -94,47 +66,31 @@ export default function InsiderTape() {
     }
   }
 
-  // initial load
   useEffect(() => {
-    load();
+    // initial load with today’s window (no symbol)
+    runSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filtered = useMemo(() => {
     let out = rows;
-    if (filter !== "ALL") {
-      out = out.filter((r) => (r.action || "").toString().toUpperCase() === filter);
+    if (kind !== "ALL") {
+      out = out.filter((r) => (r.action || "").startsWith(kind));
     }
     return out;
-  }, [rows, filter]);
-
-  function onEnter(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter") load();
-  }
+  }, [rows, kind]);
 
   return (
     <div className="space-y-4">
       {/* Controls */}
       <section className="rounded-2xl border bg-white p-4 md:p-5">
-        <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_minmax(180px,1fr)_auto_auto_auto_auto]">
+        <div className="grid gap-3 md:grid-cols-[minmax(120px,1fr)_auto_auto_auto_auto]">
           <div>
             <div className="mb-1 text-xs text-gray-700">Ticker</div>
             <input
-              value={tickerQ}
-              onChange={(e) => setTickerQ(e.target.value.toUpperCase())}
-              onKeyDown={onEnter}
-              placeholder="e.g., NVDA"
-              className="w-full rounded-md border px-3 py-2"
-            />
-          </div>
-
-          <div>
-            <div className="mb-1 text-xs text-gray-700">Insider Name</div>
-            <input
-              value={insiderQ}
-              onChange={(e) => setInsiderQ(e.target.value)}
-              onKeyDown={onEnter}
-              placeholder="e.g., Tim Cook"
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value)}
+              placeholder="e.g., AAPL"
               className="w-full rounded-md border px-3 py-2"
             />
           </div>
@@ -148,6 +104,7 @@ export default function InsiderTape() {
               className="w-full rounded-md border px-3 py-2"
             />
           </div>
+
           <div>
             <div className="mb-1 text-xs text-gray-700">To</div>
             <input
@@ -158,34 +115,46 @@ export default function InsiderTape() {
             />
           </div>
 
-          <div>
-            <div className="mb-1 text-xs text-gray-700">Type</div>
-            <div className="flex gap-1">
-              {(["ALL", "A", "D"] as TxnFilter[]).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setFilter(t)}
-                  className={
-                    "rounded-md border px-3 py-2 text-sm " +
-                    (filter === t
-                      ? "border-black bg-black text-white"
-                      : "border-gray-300 bg-white text-gray-800 hover:bg-gray-50")
-                  }
-                >
-                  {t === "ALL" ? "All" : t === "A" ? "Purchases" : "Sales"}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex items-end">
+          <div className="flex items-end gap-2">
             <button
-              onClick={load}
+              onClick={runSearch}
+              className="rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
               disabled={loading}
-              className="w-full rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
             >
               {loading ? "Loading…" : "Search"}
             </button>
+            <button
+              onClick={() => {
+                setSymbol("");
+                const d = new Date();
+                const f = new Date();
+                f.setMonth(f.getMonth() - 6);
+                setFrom(f.toISOString().slice(0, 10));
+                setTo(d.toISOString().slice(0, 10));
+                setKind("ALL");
+              }}
+              className="rounded-md border px-4 py-2 text-sm"
+              disabled={loading}
+            >
+              Reset
+            </button>
+          </div>
+
+          <div className="flex items-end">
+            <div className="inline-flex rounded-md border">
+              {(["ALL", "P", "S", "A", "D"] as TxnFilter[]).map((k) => (
+                <button
+                  key={k}
+                  onClick={() => setKind(k)}
+                  className={clsx(
+                    "px-3 py-2 text-xs",
+                    kind === k ? "bg-gray-900 text-white" : "bg-white text-gray-700"
+                  )}
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -200,7 +169,7 @@ export default function InsiderTape() {
       <section className="rounded-2xl border bg-white">
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-600">
+            <thead className="bg-gray-50 text-gray-600">
               <tr>
                 <th className="px-3 py-2 text-left">Date</th>
                 <th className="px-3 py-2 text-left">Insider</th>
@@ -214,46 +183,34 @@ export default function InsiderTape() {
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 ? (
+              {filtered.length === 0 && (
                 <tr>
-                  <td className="px-3 py-6 text-gray-500" colSpan={9}>
-                    {loading
-                      ? "Loading…"
-                      : "No results. Try a different date range, ticker, or insider name."}
+                  <td className="px-3 py-6 text-center text-gray-500" colSpan={9}>
+                    No trades in this range.
                   </td>
                 </tr>
-              ) : (
-                filtered.map((r, i) => (
-                  <tr key={i} className="hover:bg-gray-50">
-                    <td className="px-3 py-2 text-gray-700">{r.date || "—"}</td>
-                    <td className="px-3 py-2 font-medium text-gray-900">
-                      {r.insider || "—"}
-                    </td>
-                    <td className="px-3 py-2">{r.ticker || "—"}</td>
-                    <td className="px-3 py-2">{r.company || "—"}</td>
-                    <td className="px-3 py-2">{badge(r.action)}</td>
-                    <td className="px-3 py-2 text-right">{fmtNum(r.shares)}</td>
-                    <td className="px-3 py-2 text-right">
-                      {typeof r.price === "number" ? `$${r.price.toFixed(2)}` : "—"}
-                    </td>
-                    <td className="px-3 py-2 text-right">{fmtMoney(r.value)}</td>
-                    <td className="px-3 py-2">
-                      {r.link ? (
-                        <a
-                          href={r.link}
-                          className="text-blue-600 hover:underline"
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          filing
-                        </a>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                  </tr>
-                ))
               )}
+              {filtered.map((r, i) => (
+                <tr key={i} className="hover:bg-gray-50">
+                  <td className="px-3 py-2 text-gray-700">{r.date || "—"}</td>
+                  <td className="px-3 py-2 font-medium text-gray-900">{r.insider || "—"}</td>
+                  <td className="px-3 py-2">{r.ticker || "—"}</td>
+                  <td className="px-3 py-2">{r.company || "—"}</td>
+                  <td className="px-3 py-2">{r.action || "—"}</td>
+                  <td className="px-3 py-2 text-right">{fmtNum(r.shares)}</td>
+                  <td className="px-3 py-2 text-right">{fmtUsd(r.price)}</td>
+                  <td className="px-3 py-2 text-right">{fmtUsd(r.value)}</td>
+                  <td className="px-3 py-2">
+                    {r.source ? (
+                      <a className="text-blue-600 underline" href={r.source} target="_blank" rel="noreferrer">
+                        source
+                      </a>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
