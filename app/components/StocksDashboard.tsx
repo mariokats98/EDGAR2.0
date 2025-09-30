@@ -1,6 +1,7 @@
 // app/components/StocksDashboard.tsx
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import SectionHeader from "./SectionHeader";
 
 // ---------- types ----------
 type Quote = {
@@ -126,7 +127,7 @@ function MACD(data: number[], fast = 12, slow = 26, signal = 9) {
   return { macd, signal: signalLine, hist };
 }
 
-// responsive SVG helpers
+// ---------- responsive SVG helpers ----------
 function minMaxOfSeries(seriesList: (number | undefined | null)[][]) {
   let min = +Infinity;
   let max = -Infinity;
@@ -166,7 +167,8 @@ function toPath(
     const val = series[i];
     if (typeof val !== "number" || !isFinite(val)) continue;
     const x = i * stepX;
-    const y = h - yPad - ((val - yMin) / range) * (h - 2 * yPad);
+    const y =
+      h - yPad - ((val - yMin) / range) * (h - 2 * yPad);
     d += (d ? " L " : "M ") + x.toFixed(2) + " " + clamp(y, 0, h).toFixed(2);
   }
   return d || "M 0 0";
@@ -187,7 +189,7 @@ function useContainerWidth(min = 320) {
   return { ref, width: w };
 }
 
-// component
+// ---------- component ----------
 export default function StocksDashboard() {
   const [symbol, setSymbol] = useState("");
   const [quote, setQuote] = useState<Quote | null>(null);
@@ -259,8 +261,13 @@ export default function StocksDashboard() {
 
   return (
     <div className="space-y-4">
-      {/* Controls */}
       <section className="rounded-2xl border bg-white p-4 md:p-5">
+        <SectionHeader
+          title="Stocks"
+          subtitle="Track quotes, ranges & indicators"
+          icon={"📈"}
+        />
+
         <div className="grid gap-3 md:grid-cols-[minmax(200px,1fr)_auto_auto_auto]">
           <div>
             <div className="mb-1 text-xs text-gray-700">Ticker</div>
@@ -333,10 +340,6 @@ export default function StocksDashboard() {
           </div>
         </div>
 
-        <p className="mt-2 text-xs text-gray-500">
-          Tip: Start with liquid tickers (AAPL, MSFT, NVDA). Indicators: <b>SMA(20)</b>, <b>SMA(50)</b>, <b>EMA(20)</b>, <b>RSI(14)</b>, <b>MACD(12,26,9)</b>.
-        </p>
-
         {err && (
           <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
             {err}
@@ -344,9 +347,9 @@ export default function StocksDashboard() {
         )}
       </section>
 
-      {/* Top strip: quote & profile */}
       {quote && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
+          <SectionHeader title="Snapshot" subtitle="Quote & company details" icon={"🧾"} />
           <div className="grid gap-4 md:grid-cols-[1.2fr_1fr]">
             <div className="flex items-center gap-4">
               {profile?.image && (
@@ -388,72 +391,99 @@ export default function StocksDashboard() {
         </section>
       )}
 
-      {/* Price & MAs */}
       {closes.length > 1 && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <div className="text-sm font-medium text-gray-900 mb-2">Price & MAs</div>
+          <SectionHeader title="Price & MAs" subtitle="Close, SMA(20/50), EMA(20)" icon={"📊"} />
           <div ref={priceBox.ref} className="w-full">
             <svg width={priceBox.width} height={priceH}>
               {Array.from({ length: 4 }).map((_, i) => {
                 const y = ((i + 1) / 5) * priceH;
-                return <line key={i} x1={0} y1={y} x2={priceBox.width} y2={y} stroke="#e5e7eb" strokeDasharray="4 4" />;
+                return (
+                  <line
+                    key={i}
+                    x1={0}
+                    y1={y}
+                    x2={priceBox.width}
+                    y2={y}
+                    stroke="#e5e7eb"
+                    strokeDasharray="4 4"
+                  />
+                );
               })}
               <path
                 d={toPath(closes, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
-                fill="none" stroke="#0f172a" strokeWidth={2}
+                fill="none"
+                stroke="#0f172a"
+                strokeWidth={2}
               />
               <path
                 d={toPath(sma20, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
-                fill="none" stroke="#2563eb" strokeWidth={1.5}
+                fill="none"
+                stroke="#2563eb"
+                strokeWidth={1.5}
               />
               <path
                 d={toPath(sma50, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
-                fill="none" stroke="#7c3aed" strokeWidth={1.5}
+                fill="none"
+                stroke="#7c3aed"
+                strokeWidth={1.5}
               />
               <path
                 d={toPath(ema20, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
-                fill="none" stroke="#10b981" strokeWidth={1.5}
+                fill="none"
+                stroke="#10b981"
+                strokeWidth={1.5}
               />
             </svg>
           </div>
-          <div className="mt-2 text-xs text-gray-600">Blue=SMA20, Purple=SMA50, Green=EMA20.</div>
         </section>
       )}
 
-      {/* RSI */}
       {rsi14.length > 1 && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <div className="text-sm font-medium text-gray-900 mb-2">RSI(14)</div>
+          <SectionHeader title="RSI(14)" subtitle="Overbought / Oversold zones" icon={"🧭"} />
           <div ref={rsiBox.ref} className="w-full relative">
             <svg width={rsiBox.width} height={rsiH}>
               <line x1={0} y1={rsiH * 0.3} x2={rsiBox.width} y2={rsiH * 0.3} stroke="#d1d5db" strokeDasharray="4 4" />
               <line x1={0} y1={rsiH * 0.7} x2={rsiBox.width} y2={rsiH * 0.7} stroke="#d1d5db" strokeDasharray="4 4" />
               <path
-                d={toPath(rsi14.map(v => (isFinite(v) ? v : NaN)), rsiBox.width, rsiH, 0, 100)}
-                fill="none" stroke="#374151" strokeWidth={1.5}
+                d={toPath(rsi14.map((v) => (isFinite(v) ? v : NaN)), rsiBox.width, rsiH, 0, 100)}
+                fill="none"
+                stroke="#374151"
+                strokeWidth={1.5}
               />
             </svg>
           </div>
         </section>
       )}
 
-      {/* MACD */}
       {macd.macd.length > 1 && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <div className="text-sm font-medium text-gray-900 mb-2">MACD(12,26,9)</div>
+          <SectionHeader title="MACD(12,26,9)" subtitle="Trend + momentum" icon={"⚡️"} />
           <div ref={macdBox.ref} className="w-full">
             {(() => {
               const domain = minMaxOfSeries([macd.macd, macd.signal]);
               return (
                 <svg width={macdBox.width} height={macdH}>
-                  <line x1={0} y1={macdH / 2} x2={macdBox.width} y2={macdH / 2} stroke="#e5e7eb" strokeDasharray="4 4" />
+                  <line
+                    x1={0}
+                    y1={macdH / 2}
+                    x2={macdBox.width}
+                    y2={macdH / 2}
+                    stroke="#e5e7eb"
+                    strokeDasharray="4 4"
+                  />
                   <path
                     d={toPath(macd.macd, macdBox.width, macdH, domain.min, domain.max)}
-                    fill="none" stroke="#0ea5e9" strokeWidth={1.5}
+                    fill="none"
+                    stroke="#0ea5e9"
+                    strokeWidth={1.5}
                   />
                   <path
                     d={toPath(macd.signal, macdBox.width, macdH, domain.min, domain.max)}
-                    fill="none" stroke="#ef4444" strokeWidth={1.5}
+                    fill="none"
+                    stroke="#ef4444"
+                    strokeWidth={1.5}
                   />
                 </svg>
               );
@@ -462,10 +492,9 @@ export default function StocksDashboard() {
         </section>
       )}
 
-      {/* Company blurb */}
       {profile?.description && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
-          <div className="text-sm font-medium text-gray-900 mb-2">About</div>
+          <SectionHeader title="About" icon={"🏷️"} />
           <p className="text-sm text-gray-700 leading-relaxed">
             {profile.description}
           </p>
