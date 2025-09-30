@@ -1,122 +1,119 @@
 // app/api/insider/activity/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
-const FMP_KEY = process.env.FMP_API_KEY || process.env.FMP_KEY;
+const API = "https://financialmodelingprep.com/api/v4/insider-trading";
+const KEY = process.env.FMP_API_KEY || process.env.NEXT_PUBLIC_FMP_KEY || "";
 
-type Raw = Record<string, any>;
-type Row = {
-  date?: string;
-  insider?: string;
-  ticker?: string;
-  company?: string;
-  action?: string;
-  shares?: number;
-  price?: number;
-  value?: number;
-  source?: string;
-};
+// super-light in-memory cache (per Lambda instance)
+type CacheEntry = { t: number; data: any };
+const CACHE = new Map<string, CacheEntry>();
+const TTL_MS = 60_000; // 1 minute
 
-function toNum(v: any): number | undefined {
-  const n = typeof v === "string" ? Number(v.replace(/,/g, "")) : Number(v);
-  return Number.isFinite(n) ? n : undefined;
+function cacheGet(key: string) {
+  const hit = CACHE.get(key);
+  if (hit && Date.now() - hit.t < TTL_MS) return hit.data;
+  if (hit) CACHE.delete(key);
+  return null;
+}
+function cacheSet(key: string, data: any) {
+  CACHE.set(key, { t: Date.now(), data });
 }
 
-function first<T = any>(...cands: any[]): T | undefined {
-  for (const c of cands) if (c !== undefined && c !== null && c !== "") return c as T;
-  return undefined;
-}
-
-function normalize(r: Raw): Row {
-  // Dates that appear in FMP insider payloads
-  const date =
-    first<string>(
-      r.transactionDate,
-      r.filingDate,
-      r.reportedDate,
-      r.effectDate,
-      r.date
-    ) || undefined;
-
-  // Names & company
-  const insider = first<string>(
-    r.name,
-    r.reportingName,
-    r.reportingOwnerName,
-    r.ownerName,
-    r.insiderName
-  );
-
-  const company = first<string>(r.companyName, r.issuerName, r.issuer, r.issuerTradingName);
-
-  // Ticker & action
-  const ticker = first<string>(r.symbol, r.ticker, r.issuerTradingSymbol);
-
-  let action =
-    first<string>(r.transactionType, r.action, r.acquisitionOrDisposition) || undefined;
-  // Normalize A/D letters if present
-  if (action === "A") action = "A-ACQUIRE";
-  if (action === "D") action = "D-DISPOSE";
-
-  // Shares / Price / Value — FMP uses different keys across feeds
-  const shares =
-    first<number>(
-      toNum(r.shares),
-      toNum(r.securitiesTransacted),
-      toNum(r.transactionShares),
-      toNum(r.securitiesOwnedAfterTransaction)
-    ) || undefined;
-
-  const price = first<number>(toNum(r.price), toNum(r.transactionPrice), toNum(r.sharePrice));
-
-  const value =
-    first<number>(toNum(r.total), toNum(r.value), shares && price ? shares * price : undefined) ||
-    undefined;
-
-  const source = first<string>(r.link, r.url, r.form4Url);
-
-  return { date, insider, ticker, company, action, shares, price, value, source };
-}
-
-function buildUrl(params: URLSearchParams) {
-  const base = new URL("https://financialmodelingprep.com/api/v4/insider-trading");
-  // pass-throughs supported by FMP:
-  //  - symbol (ticker)
-  //  - from, to (YYYY-MM-DD)
-  //  - page / size (optional)
-  const allow = ["symbol", "from", "to", "page", "size", "limit"];
-  for (const k of allow) {
-    const v = params.get(k);
-    if (v) base.searchParams.set(k, v);
-  }
-  base.searchParams.set("apikey", FMP_KEY ?? "");
-  return base.toString();
-}
-
-export async function GET(req: NextRequest) {
-  if (!FMP_KEY) {
-    return NextResponse.json(
-      { ok: false, error: "Missing FMP_API_KEY in environment." },
-      { status: 500 }
-    );
-  }
-
-  const url = buildUrl(req.nextUrl.searchParams);
-
+export async function GET(req: Request) {
   try {
-    const r = await fetch(url, { next: { revalidate: 0 } });
-    if (!r.ok) {
-      const text = await r.text().catch(() => "");
-      throw new Error(`FMP ${r.status}: ${text || r.statusText}`);
+    const { searchParams } = new URL(req.url);
+    const ticker = (searchParams.get("ticker") || "").trim().toUpperCase();
+    const insider = (searchParams.get("insider") || "").trim();
+    const from = searchParams.get("from") || "";
+    const to = searchParams.get("to") || "";
+
+    if (!KEY) {
+      return NextResponse.json(
+        { ok: false, error: "Missing FMP_API_KEY" },
+        { status: 500 }
+      );
     }
-    const json = (await r.json()) as Raw[] | { data?: Raw[] };
 
-    const rawArray: Raw[] = Array.isArray(json) ? json : Array.isArray(json?.data) ? json.data! : [];
-    const rows = rawArray.map(normalize);
+    // FMP lets you filter by symbol; for insider name we’ll filter locally.
+    const qp = new URLSearchParams();
+    if (ticker) qp.set("symbol", ticker);
+    qp.set("page", "0");
+    qp.set("apikey", KEY);
 
-    return NextResponse.json({ ok: true, rows });
-  } catch (err: any) {
+    const cacheKey = `insider:${qp.toString()}:${from}:${to}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return NextResponse.json({ ok: true, rows: cached });
+
+    const url = `${API}?${qp.toString()}`;
+    const res = await fetch(url, { next: { revalidate: 30 } });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`FMP error ${res.status}: ${text}`);
+    }
+    const raw = await res.json();
+
+    // Normalize rows (FMP fields vary slightly across endpoints)
+    const rows = (Array.isArray(raw) ? raw : []).map((r: any) => {
+      const shares =
+        Number(r.shares || r.share || r.totalShares || r.securitiesTransacted) ||
+        undefined;
+      const price =
+        Number(r.price || r.pricePerShare || r.transactionPrice) || undefined;
+      const value =
+        Number(
+          r.transactionValue || r.value || (shares && price ? shares * price : 0)
+        ) || (shares && price ? shares * price : undefined);
+      const who =
+        r.personName ||
+        r.insiderName ||
+        r.owner ||
+        r.officer ||
+        r.reportingOwner ||
+        r.reportedPerson ||
+        r.name ||
+        "";
+
+      const comp = r.companyName || r.issuerName || r.company || r.securityName;
+
+      // Dates from FMP often appear as "yyyy-MM-dd" or ISO — keep first 10 chars
+      const dt = (r.transactionDate || r.filingDate || r.date || "").slice(0, 10);
+
+      // Action mapping (P, S, Award, etc)
+      let action = String(r.acquistionOrDisposition || r.type || r.transactionType || "")
+        .toUpperCase();
+      if (action.startsWith("P")) action = "P-PURCHASE";
+      else if (action.startsWith("S")) action = "S-SALE";
+      else if (action.includes("AWARD") || action === "A") action = "A-AWARD";
+      else if (action.includes("RETURN") || action === "D") action = "D-RETURN";
+
+      return {
+        date: dt,
+        insider: who,
+        ticker: r.symbol || r.ticker || "",
+        company: comp || "",
+        action,
+        shares,
+        price,
+        value,
+        link: r.link || r.formLink || r.url || undefined,
+      } as const;
+    });
+
+    // Apply date + insider filters locally
+    const filtered = rows.filter((r: any) => {
+      const inDate =
+        (!from || r.date >= from) && (!to || r.date <= to);
+      const inInsider =
+        !insider ||
+        r.insider.toLowerCase().includes(insider.toLowerCase());
+      return inDate && inInsider;
+    });
+
+    cacheSet(cacheKey, filtered);
+    return NextResponse.json({ ok: true, rows: filtered });
+  } catch (e: any) {
     return NextResponse.json(
-      { ok: false, error: err?.message || "Upstream error" },
+      { ok: false, error: e?.message || "Unexpected error" },
       { status: 500 }
     );
   }
