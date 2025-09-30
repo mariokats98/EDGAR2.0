@@ -1,7 +1,6 @@
 // app/screener/page.tsx
-import { redirect } from "next/navigation";
+import ClientScreener from "./ClientScreener";
 
-export default function ScreenerIndex() {
-  // Default: /screener → /screener/stocks
-  redirect("/screener/stocks");
+export default function ScreenerPage() {
+  return <ClientScreener />;
 }
