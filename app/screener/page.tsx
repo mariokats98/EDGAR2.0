@@ -1,12 +1,13 @@
 // app/screener/page.tsx
 import ClientScreener from "./ClientScreener";
 
-export default function ScreenerPage({
+export default function Page({
   searchParams,
 }: {
-  searchParams?: { tab?: string | string[] };
+  searchParams?: { [key: string]: string | string[] | undefined };
 }) {
+  // Pass through first tab value if present so initial render matches URL
   const raw = searchParams?.tab ?? "stocks";
-  const tab = Array.isArray(raw) ? raw[0] : raw; // e.g. "stocks" | "insider" | "crypto" | "congress"
-  return <ClientScreener initialTab={tab as any} />;
+  const tab = Array.isArray(raw) ? raw[0] : raw;
+  return <ClientScreener initialTab={tab} />;
 }
