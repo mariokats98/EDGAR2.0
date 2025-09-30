@@ -1,116 +1,147 @@
-// app/api/insider/activity/route.ts
 import { NextResponse } from "next/server";
 
-// ENV required: FMP_API_KEY
-// Example FMP endpoint: https://financialmodelingprep.com/api/v4/insider-trading?symbol=AAPL&apikey=KEY
+/**
+ * Normalizes FMP insider records into the shape the UI expects.
+ */
+function normalizeFmpRow(r: any) {
+  // FMP v4 /insider-trading fields observed:
+  // filingDate, transactionDate, symbol, companyName,
+  // insiderName, transactionType, transactionShares, transactionPrice
+  const shares =
+    (typeof r.transactionShares === "number" && isFinite(r.transactionShares))
+      ? r.transactionShares
+      : Number(r.transactionShares ?? NaN);
+  const price =
+    (typeof r.transactionPrice === "number" && isFinite(r.transactionPrice))
+      ? r.transactionPrice
+      : Number(r.transactionPrice ?? NaN);
 
-type FmpTrade = {
-  symbol: string;                    // issuer symbol
-  filingDate: string;                // "2025-08-14"
-  transactionDate?: string;          // sometimes present
-  reportingCik?: string;
-  reportingName?: string;            // insider name
-  reportingTitle?: string;           // insider title (sometimes)
-  issuerCik?: string;
-  issuerName?: string;
-  transactionType?: string;          // "P - Purchase", "S - Sale", etc.
-  securitiesTransacted?: number;     // shares
-  price?: number;                    // price per share
-  link?: string;                     // EDGAR link when present
-  [k: string]: any;
-};
+  // Map textual type to A/D where we can
+  const t = (r.transactionType || "").toString().toUpperCase();
+  let action: "A" | "D" | string | null = null;
+  if (t.includes("BUY") || t.includes("ACQUIRE") || t === "A") action = "A";
+  else if (t.includes("SELL") || t.includes("DISPOSE") || t === "D") action = "D";
+  else action = t || null;
 
-type Row = {
-  id: string;
-  date: string;            // filing date (local)
-  action: "BUY" | "SELL" | "OTHER";
-  insider: string;
-  title?: string;
-  company: string;
-  symbol: string;
-  shares?: number;
-  price?: number;
-  valueUSD?: number;
-  filingUrl?: string;
-};
-
-function parseAction(tt?: string): "BUY" | "SELL" | "OTHER" {
-  if (!tt) return "OTHER";
-  const t = tt.toUpperCase();
-  if (t.includes("P") || t.includes("PURCHASE") || t.includes("BUY")) return "BUY";
-  if (t.includes("S") || t.includes("SALE") || t.includes("SELL")) return "SELL";
-  return "OTHER";
+  return {
+    date: r.transactionDate || r.filingDate || null,
+    insider: r.insiderName || null,
+    ticker: r.symbol || null,
+    company: r.companyName || null,
+    action,
+    shares: Number.isFinite(shares) ? shares : null,
+    price: Number.isFinite(price) ? price : null,
+    value: Number.isFinite(shares) && Number.isFinite(price) ? shares * price : null,
+    link: r.link || null,
+    _raw: r,
+  };
 }
 
-function toMoney(n?: number) {
-  if (n === undefined || n === null || Number.isNaN(n)) return undefined;
-  return Math.round(n * 100) / 100;
+/**
+ * Fetch helper with basic error → JSON.
+ */
+async function fetchJson(url: string) {
+  const res = await fetch(url, { next: { revalidate: 0 } });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Upstream ${res.status}: ${text || res.statusText}`);
+  }
+  return res.json();
 }
 
+/**
+ * GET /api/insider/activity
+ * Query params supported:
+ *  - symbol / ticker / q
+ *  - insider / name
+ *  - from (YYYY-MM-DD)
+ *  - to (YYYY-MM-DD)
+ *  - limit (default 200)
+ *
+ * Uses FMP v4 /insider-trading when symbol is present; otherwise pulls a
+ * recent window and filters by insider if given.
+ */
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const symbol = (searchParams.get("symbol") || "").trim().toUpperCase(); // optional filter
-    const limit = Math.min(Number(searchParams.get("limit") || 50), 200);
-    const apiKey = process.env.FMP_API_KEY;
 
-    if (!apiKey) {
+    const sym =
+      (searchParams.get("symbol") ||
+        searchParams.get("ticker") ||
+        searchParams.get("q") ||
+        "").toUpperCase();
+
+    const insiderQ = (searchParams.get("insider") || searchParams.get("name") || "").trim();
+
+    // date window
+    const to =
+      searchParams.get("to") ||
+      searchParams.get("endDate") ||
+      new Date().toISOString().slice(0, 10);
+
+    const from =
+      searchParams.get("from") ||
+      searchParams.get("startDate") ||
+      (() => {
+        const d = new Date(to);
+        // default: last 14 days
+        d.setDate(d.getDate() - 14);
+        return d.toISOString().slice(0, 10);
+      })();
+
+    const limit = Math.max(1, Math.min(2000, Number(searchParams.get("limit") || 200)));
+
+    const key = process.env.FMP_API_KEY;
+    if (!key) {
       return NextResponse.json(
-        { error: "Missing FMP_API_KEY" },
+        { ok: false, error: "Missing FMP_API_KEY env var" },
         { status: 500 }
       );
     }
 
-    // If a symbol is provided, hit the symbol-specific endpoint.
-    // Otherwise, use the global endpoint with pagination.
-    const base = "https://financialmodelingprep.com/api/v4";
-    const url = symbol
-      ? `${base}/insider-trading?symbol=${encodeURIComponent(symbol)}&page=0&apikey=${apiKey}`
-      : `${base}/insider-trading?period=latest&page=0&apikey=${apiKey}`;
+    let rows: any[] = [];
 
-    const r = await fetch(url, { next: { revalidate: 60 }, cache: "no-store" });
-
-    if (!r.ok) {
-      const text = await r.text();
-      return NextResponse.json(
-        { error: "Upstream error", details: text },
-        { status: 502 }
-      );
+    if (sym) {
+      // Focused query by symbol
+      const url = `https://financialmodelingprep.com/api/v4/insider-trading?symbol=${encodeURIComponent(
+        sym
+      )}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&apikey=${encodeURIComponent(
+        key
+      )}`;
+      const data = await fetchJson(url);
+      rows = Array.isArray(data) ? data : [];
+    } else {
+      // No symbol: pull recent window and optionally filter by insider
+      // NOTE: FMP supports date window without symbol as well.
+      const url = `https://financialmodelingprep.com/api/v4/insider-trading?from=${encodeURIComponent(
+        from
+      )}&to=${encodeURIComponent(to)}&apikey=${encodeURIComponent(key)}`;
+      const data = await fetchJson(url);
+      rows = Array.isArray(data) ? data : [];
     }
 
-    const raw = (await r.json()) as FmpTrade[];
+    // Normalize
+    let norm = rows.map(normalizeFmpRow);
 
-    // Normalize & sort by filingDate desc
-    const rows: Row[] = raw
-      .map((t, idx) => {
-        const action = parseAction(t.transactionType);
-        const shares = t.securitiesTransacted ? Number(t.securitiesTransacted) : undefined;
-        const price = t.price ? Number(t.price) : undefined;
-        const valueUSD = shares && price ? shares * price : undefined;
+    // Optional insider filter (client will also filter, but do it here too)
+    if (insiderQ) {
+      const q = insiderQ.toLowerCase();
+      norm = norm.filter((r) => (r.insider || "").toLowerCase().includes(q));
+    }
 
-        const dateISO = (t.filingDate || t.transactionDate || "").slice(0, 10);
-        const date = dateISO || ""; // keep it simple; client can pretty-format
+    // Sort newest first and cap limit
+    norm.sort((a, b) => {
+      const da = (a.date || "").slice(0, 10);
+      const db = (b.date || "").slice(0, 10);
+      if (da < db) return 1;
+      if (da > db) return -1;
+      return 0;
+    });
 
-        return {
-          id: `${t.symbol}-${t.filingDate}-${idx}`,
-          date,
-          action,
-          insider: t.reportingName || "Unknown",
-          title: t.reportingTitle,
-          company: t.issuerName || t.symbol || "—",
-          symbol: t.symbol || "",
-          shares,
-          price: toMoney(price),
-          valueUSD: valueUSD ? toMoney(valueUSD) : undefined,
-          filingUrl: t.link,
-        };
-      })
-      .filter(Boolean)
-      .sort((a, b) => (a.date < b.date ? 1 : -1))
-      .slice(0, limit);
+    if (norm.length > limit) norm = norm.slice(0, limit);
 
-    return NextResponse.json({ ok: true, count: rows.length, data: rows });
+    return NextResponse.json({ ok: true, rows: norm });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: e?.message || "Unexpected error" }, { status: 500 });
   }
 }
