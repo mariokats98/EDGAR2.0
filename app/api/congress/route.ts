@@ -1,50 +1,66 @@
 // app/api/congress/route.ts
 import { NextResponse } from "next/server";
 
-const BASES: Record<"senate" | "house", string> = {
-  senate: "https://financialmodelingprep.com/stable/senate-trades",
-  house:  "https://financialmodelingprep.com/stable/house-trades",
-};
+const FMP_KEY = process.env.FMP_API_KEY!;
 
+// NOTE: Adjust the FMP endpoints/params to your account’s dataset names.
+// This handler accepts: chamber=senate|house, q (search), page, limit
 export async function GET(req: Request) {
-  try {
-    const url = new URL(req.url);
-    const chamber = (url.searchParams.get("chamber") || "senate").toLowerCase() as
-      | "senate"
-      | "house";
-    const symbol = url.searchParams.get("symbol") || "";
-    const from = url.searchParams.get("from") || "";
-    const to = url.searchParams.get("to") || "";
+  const { searchParams } = new URL(req.url);
+  const chamber = (searchParams.get("chamber") || "senate").toLowerCase();
+  const q = (searchParams.get("q") || "").trim();
+  const page = Number(searchParams.get("page") || "1");
+  const limit = Number(searchParams.get("limit") || "25");
 
-    const apikey = process.env.FMP_API_KEY || process.env.FMP_KEY || process.env.NEXT_PUBLIC_FMP_API_KEY;
-    if (!apikey) {
-      return NextResponse.json(
-        { ok: false, error: "Missing FMP_API_KEY in environment." },
-        { status: 500 }
-      );
+  // You may need to tweak the exact endpoint names/fields to match your FMP plan.
+  // The code below tries senate first; for house you’d use the corresponding dataset.
+  // Example endpoints (verify in FMP docs):
+  //   /api/v4/senate-trading?page={page}&apikey=...
+  //   /api/v4/house-trading?page={page}&apikey=...
+  // Some datasets accept ?symbol= and/or ?name= for search.
+  const base =
+    chamber === "house"
+      ? "https://financialmodelingprep.com/api/v4/house-trading"
+      : "https://financialmodelingprep.com/api/v4/senate-trading";
+
+  const u = new URL(base);
+  u.searchParams.set("page", String(page));
+  u.searchParams.set("apikey", FMP_KEY);
+  if (q) {
+    // light heuristic: if it looks like a ticker, pass symbol; otherwise name
+    if (/^[A-Z.\-]{1,6}$/.test(q.toUpperCase())) {
+      u.searchParams.set("symbol", q.toUpperCase());
+    } else {
+      u.searchParams.set("name", q);
     }
+  }
 
-    const base = BASES[chamber] || BASES.senate;
-    const u = new URL(base);
-    if (symbol) u.searchParams.set("symbol", symbol);
-    if (from) u.searchParams.set("from", from);
-    if (to) u.searchParams.set("to", to);
-    u.searchParams.set("apikey", apikey);
-
-    const r = await fetch(u.toString(), { next: { revalidate: 0 } });
+  try {
+    const r = await fetch(u.toString(), { cache: "no-store" });
+    if (!r.ok) {
+      const text = await r.text();
+      return NextResponse.json({ ok: false, error: text || r.statusText }, { status: 500 });
+    }
     const data = await r.json();
 
-    if (!r.ok) {
-      return NextResponse.json(
-        { ok: false, error: data?.error || "Upstream request failed" },
-        { status: r.status }
-      );
-    }
+    // Normalize a few field names so the client can stay simple:
+    const rows = (Array.isArray(data) ? data : data?.data || []).map((x: any, i: number) => ({
+      id: x.id ?? `${chamber}-${page}-${i}`,
+      filingDate: x.filingDate ?? x.disclosureDate ?? x.reportDate,
+      transactionDate: x.transactionDate ?? x.txnDate ?? x.tradeDate,
+      representative: x.representative ?? x.member ?? undefined,
+      senator: x.senator ?? undefined,
+      party: x.party ?? undefined,
+      state: x.state ?? undefined,
+      ticker: x.ticker ?? x.assetTicker ?? undefined,
+      assetName: x.assetName ?? x.asset ?? undefined,
+      type: x.type ?? x.transaction ?? x.transactionType ?? undefined,
+      amount: x.amount ?? x.amountRange ?? undefined,
+      link: x.link ?? x.source ?? undefined,
+    }));
 
-    // FMP usually returns an array; normalize to array.
-    const rows = Array.isArray(data) ? data : data?.data || [];
     return NextResponse.json({ ok: true, rows });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "Unexpected error" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: e?.message || "Fetch failed" }, { status: 500 });
   }
 }
