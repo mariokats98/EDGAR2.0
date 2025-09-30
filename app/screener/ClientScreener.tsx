@@ -2,82 +2,113 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import InsiderTape, { TxnFilter } from "../components/InsiderTape";
 
-// import type only to avoid extra bundle weight
-import type { TxnFilter } from "../components/InsiderTape";
-
-// Lazy-load the heavy dashboards
+// Lazy-load heavy dashboards (no SSR) with tiny inline fallbacks
 const StocksDashboard = dynamic(() => import("../components/StocksDashboard"), {
   ssr: false,
-  loading: () => <div className="text-sm text-gray-500">Loading stocks…</div>,
+  loading: () => <div className="text-sm text-gray-500">Loading Stocks…</div>,
 });
 const CryptoDashboard = dynamic(() => import("../components/CryptoDashboard"), {
   ssr: false,
-  loading: () => <div className="text-sm text-gray-500">Loading crypto…</div>,
+  loading: () => <div className="text-sm text-gray-500">Loading Crypto…</div>,
 });
 const ForexDashboard = dynamic(() => import("../components/ForexDashboard"), {
   ssr: false,
-  loading: () => <div className="text-sm text-gray-500">Loading forex…</div>,
-});
-const InsiderTape = dynamic(() => import("../components/InsiderTape"), {
-  ssr: false,
-  loading: () => <div className="text-sm text-gray-500">Loading insider activity…</div>,
+  loading: () => <div className="text-sm text-gray-500">Loading Forex…</div>,
 });
 
-export default function ClientScreener() {
-  const [tab, setTab] = useState<"stocks" | "insider" | "crypto" | "forex">("stocks");
+type Tab = "stocks" | "insider" | "crypto" | "forex";
 
-  // Insider filters
+const TABS: { key: Tab; label: string }[] = [
+  { key: "stocks",  label: "Stocks" },
+  { key: "insider", label: "Insider Activity" },
+  { key: "crypto",  label: "Crypto" },
+  { key: "forex",   label: "Forex" },
+];
+
+export default function ClientScreener({ initialTab = "stocks" as Tab }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const qs = useSearchParams();
+
+  // keep state in sync with URL ?tab=
+  const [tab, setTab] = useState<Tab>(() => validTab(qs.get("tab")) ?? initialTab);
+
+  useEffect(() => {
+    const now = validTab(qs.get("tab"));
+    if (now && now !== tab) setTab(now);
+  }, [qs, tab]);
+
+  function validTab(v: string | null): Tab | null {
+    if (!v) return null;
+    const k = v.toLowerCase();
+    return (["stocks", "insider", "crypto", "forex"] as const).includes(k as Tab) ? (k as Tab) : null;
+  }
+
+  function go(next: Tab) {
+    setTab(next);
+    const params = new URLSearchParams(qs.toString());
+    params.set("tab", next);
+    // shallow push to avoid full reload
+    router.push(`${pathname}?${params.toString()}`, { scroll: false });
+  }
+
+  // Insider filters (only visible on Insider tab)
   const [symbol, setSymbol] = useState("");
-  const [start, setStart] = useState(
-    () => new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10)
+  const [start, setStart] = useState(() =>
+    new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10)
   );
   const [end, setEnd] = useState(() => new Date().toISOString().slice(0, 10));
   const [txnType, setTxnType] = useState<TxnFilter>("ALL");
-
   const queryKey = useMemo(
     () => `${symbol}-${start}-${end}-${txnType}`,
     [symbol, start, end, txnType]
   );
 
   return (
-    <div className="space-y-4">
-      {/* Tabs */}
-      <div className="flex gap-2">
-        <button
-          onClick={() => setTab("stocks")}
-          className={`rounded-full px-4 py-2 text-sm border ${tab === "stocks" ? "bg-black text-white" : "bg-white"}`}
+    <div className="space-y-5">
+      {/* BEAUTIFIED TAB BAR */}
+      <div className="flex justify-center">
+        <nav
+          role="tablist"
+          aria-label="Screener Sections"
+          className="relative flex w-full max-w-3xl items-center justify-between rounded-full border bg-white/80 px-1 py-1 shadow-sm backdrop-blur"
         >
-          Stocks
-        </button>
-        <button
-          onClick={() => setTab("insider")}
-          className={`rounded-full px-4 py-2 text-sm border ${tab === "insider" ? "bg-black text-white" : "bg-white"}`}
-        >
-          Insider Activity
-        </button>
-        <button
-          onClick={() => setTab("crypto")}
-          className={`rounded-full px-4 py-2 text-sm border ${tab === "crypto" ? "bg-black text-white" : "bg-white"}`}
-        >
-          Crypto
-        </button>
-        <button
-          onClick={() => setTab("forex")}
-          className={`rounded-full px-4 py-2 text-sm border ${tab === "forex" ? "bg-black text-white" : "bg-white"}`}
-        >
-          Forex
-        </button>
+          {TABS.map(({ key, label }) => {
+            const active = tab === key;
+            return (
+              <button
+                key={key}
+                role="tab"
+                aria-selected={active}
+                onClick={() => go(key)}
+                className={[
+                  "relative mx-0.5 inline-flex flex-1 items-center justify-center rounded-full px-3 py-2 text-sm transition",
+                  active
+                    ? "bg-black text-white shadow"
+                    : "text-gray-700 hover:bg-gray-100",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </nav>
       </div>
 
       {/* Bodies */}
-      {tab === "stocks" ? (
+      {tab === "stocks" && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
           <StocksDashboard />
         </section>
-      ) : tab === "insider" ? (
+      )}
+
+      {tab === "insider" && (
         <>
+          {/* Filters */}
           <section className="rounded-2xl border bg-white p-4 md:p-5">
             <div className="grid gap-3 md:grid-cols-[minmax(160px,1fr)_repeat(2,1fr)_auto]">
               <div>
@@ -136,11 +167,15 @@ export default function ClientScreener() {
             </div>
           )}
         </>
-      ) : tab === "crypto" ? (
+      )}
+
+      {tab === "crypto" && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
           <CryptoDashboard />
         </section>
-      ) : (
+      )}
+
+      {tab === "forex" && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
           <ForexDashboard />
         </section>
