@@ -1,10 +1,9 @@
-// app/components/CongressionalTracker.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 
 type Chamber = "senate" | "house";
-type TradeRow = Record<string, any>; // loose to survive minor schema differences
+type TradeRow = Record<string, any>;
 
 function clsJoin(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -51,14 +50,13 @@ export default function CongressionalTracker() {
     }
   }
 
-  // Guess a useful default column order; gracefully handle missing keys
   const columns = useMemo(() => {
     const preferred = [
       "transactionDate",
       "disclosureDate",
-      "name",            // senator/representative
-      "representative",  // sometimes used by house
-      "senator",         // sometimes used by senate
+      "name",
+      "representative",
+      "senator",
       "party",
       "district",
       "assetName",
@@ -73,7 +71,6 @@ export default function CongressionalTracker() {
     const dyn = new Set<string>();
     rows.slice(0, 5).forEach((r) => Object.keys(r || {}).forEach((k) => dyn.add(k)));
     const all = [...preferred, ...Array.from(dyn)];
-    // de-dup while preserving order
     return Array.from(new Set(all));
   }, [rows]);
 
@@ -135,7 +132,6 @@ export default function CongressionalTracker() {
         )}
       </section>
 
-      {/* Table */}
       <section className="rounded-2xl border bg-white p-0 overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 text-gray-700">
