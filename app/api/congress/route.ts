@@ -2,185 +2,160 @@
 import { NextResponse } from "next/server";
 
 /**
- * Defensive proxy for Congressional trades.
- * Supports:
- *  - chamber: "senate" | "house"
- *  - member: string (partial match)
- *  - ticker: string (exact or partial)
- *  - q: string (searched against member OR ticker)
- *  - from/to: YYYY-MM-DD (inclusive)
- *  - limit: max rows to return (default 500)
+ * Normalizes FMP congressional trading across House & Senate.
+ * We try the official v4 endpoints first, then fall back to a couple of
+ * alternate names some accounts expose.
  *
- * It calls FMP v4 endpoints and normalizes shapes:
- *  Senate: /v4/senate-trading
- *  House:  /v4/house-trading
- *
- * You must set FMP_API_KEY or NEXT_PUBLIC_FMP_API_KEY.
+ * House shapes commonly include:
+ *  - representative, ticker, assetDescription, transaction, amount, price, volume, owner, transactionDate, disclosureDate, link
+ * Senate shapes commonly include:
+ *  - senator, ticker, assetName, type (PURCHASE/SALE), amount, price, volume, owner, transactionDate, disclosureDate, link
  */
 
-const FMP_BASE = "https://financialmodelingprep.com/api";
-const API_KEY = process.env.FMP_API_KEY || process.env.NEXT_PUBLIC_FMP_API_KEY;
+const FMP_KEY = process.env.FMP_API_KEY || process.env.NEXT_PUBLIC_FMP_KEY || "";
+const BASE = "https://financialmodelingprep.com/api";
 
-function bad(msg: string, code = 400) {
-  return NextResponse.json({ ok: false, error: msg }, { status: code });
-}
+// candidates to try for each chamber (FMP accounts sometimes differ)
+const SENATE_PATHS = [
+  "/v4/senate-trading",
+  "/v4/senate-trades",
+  "/v4/ownership-senate-insider",
+];
+const HOUSE_PATHS = [
+  "/v4/house-trading",
+  "/v4/house-trades",
+  "/v4/ownership-house-insider",
+];
 
-type RawRow = Record<string, any>;
+// lenient number parser (accepts "1,234.56")
+const num = (v: any): number | undefined => {
+  if (v == null || v === "") return undefined;
+  const n = Number(String(v).replace(/,/g, ""));
+  return Number.isFinite(n) ? n : undefined;
+};
 
-function normalizeRow(r: RawRow) {
-  // Try a wide set of aliases seen across FMP datasets
-  const date =
-    r.transactionDate ||
-    r.disclosureDate ||
-    r.date ||
-    r.reportDate ||
-    r.filingDate ||
-    null;
+const pick = (row: any, keys: string[]): any =>
+  keys.find((k) => row?.[k] != null && row?.[k] !== "") ? row[keys.find((k) => row?.[k] != null && row?.[k] !== "") as string] : undefined;
 
+function normalizeRow(row: any, chamber: "senate" | "house") {
   const member =
-    r.senator ||
-    r.representative ||
-    r.member ||
-    r.name ||
-    r.politician ||
-    null;
+    (chamber === "senate"
+      ? pick(row, ["senator", "member", "politician", "name"])
+      : pick(row, ["representative", "member", "politician", "name"])) || "";
 
-  const ticker =
-    r.symbol ||
-    r.ticker ||
-    r.assetSymbol ||
-    null;
+  const ticker = (row.symbol || row.ticker || "").toUpperCase();
 
   const company =
-    r.company ||
-    r.issuer ||
-    r.assetDescription ||
-    r.securityName ||
-    r.companyName ||
-    null;
+    pick(row, ["assetDescription", "assetName", "securityName", "company"]) || "";
 
-  const action =
-    r.transaction ||
-    r.transactionType ||
-    r.type ||
-    r.action ||
-    null;
+  const actionRaw =
+    pick(row, ["transaction", "type", "action"]) || ""; // PURCHASE / SALE / etc.
+  const action = String(actionRaw).toUpperCase().includes("SALE")
+    ? "S-SALE"
+    : String(actionRaw).toUpperCase().includes("PUR")
+    ? "P-PURCHASE"
+    : String(actionRaw).toUpperCase();
 
-  const amount =
-    r.amount ||
-    r.amountRange ||
-    r.value ||
-    r.transactionAmount ||
-    null;
+  // amount is often a string range like "$1,001 - $15,000".
+  // We'll pass it through, but also compute value when price * volume is available.
+  const amountStr =
+    pick(row, ["amount", "amountRange", "value"]) || "";
 
   const price =
-    typeof r.price === "number"
-      ? r.price
-      : Number.isFinite(+r.price)
-      ? +r.price
-      : null;
+    num(pick(row, ["price", "pricePerShare"])) ?? undefined;
 
-  const link =
-    r.link ||
-    r.url ||
-    r.source ||
-    r.formUrl ||
-    r.form4Url ||
-    null;
+  const volume =
+    num(pick(row, ["volume", "shares"])) ?? undefined;
+
+  const value =
+    num(pick(row, ["transactionValue"])) ??
+    (price != null && volume != null ? price * volume : undefined);
+
+  const date =
+    (pick(row, ["transactionDate", "date"]) || "").slice(0, 10);
+
+  const filed =
+    (pick(row, ["disclosureDate", "filingDate"])) || "";
+
+  const link = pick(row, ["link", "url", "source"]);
 
   return {
     date,
+    filed,
     member,
     ticker,
     company,
     action,
-    amount,
+    shares: volume,
     price,
+    value,
+    amountText: amountStr, // show alongside numeric cols when available
+    owner: pick(row, ["owner"]) || "",
     link,
-    // keep original in case you want to show more fields later
-    _raw: r,
+    raw: row,
   };
 }
 
-function inRangeISO(iso: string, from?: string, to?: string) {
-  if (!iso) return false;
-  if (from && iso < from) return false;
-  if (to && iso > to) return false;
-  return true;
+async function fetchFirstWorking(pathList: string[], params: URLSearchParams) {
+  for (const p of pathList) {
+    const url = `${BASE}${p}?${params.toString()}`;
+    const res = await fetch(url, { next: { revalidate: 30 } });
+    if (res.ok) {
+      const js = await res.json();
+      if (Array.isArray(js)) return js;
+      // Some responses come as { data: [...] }
+      if (Array.isArray(js?.data)) return js.data;
+    }
+  }
+  return [];
 }
 
 export async function GET(req: Request) {
   try {
-    if (!API_KEY) return bad("Missing FMP_API_KEY on server");
-
-    const { searchParams } = new URL(req.url);
-    const chamber = (searchParams.get("chamber") || "senate").toLowerCase();
-    const q = (searchParams.get("q") || "").trim();
-    const member = (searchParams.get("member") || "").trim();
-    const ticker = (searchParams.get("ticker") || "").trim().toUpperCase();
-    const from = (searchParams.get("from") || "").trim();
-    const to = (searchParams.get("to") || "").trim();
-    const limit = Math.min(parseInt(searchParams.get("limit") || "500", 10), 2000);
-
-    const endpoint =
-      chamber === "house" ? "/v4/house-trading" : "/v4/senate-trading";
-
-    // FMP params: keep simple (some fields are not filterable remotely),
-    // we’ll filter locally for reliability.
-    const sp = new URLSearchParams();
-    sp.set("apikey", API_KEY);
-    // If FMP accepts symbol/from/to on your plan, you CAN set them here too:
-    // if (ticker) sp.set("symbol", ticker);
-    // if (from) sp.set("from", from);
-    // if (to) sp.set("to", to);
-
-    const url = `${FMP_BASE}${endpoint}?${sp.toString()}`;
-    const res = await fetch(url, { next: { revalidate: 0 } });
-
-    if (!res.ok) {
-      const text = await res.text();
-      return bad(`FMP error (${res.status}): ${text || res.statusText}`, res.status);
+    if (!FMP_KEY) {
+      return NextResponse.json({ ok: false, error: "Missing FMP_API_KEY" }, { status: 500 });
     }
 
-    const data = await res.json();
-    const list: RawRow[] = Array.isArray(data) ? data : [];
+    const { searchParams } = new URL(req.url);
+    const chamber = (searchParams.get("chamber") || "senate").toLowerCase() as
+      | "senate"
+      | "house";
+    const qMember = (searchParams.get("member") || "").trim().toLowerCase();
+    const qTicker = (searchParams.get("ticker") || "").trim().toUpperCase();
+    const qText = (searchParams.get("q") || "").trim().toLowerCase();
+    const from = (searchParams.get("from") || "").slice(0, 10);
+    const to = (searchParams.get("to") || "").slice(0, 10);
 
-    // Normalize
-    let rows = list.map(normalizeRow);
+    // Build query for FMP. These endpoints often accept: ticker, from, to, page
+    const qp = new URLSearchParams();
+    if (qTicker) qp.set("symbol", qTicker);
+    if (from) qp.set("from", from);
+    if (to) qp.set("to", to);
+    qp.set("page", "0");
+    qp.set("apikey", FMP_KEY);
 
-    // Server-side filtering for robustness
-    const qLower = q.toLowerCase();
-    const memberLower = member.toLowerCase();
+    const raw =
+      chamber === "senate"
+        ? await fetchFirstWorking(SENATE_PATHS, qp)
+        : await fetchFirstWorking(HOUSE_PATHS, qp);
 
-    rows = rows.filter((r) => {
-      // date range
-      if (from || to) {
-        if (!r.date || !inRangeISO(String(r.date).slice(0, 10), from || undefined, to || undefined)) {
-          return false;
-        }
-      }
-      // ticker filter
-      if (ticker && !(r.ticker || "").toUpperCase().includes(ticker)) return false;
+    const rows = raw.map((r: any) => normalizeRow(r, chamber));
 
-      // member filter
-      if (memberLower && !(r.member || "").toLowerCase().includes(memberLower)) return false;
-
-      // generic q (matches member OR ticker OR company)
-      if (qLower) {
-        const hay =
-          `${r.member || ""} ${r.ticker || ""} ${r.company || ""}`.toLowerCase();
-        if (!hay.includes(qLower)) return false;
-      }
-      return true;
+    // local filters (member + free text)
+    const filtered = rows.filter((r: any) => {
+      const okMember = !qMember || r.member.toLowerCase().includes(qMember);
+      const okText =
+        !qText ||
+        r.member.toLowerCase().includes(qText) ||
+        r.ticker.toLowerCase().includes(qText) ||
+        (r.company || "").toLowerCase().includes(qText);
+      return okMember && okText;
     });
 
-    // Cap and return
-    rows = rows.slice(0, limit);
-
-    return NextResponse.json({ ok: true, rows, chamber });
+    return NextResponse.json({ ok: true, rows: filtered });
   } catch (e: any) {
     return NextResponse.json(
-      { ok: false, error: e?.message || "Unexpected server error" },
+      { ok: false, error: e?.message || "Unexpected error" },
       { status: 500 }
     );
   }
