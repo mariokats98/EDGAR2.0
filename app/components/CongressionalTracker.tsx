@@ -1,86 +1,26 @@
 // app/components/CongressionalTracker.tsx
 "use client";
-
 import { useEffect, useMemo, useState } from "react";
+import SectionHeader from "./SectionHeader";
 
 type Chamber = "senate" | "house";
-type SearchBy = "member" | "ticker";
-
-// Raw (loosely typed to handle minor schema diffs from FMP)
 type TradeRow = {
   date?: string;
-  transactionDate?: string;
-  disclosureDate?: string;
-  reportedDate?: string;
-  representative?: string;
-  senator?: string;
-  name?: string;
-  owner?: string;
-  type?: string;
-  transaction?: string;
-  assetDescription?: string;
-  symbol?: string;
+  member?: string;
   ticker?: string;
-  amount?: string;
-  range?: string;
-  comment?: string;
+  company?: string;
+  action?: string; // Buy/Sell/...
+  amount?: string | number;
+  chamber?: string;
 };
-
-// Normalized for rendering
-type NormalizedTrade = {
-  date: string;
-  member: string;
-  ticker: string;
-  company: string;
-  action: string;
-  amount: string;
-};
-
-function fmtDate(str?: string) {
-  if (!str) return "—";
-  const d = new Date(str);
-  return Number.isNaN(d.getTime()) ? str : d.toISOString().slice(0, 10);
-}
-
-function normalizeRow(r: TradeRow): NormalizedTrade {
-  const date =
-    r.date ||
-    r.transactionDate ||
-    r.disclosureDate ||
-    r.reportedDate ||
-    "";
-
-  const member = r.representative || r.senator || r.name || "";
-  const ticker =
-    (r.symbol && r.symbol !== "-" ? r.symbol : "") ||
-    (r.ticker && r.ticker !== "-" ? r.ticker : "") ||
-    "";
-  const company = r.assetDescription || r.comment || "";
-  const action = r.type || r.transaction || r.owner || "";
-  const amount = r.amount || r.range || "";
-
-  return {
-    date: fmtDate(date),
-    member,
-    ticker,
-    company,
-    action,
-    amount,
-  };
-}
 
 export default function CongressionalTracker() {
   const [chamber, setChamber] = useState<Chamber>("senate");
-  const [searchBy, setSearchBy] = useState<SearchBy>("member");
-  const [query, setQuery] = useState("");
-  const [from, setFrom] = useState(() => {
-    const d = new Date();
-    d.setMonth(d.getMonth() - 3);
-    return d.toISOString().slice(0, 10);
-  });
-  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
-
-  const [rows, setRows] = useState<NormalizedTrade[]>([]);
+  const [member, setMember] = useState("");
+  const [ticker, setTicker] = useState("");
+  const [from, setFrom] = useState(""); // yyyy-mm-dd (optional)
+  const [to, setTo] = useState("");
+  const [rows, setRows] = useState<TradeRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -90,19 +30,15 @@ export default function CongressionalTracker() {
     try {
       const params = new URLSearchParams();
       params.set("chamber", chamber);
-      if (query.trim()) {
-        params.set("by", searchBy);
-        params.set("q", query.trim());
-      }
-      if (from) params.set("from", from);
-      if (to) params.set("to", to);
+      if (member.trim()) params.set("member", member.trim());
+      if (ticker.trim()) params.set("ticker", ticker.trim());
+      if (from.trim()) params.set("from", from.trim());
+      if (to.trim()) params.set("to", to.trim());
 
-      const res = await fetch(`/api/congress?${params.toString()}`, { cache: "no-store" });
-      const data = await res.json();
-      if (!res.ok || data?.ok === false) throw new Error(data?.error || "Failed to load trades");
-
-      const list: TradeRow[] = Array.isArray(data?.rows) ? data.rows : [];
-      setRows(list.map(normalizeRow));
+      const r = await fetch(`/api/congress?${params.toString()}`, { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok || j?.ok === false) throw new Error(j?.error || "Failed");
+      setRows(Array.isArray(j.rows) ? j.rows : []);
     } catch (e: any) {
       setErr(e?.message || "Unexpected error");
       setRows([]);
@@ -112,96 +48,90 @@ export default function CongressionalTracker() {
   }
 
   useEffect(() => {
+    // initial fetch
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [chamber]);
 
-  const items = useMemo(
-    () => [...rows].sort((a, b) => (a.date < b.date ? 1 : -1)),
-    [rows]
-  );
+  const empty = rows.length === 0;
 
   return (
     <div className="space-y-4">
-      {/* Top controls */}
       <section className="rounded-2xl border bg-white p-4 md:p-5">
-        {/* Even toggle buttons */}
-        <div className="grid grid-cols-2 gap-2 mb-4">
+        <SectionHeader
+          title="Congressional Tracker"
+          subtitle="Stock trades from House & Senate members"
+          icon={"🏛️"}
+        />
+
+        <div className="mb-3 flex gap-2">
           <button
             onClick={() => setChamber("senate")}
-            className={`rounded-md px-3 py-2 text-sm border ${
-              chamber === "senate" ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50"
+            className={`h-9 rounded-md px-3 text-sm font-medium ${
+              chamber === "senate" ? "bg-black text-white" : "bg-gray-100 text-gray-800"
             }`}
           >
             Senate
           </button>
           <button
             onClick={() => setChamber("house")}
-            className={`rounded-md px-3 py-2 text-sm border ${
-              chamber === "house" ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50"
+            className={`h-9 rounded-md px-3 text-sm font-medium ${
+              chamber === "house" ? "bg-black text-white" : "bg-gray-100 text-gray-800"
             }`}
           >
             House
           </button>
         </div>
 
-        {/* Search row */}
-        <div className="grid gap-3 md:grid-cols-[140px_minmax(160px,1fr)_auto]">
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
           <div>
-            <div className="mb-1 text-xs text-gray-700">Search by</div>
-            <select
-              value={searchBy}
-              onChange={(e) => setSearchBy(e.target.value as SearchBy)}
-              className="w-full rounded-md border px-3 py-2"
-            >
-              <option value="member">Member</option>
-              <option value="ticker">Ticker</option>
-            </select>
-          </div>
-
-          <div>
-            <div className="mb-1 text-xs text-gray-700">
-              {searchBy === "member" ? "Member name (e.g., Pelosi)" : "Ticker (e.g., NVDA)"}
-            </div>
+            <div className="mb-1 text-xs text-gray-700">Member name</div>
             <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={searchBy === "member" ? "Pelosi" : "NVDA"}
+              value={member}
+              onChange={(e) => setMember(e.target.value)}
+              placeholder="e.g., Pelosi"
               className="w-full rounded-md border px-3 py-2"
             />
           </div>
-
-          <div className="flex items-end">
-            <button
-              onClick={load}
-              className="rounded-md bg-black px-4 py-2 text-sm text-white"
-              disabled={loading}
-            >
-              {loading ? "Loading…" : "Search"}
-            </button>
+          <div>
+            <div className="mb-1 text-xs text-gray-700">Ticker</div>
+            <input
+              value={ticker}
+              onChange={(e) => setTicker(e.target.value.toUpperCase())}
+              placeholder="e.g., NVDA"
+              className="w-full rounded-md border px-3 py-2"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="mb-1 text-xs text-gray-700">From</div>
+              <input
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                className="w-full rounded-md border px-3 py-2"
+              />
+            </div>
+            <div>
+              <div className="mb-1 text-xs text-gray-700">To</div>
+              <input
+                type="date"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                className="w-full rounded-md border px-3 py-2"
+              />
+            </div>
           </div>
         </div>
 
-        {/* Date filters — always visible */}
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 md:grid-cols-[200px_200px]">
-          <div>
-            <div className="mb-1 text-xs text-gray-700">From</div>
-            <input
-              type="date"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              className="w-full rounded-md border px-3 py-2"
-            />
-          </div>
-          <div>
-            <div className="mb-1 text-xs text-gray-700">To</div>
-            <input
-              type="date"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              className="w-full rounded-md border px-3 py-2"
-            />
-          </div>
+        <div className="mt-3">
+          <button
+            onClick={load}
+            disabled={loading}
+            className="rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
+          >
+            {loading ? "Loading…" : "Search"}
+          </button>
         </div>
 
         {err && (
@@ -211,40 +141,42 @@ export default function CongressionalTracker() {
         )}
       </section>
 
-      {/* Results */}
-      <section className="rounded-2xl border bg-white overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead className="bg-gray-50 text-gray-700">
-            <tr className="[&>th]:px-3 [&>th]:py-2 [&>th]:text-left">
-              <th className="w-[110px]">Date</th>
-              <th className="min-w-[180px]">Member</th>
-              <th className="w-[90px]">Ticker</th>
-              <th className="min-w-[200px]">Company</th>
-              <th className="w-[110px]">Action</th>
-              <th className="w-[140px]">Amount / Range</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {items.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-gray-500">
-                  No trades found.
-                </td>
+      <section className="rounded-2xl border bg-white p-4 md:p-5">
+        <SectionHeader title="Latest trades" icon={"🧾"} />
+        <div className="overflow-x-auto">
+          <table className="min-w-[720px] w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-500">
+                <th className="px-3 py-2 text-left">Date</th>
+                <th className="px-3 py-2 text-left">Member</th>
+                <th className="px-3 py-2 text-left">Ticker</th>
+                <th className="px-3 py-2 text-left">Company</th>
+                <th className="px-3 py-2 text-left">Action</th>
+                <th className="px-3 py-2 text-left">Chamber</th>
+                <th className="px-3 py-2 text-right">Amount</th>
               </tr>
-            ) : (
-              items.map((r, i) => (
-                <tr key={i} className="hover:bg-gray-50">
-                  <td className="px-3 py-2 text-gray-700">{r.date || "—"}</td>
-                  <td className="px-3 py-2 font-medium text-gray-900">{r.member || "—"}</td>
-                  <td className="px-3 py-2">{r.ticker || "—"}</td>
-                  <td className="px-3 py-2">{r.company || "—"}</td>
-                  <td className="px-3 py-2">{r.action || "—"}</td>
-                  <td className="px-3 py-2">{r.amount || "—"}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {empty ? (
+                <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-500">No trades</td></tr>
+              ) : (
+                rows.map((r, i) => (
+                  <tr key={i} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 text-gray-700">{r.date || "—"}</td>
+                    <td className="px-3 py-2 font-medium text-gray-900">{r.member || "—"}</td>
+                    <td className="px-3 py-2">{r.ticker || "—"}</td>
+                    <td className="px-3 py-2">{r.company || "—"}</td>
+                    <td className="px-3 py-2">{r.action || "—"}</td>
+                    <td className="px-3 py-2">{(r.chamber || "").toString().toUpperCase()}</td>
+                    <td className="px-3 py-2 text-right">
+                      {typeof r.amount === "number" ? r.amount.toLocaleString() : (r.amount || "—")}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
   );
