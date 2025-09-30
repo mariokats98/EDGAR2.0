@@ -1,10 +1,5 @@
 import { NextResponse } from "next/server";
 
-/**
- * Robust normalizer for FMP congressional trading endpoints.
- * Handles multiple possible field names (they vary across accounts/endpoints).
- */
-
 const FMP_KEY =
   process.env.FMP_API_KEY || process.env.NEXT_PUBLIC_FMP_KEY || "";
 
@@ -21,7 +16,7 @@ const HOUSE_PATHS = [
 ];
 
 // ---------- helpers ----------
-const first = (row: any, keys: string[]) => {
+const first = (row: any, keys: string[]): any => {
   for (const k of keys) {
     const v = row?.[k];
     if (v !== undefined && v !== null && v !== "") return v;
@@ -29,14 +24,69 @@ const first = (row: any, keys: string[]) => {
   return undefined;
 };
 
-const num = (v: any): number | undefined => {
+const toNum = (v: any): number | undefined => {
   if (v === undefined || v === null || v === "") return undefined;
-  const n = Number(String(v).replace(/,/g, "").replace(/\$/g, ""));
+  const n = Number(String(v).replace(/[,$]/g, ""));
   return Number.isFinite(n) ? n : undefined;
 };
 
-const cleanText = (s?: string) =>
-  (s || "").replace(/\s+/g, " ").trim();
+const clean = (s?: string) => (s || "").replace(/\s+/g, " ").trim();
+
+const cap = (s?: string) =>
+  clean(s)
+    .toLowerCase()
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+
+function buildMember(row: any, chamber: "senate" | "house") {
+  // direct single-field variants
+  const direct =
+    first(row, [
+      chamber === "senate" ? "senator" : "representative",
+      "member",
+      "politician",
+      "politicianName",
+      "congressPerson",
+      "congressperson",
+      "congress_person",
+      "name",
+      "trader",
+      "reportingOwner",
+      "ownerName",
+      "person",
+    ]) || "";
+
+  // split first/last variants
+  const fn =
+    first(row, [
+      "firstName",
+      "firstname",
+      "first_name",
+      "first",
+      "givenName",
+      "given_name",
+    ]) || "";
+  const ln =
+    first(row, [
+      "lastName",
+      "lastname",
+      "last_name",
+      "surname",
+      "familyName",
+      "family_name",
+      "last",
+    ]) || "";
+
+  const composed = clean([fn, ln].filter(Boolean).join(" "));
+
+  // sometimes owner contains relationship like "Spouse: Nancy Pelosi"
+  const owner = clean(first(row, ["owner", "ownerType"]) || "");
+  const ownerExtract =
+    /([A-Z][a-z]+(?: [A-Z]\.)?(?: [A-Z][a-z]+)+)/.exec(owner)?.[1] || "";
+
+  const finalName = clean(direct) || composed || ownerExtract;
+
+  return cap(finalName) || ""; // Title Case for consistency
+}
 
 function toAction(v: any): string {
   const t = String(v || "").toUpperCase();
@@ -47,26 +97,12 @@ function toAction(v: any): string {
 }
 
 function normalizeRow(row: any, chamber: "senate" | "house") {
-  // Member names show up under many labels
-  const member =
-    cleanText(
-      first(row, [
-        chamber === "senate" ? "senator" : "representative",
-        "member",
-        "politician",
-        "congressPerson",
-        "congressperson",
-        "congress_person",
-        "name",
-        "trader",
-        "reportingOwner", // occasionally used
-      ])
-    ) || "";
+  const member = buildMember(row, chamber);
 
   const ticker = String(first(row, ["symbol", "ticker"]) || "").toUpperCase();
 
   const company =
-    cleanText(
+    clean(
       first(row, [
         "assetDescription",
         "assetName",
@@ -78,27 +114,54 @@ function normalizeRow(row: any, chamber: "senate" | "house") {
 
   const action = toAction(first(row, ["transaction", "type", "action"]));
 
-  // price / shares can be absent; try many spellings
   const price =
-    num(first(row, ["price", "pricePerShare", "sharePrice", "priceShare", "transactionPrice", "unitPrice"])) ??
-    undefined;
+    toNum(
+      first(row, [
+        "price",
+        "pricePerShare",
+        "sharePrice",
+        "priceShare",
+        "transactionPrice",
+        "unitPrice",
+      ])
+    ) ?? undefined;
 
   const shares =
-    num(first(row, ["shares", "share", "volume", "amountOfShares", "amount_shares", "qty", "quantity", "units"])) ??
-    undefined;
+    toNum(
+      first(row, [
+        "shares",
+        "share",
+        "volume",
+        "amountOfShares",
+        "amount_shares",
+        "qty",
+        "quantity",
+        "units",
+      ])
+    ) ?? undefined;
 
-  // amount range string (e.g., "$1,001 - $15,000")
-  const amountText = cleanText(
+  const amountText = clean(
     first(row, ["amount", "amountRange", "disclosureAmount"])
   );
 
-  // explicit transaction value, or compute price * shares if both present
   const value =
-    num(first(row, ["transactionValue", "value", "dollarValue"])) ??
+    toNum(first(row, ["transactionValue", "value", "dollarValue"])) ??
     (price != null && shares != null ? price * shares : undefined);
 
-  const date = String(first(row, ["transactionDate", "date"]) || "").slice(0, 10);
-  const filed = String(first(row, ["disclosureDate", "filingDate"]) || "");
+  const date =
+    String(
+      first(row, [
+        "transactionDate",
+        "date",
+        "transaction_date",
+        "reportedDate",
+      ]) || ""
+    ).slice(0, 10);
+
+  const filed =
+    String(first(row, ["disclosureDate", "filingDate", "reportDate"]) || "") ||
+    "";
+
   const link = first(row, ["link", "url", "source"]) || "";
 
   return {
@@ -114,7 +177,6 @@ function normalizeRow(row: any, chamber: "senate" | "house") {
     amountText,
     owner: first(row, ["owner"]) || "",
     link,
-    raw: row,
   };
 }
 
@@ -156,7 +218,6 @@ export async function GET(req: Request) {
     qp.set("page", "0");
     qp.set("apikey", FMP_KEY);
 
-    // Try several endpoints; FMP accounts differ
     const raw =
       chamber === "senate"
         ? await fetchFirstWorking(SENATE_PATHS, qp)
@@ -164,7 +225,6 @@ export async function GET(req: Request) {
 
     const rows = raw.map((r: any) => normalizeRow(r, chamber));
 
-    // local filters
     const filtered = rows.filter((r) => {
       const okMember = !qMember || r.member.toLowerCase().includes(qMember);
       const okText =
