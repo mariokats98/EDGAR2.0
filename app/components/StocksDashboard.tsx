@@ -1,8 +1,6 @@
 // app/components/StocksDashboard.tsx
-// app/components/StocksDashboard.tsx
 "use client";
-
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 // ---------- types ----------
 type Quote = {
@@ -44,7 +42,7 @@ type Profile = {
 };
 
 type Bar = {
-  date: string; // "YYYY-MM-DD" or "YYYY-MM-DD HH:mm:ss"
+  date: string;
   open?: number;
   high?: number;
   low?: number;
@@ -128,7 +126,7 @@ function MACD(data: number[], fast = 12, slow = 26, signal = 9) {
   return { macd, signal: signalLine, hist };
 }
 
-// ---------- responsive SVG helpers ----------
+// responsive SVG helpers
 function minMaxOfSeries(seriesList: (number | undefined | null)[][]) {
   let min = +Infinity;
   let max = -Infinity;
@@ -168,8 +166,7 @@ function toPath(
     const val = series[i];
     if (typeof val !== "number" || !isFinite(val)) continue;
     const x = i * stepX;
-    const y =
-      h - yPad - ((val - yMin) / range) * (h - 2 * yPad);
+    const y = h - yPad - ((val - yMin) / range) * (h - 2 * yPad);
     d += (d ? " L " : "M ") + x.toFixed(2) + " " + clamp(y, 0, h).toFixed(2);
   }
   return d || "M 0 0";
@@ -190,15 +187,14 @@ function useContainerWidth(min = 320) {
   return { ref, width: w };
 }
 
-// ---------- component ----------
+// component
 export default function StocksDashboard() {
   const [symbol, setSymbol] = useState("");
   const [quote, setQuote] = useState<Quote | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
 
-  // history controls
   const [mode, setMode] = useState<"daily" | "intraday">("daily");
-  const [interval, setInterval] = useState<Interval>("1hour"); // intraday
+  const [interval, setInterval] = useState<Interval>("1hour");
   const [from, setFrom] = useState(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 6);
@@ -210,88 +206,37 @@ export default function StocksDashboard() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // small in-memory cache to avoid re-fetching same params repeatedly
-  const cacheRef = useRef<Map<string, any>>(new Map());
-  const abortRef = useRef<AbortController | null>(null);
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-      abortRef.current?.abort();
-    };
-  }, []);
-
-  const loadAll = useCallback(async (rawSym: string) => {
-    const sym = rawSym.trim().toUpperCase();
+  async function loadAll(sym: string) {
     if (!sym) return;
-
-    const key =
-      mode === "intraday"
-        ? `q:${sym}|intra:${interval}`
-        : `q:${sym}|daily:${from}-${to}`;
-
-    // cache hit
-    if (cacheRef.current.has(key)) {
-      const { quote, profile, rows } = cacheRef.current.get(key);
-      setQuote(quote || null);
-      setProfile(profile || null);
-      setBars(Array.isArray(rows) ? rows : []);
-      setErr(null);
-      return;
-    }
-
-    // cancel previous in-flight
-    abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
-
     setLoading(true);
     setErr(null);
     try {
-      // quote + profile in parallel
-      const qPromise = fetch(
-        `/api/stocks/quote?symbol=${encodeURIComponent(sym)}`,
-        { cache: "no-store", signal: ac.signal }
-      ).then((r) => r.json());
+      const q = await fetch(`/api/stocks/quote?symbol=${encodeURIComponent(sym)}`, { cache: "no-store" });
+      const qj = await q.json();
+      if (!q.ok || qj?.ok === false) throw new Error(qj?.error || "quote failed");
+      setQuote(qj.quote || null);
+      setProfile(qj.profile || null);
 
-      // history
       let url = `/api/stocks/history?symbol=${encodeURIComponent(sym)}`;
       if (mode === "intraday") {
         url += `&interval=${interval}&limit=1000`;
       } else {
         url += `&from=${from}&to=${to}&limit=5000`;
       }
-      const hPromise = fetch(url, { cache: "no-store", signal: ac.signal }).then((r) => r.json());
-
-      const [qj, hj] = await Promise.all([qPromise, hPromise]);
-
-      if (qj?.ok === false) throw new Error(qj?.error || "quote failed");
-      if (hj?.ok === false) throw new Error(hj?.error || "history failed");
-
-      const nextQuote = qj.quote || null;
-      const nextProfile = qj.profile || null;
-      const nextRows = Array.isArray(hj.rows) ? hj.rows : [];
-
-      cacheRef.current.set(key, { quote: nextQuote, profile: nextProfile, rows: nextRows });
-
-      if (!mountedRef.current) return;
-      setQuote(nextQuote);
-      setProfile(nextProfile);
-      setBars(nextRows);
-      setErr(null);
+      const h = await fetch(url, { cache: "no-store" });
+      const hj = await h.json();
+      if (!h.ok || hj?.ok === false) throw new Error(hj?.error || "history failed");
+      setBars(Array.isArray(hj.rows) ? hj.rows : []);
     } catch (e: any) {
-      if (e?.name === "AbortError") return; // ignore aborts
-      if (!mountedRef.current) return;
       setErr(e?.message || "Unexpected error");
       setBars([]);
       setQuote(null);
       setProfile(null);
     } finally {
-      if (mountedRef.current) setLoading(false);
+      setLoading(false);
     }
-  }, [from, to, interval, mode]);
+  }
 
-  // compute indicators
   const closes = useMemo(() => bars.map((b) => b.close).filter((v) => typeof v === "number"), [bars]);
   const sma20 = useMemo(() => SMA(closes, 20), [closes]);
   const sma50 = useMemo(() => SMA(closes, 50), [closes]);
@@ -299,17 +244,14 @@ export default function StocksDashboard() {
   const rsi14 = useMemo(() => RSI(closes, 14), [closes]);
   const macd = useMemo(() => MACD(closes, 12, 26, 9), [closes]);
 
-  // responsive widths
   const priceBox = useContainerWidth(360);
   const rsiBox = useContainerWidth(360);
   const macdBox = useContainerWidth(360);
 
-  // heights scale with width (keeps proportions consistent)
   const priceH = Math.max(220, Math.min(520, Math.round(priceBox.width * 0.45)));
   const rsiH = Math.max(100, Math.min(180, Math.round(rsiBox.width * 0.22)));
   const macdH = Math.max(120, Math.min(200, Math.round(macdBox.width * 0.25)));
 
-  // y-domain for price chart uses all visible series (close + MAs) to avoid clipping
   const priceDomain = useMemo(
     () => minMaxOfSeries([closes, sma20, sma50, ema20]),
     [closes, sma20, sma50, ema20]
@@ -325,9 +267,6 @@ export default function StocksDashboard() {
             <input
               value={symbol}
               onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") loadAll(symbol);
-              }}
               placeholder="e.g., AAPL"
               className="w-full rounded-md border px-3 py-2"
             />
@@ -337,11 +276,7 @@ export default function StocksDashboard() {
             <div className="mb-1 text-xs text-gray-700">Mode</div>
             <select
               value={mode}
-              onChange={(e) => {
-                const next = e.target.value as "daily" | "intraday";
-                setMode(next);
-                // drop intraday interval cache pollution if switching modes
-              }}
+              onChange={(e) => setMode(e.target.value as any)}
               className="w-full rounded-md border px-3 py-2"
             >
               <option value="daily">Daily (range)</option>
@@ -389,7 +324,7 @@ export default function StocksDashboard() {
 
           <div className="flex items-end">
             <button
-              onClick={() => loadAll(symbol)}
+              onClick={() => loadAll(symbol.trim())}
               disabled={!symbol.trim() || loading}
               className="rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
             >
@@ -453,51 +388,31 @@ export default function StocksDashboard() {
         </section>
       )}
 
-      {/* -------- Price & MAs (responsive) -------- */}
+      {/* Price & MAs */}
       {closes.length > 1 && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
           <div className="text-sm font-medium text-gray-900 mb-2">Price & MAs</div>
           <div ref={priceBox.ref} className="w-full">
             <svg width={priceBox.width} height={priceH}>
-              {/* grid (horizontal) */}
               {Array.from({ length: 4 }).map((_, i) => {
                 const y = ((i + 1) / 5) * priceH;
-                return (
-                  <line
-                    key={i}
-                    x1={0}
-                    y1={y}
-                    x2={priceBox.width}
-                    y2={y}
-                    stroke="#e5e7eb"
-                    strokeDasharray="4 4"
-                  />
-                );
+                return <line key={i} x1={0} y1={y} x2={priceBox.width} y2={y} stroke="#e5e7eb" strokeDasharray="4 4" />;
               })}
-              {/* lines */}
               <path
                 d={toPath(closes, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
-                fill="none"
-                stroke="#0f172a"
-                strokeWidth={2}
+                fill="none" stroke="#0f172a" strokeWidth={2}
               />
               <path
                 d={toPath(sma20, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
-                fill="none"
-                stroke="#2563eb"
-                strokeWidth={1.5}
+                fill="none" stroke="#2563eb" strokeWidth={1.5}
               />
               <path
                 d={toPath(sma50, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
-                fill="none"
-                stroke="#7c3aed"
-                strokeWidth={1.5}
+                fill="none" stroke="#7c3aed" strokeWidth={1.5}
               />
               <path
                 d={toPath(ema20, priceBox.width, priceH, priceDomain.min, priceDomain.max)}
-                fill="none"
-                stroke="#10b981"
-                strokeWidth={1.5}
+                fill="none" stroke="#10b981" strokeWidth={1.5}
               />
             </svg>
           </div>
@@ -505,28 +420,24 @@ export default function StocksDashboard() {
         </section>
       )}
 
-      {/* -------- RSI (responsive) -------- */}
+      {/* RSI */}
       {rsi14.length > 1 && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
           <div className="text-sm font-medium text-gray-900 mb-2">RSI(14)</div>
           <div ref={rsiBox.ref} className="w-full relative">
             <svg width={rsiBox.width} height={rsiH}>
-              {/* 30/70 guides */}
               <line x1={0} y1={rsiH * 0.3} x2={rsiBox.width} y2={rsiH * 0.3} stroke="#d1d5db" strokeDasharray="4 4" />
               <line x1={0} y1={rsiH * 0.7} x2={rsiBox.width} y2={rsiH * 0.7} stroke="#d1d5db" strokeDasharray="4 4" />
-              {/* RSI path (0..100 scale) */}
               <path
-                d={toPath(rsi14.map((v) => (isFinite(v) ? v : NaN)), rsiBox.width, rsiH, 0, 100)}
-                fill="none"
-                stroke="#374151"
-                strokeWidth={1.5}
+                d={toPath(rsi14.map(v => (isFinite(v) ? v : NaN)), rsiBox.width, rsiH, 0, 100)}
+                fill="none" stroke="#374151" strokeWidth={1.5}
               />
             </svg>
           </div>
         </section>
       )}
 
-      {/* -------- MACD (responsive) -------- */}
+      {/* MACD */}
       {macd.macd.length > 1 && (
         <section className="rounded-2xl border bg-white p-4 md:p-5">
           <div className="text-sm font-medium text-gray-900 mb-2">MACD(12,26,9)</div>
@@ -535,27 +446,14 @@ export default function StocksDashboard() {
               const domain = minMaxOfSeries([macd.macd, macd.signal]);
               return (
                 <svg width={macdBox.width} height={macdH}>
-                  {/* zero line */}
-                  <line
-                    x1={0}
-                    y1={macdH / 2}
-                    x2={macdBox.width}
-                    y2={macdH / 2}
-                    stroke="#e5e7eb"
-                    strokeDasharray="4 4"
-                  />
-                  {/* macd & signal */}
+                  <line x1={0} y1={macdH / 2} x2={macdBox.width} y2={macdH / 2} stroke="#e5e7eb" strokeDasharray="4 4" />
                   <path
                     d={toPath(macd.macd, macdBox.width, macdH, domain.min, domain.max)}
-                    fill="none"
-                    stroke="#0ea5e9"
-                    strokeWidth={1.5}
+                    fill="none" stroke="#0ea5e9" strokeWidth={1.5}
                   />
                   <path
                     d={toPath(macd.signal, macdBox.width, macdH, domain.min, domain.max)}
-                    fill="none"
-                    stroke="#ef4444"
-                    strokeWidth={1.5}
+                    fill="none" stroke="#ef4444" strokeWidth={1.5}
                   />
                 </svg>
               );
