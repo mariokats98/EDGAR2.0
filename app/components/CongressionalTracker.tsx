@@ -1,121 +1,219 @@
+// app/components/CongressionalTracker.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 
 type Chamber = "senate" | "house";
+type SearchBy = "member" | "ticker";
+
 type TradeRow = {
-  id?: string | number;
-  filingDate?: string;
+  date?: string;
   transactionDate?: string;
-  representative?: string; // House
-  senator?: string;        // Senate
-  party?: string;
-  state?: string;
+  disclosureDate?: string;
+  reportedDate?: string;
+  representative?: string;
+  senator?: string;
+  name?: string;
+  owner?: string;
+  type?: string; // buy/sell/etc
+  transaction?: string;
+  assetDescription?: string;
+  symbol?: string;
   ticker?: string;
-  assetName?: string;
-  type?: string;
   amount?: string;
-  link?: string;
+  range?: string; // sometimes FMP uses range
+  comment?: string;
 };
 
-function fmtDate(d?: string) {
-  if (!d) return "—";
-  const dt = new Date(d);
-  return Number.isNaN(+dt)
-    ? d
-    : dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+function fmtDate(str?: string) {
+  if (!str) return "—";
+  try {
+    const d = new Date(str);
+    if (Number.isNaN(d.getTime())) return str;
+    return d.toISOString().slice(0, 10);
+  } catch {
+    return str;
+  }
+}
+
+function normalizeRow(r: TradeRow, chamber: Chamber) {
+  // Choose a consistent set of fields across Senate/House
+  const date =
+    r.date ||
+    r.transactionDate ||
+    r.disclosureDate ||
+    r.reportedDate ||
+    "";
+
+  const member =
+    r.representative ||
+    r.senator ||
+    r.name ||
+    "";
+
+  const ticker =
+    (r.symbol && r.symbol !== "-" ? r.symbol : "") ||
+    (r.ticker && r.ticker !== "-" ? r.ticker : "") ||
+    "";
+
+  const company =
+    r.assetDescription ||
+    r.comment ||
+    "";
+
+  const action =
+    r.type ||
+    r.transaction ||
+    r.owner ||
+    "";
+
+  const amt =
+    r.amount ||
+    r.range ||
+    "";
+
+  return {
+    date: fmtDate(date),
+    member,
+    ticker,
+    company,
+    action,
+    amount: amt,
+  };
 }
 
 export default function CongressionalTracker() {
+  // UI state
   const [chamber, setChamber] = useState<Chamber>("senate");
+  const [searchBy, setSearchBy] = useState<SearchBy>("member"); // member | ticker
   const [query, setQuery] = useState("");
+  const [from, setFrom] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 3);
+    return d.toISOString().slice(0, 10);
+  });
+  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
+
   const [rows, setRows] = useState<TradeRow[]>([]);
-  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // Reset list when chamber/search changes
-  useEffect(() => {
-    setRows([]);
-    setPage(1);
-    setHasMore(true);
-  }, [chamber, query]);
-
   async function load() {
-    if (loading || !hasMore) return;
     setLoading(true);
     setErr(null);
     try {
-      const params = new URLSearchParams({
-        chamber,
-        q: query.trim(),
-        page: String(page),
-        limit: "25",
-      });
-      const r = await fetch(`/api/congress?${params.toString()}`, { cache: "no-store" });
-      const j = await r.json();
-      if (!r.ok || j?.ok === false) throw new Error(j?.error || "Failed to load");
+      const params = new URLSearchParams();
+      params.set("chamber", chamber);
+      if (query.trim()) {
+        params.set("by", searchBy); // "member" or "ticker"
+        params.set("q", query.trim());
+      }
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
 
-      const list: TradeRow[] = Array.isArray(j.rows) ? j.rows : [];
-      setHasMore(list.length >= 25);
-      setRows(prev => [...prev, ...list]);
-      setPage(prev => prev + 1);
+      const res = await fetch(`/api/congress?${params.toString()}`, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || data?.ok === false) throw new Error(data?.error || "Failed to load trades");
+
+      const list: TradeRow[] = Array.isArray(data?.rows) ? data.rows : [];
+      const normalized = list.map(r => normalizeRow(r, chamber));
+      setRows(normalized);
     } catch (e: any) {
       setErr(e?.message || "Unexpected error");
+      setRows([]);
     } finally {
       setLoading(false);
     }
   }
 
-  // Newest first
-  const sorted = useMemo(() => {
-    return [...rows].sort((a, b) => {
-      const ad = new Date(a.filingDate ?? a.transactionDate ?? 0).getTime();
-      const bd = new Date(b.filingDate ?? b.transactionDate ?? 0).getTime();
-      return bd - ad;
-    });
+  useEffect(() => {
+    // Auto-load on first mount
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Recompute table items (sorted latest first)
+  const items = useMemo(() => {
+    return [...rows].sort((a, b) => (a.date < b.date ? 1 : -1));
   }, [rows]);
 
   return (
     <div className="space-y-4">
-      {/* Controls */}
+      {/* Top controls */}
       <section className="rounded-2xl border bg-white p-4 md:p-5">
-        <div className="grid gap-3 md:grid-cols-[minmax(240px,320px)_1fr_auto]">
-          {/* Equal-width chamber buttons */}
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => setChamber("senate")}
-              className={`w-full rounded-md border px-3 py-2 text-sm ${
-                chamber === "senate" ? "bg-black text-white" : "bg-white"
-              }`}
+        {/* Chamber toggle: evenly-sized buttons */}
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          <button
+            onClick={() => setChamber("senate")}
+            className={`rounded-md px-3 py-2 text-sm border ${
+              chamber === "senate" ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50"
+            }`}
+          >
+            Senate
+          </button>
+          <button
+            onClick={() => setChamber("house")}
+            className={`rounded-md px-3 py-2 text-sm border ${
+              chamber === "house" ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50"
+            }`}
+          >
+            House
+          </button>
+        </div>
+
+        {/* Filters: search by + query + date range */}
+        <div className="grid gap-3 md:grid-cols-[160px_minmax(160px,1fr)_160px_160px_auto]">
+          <div>
+            <div className="mb-1 text-xs text-gray-700">Search by</div>
+            <select
+              value={searchBy}
+              onChange={(e) => setSearchBy(e.target.value as SearchBy)}
+              className="w-full rounded-md border px-3 py-2"
             >
-              Senate
-            </button>
-            <button
-              onClick={() => setChamber("house")}
-              className={`w-full rounded-md border px-3 py-2 text-sm ${
-                chamber === "house" ? "bg-black text-white" : "bg-white"
-              }`}
-            >
-              House
-            </button>
+              <option value="member">Member</option>
+              <option value="ticker">Ticker</option>
+            </select>
           </div>
 
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search member or ticker (e.g., Pelosi or AAPL)"
-            className="w-full rounded-md border px-3 py-2 text-sm"
-          />
+          <div>
+            <div className="mb-1 text-xs text-gray-700">
+              {searchBy === "member" ? "Member name (e.g., Pelosi)" : "Ticker (e.g., NVDA)"}
+            </div>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={searchBy === "member" ? "Pelosi" : "NVDA"}
+              className="w-full rounded-md border px-3 py-2"
+            />
+          </div>
 
-          <div className="flex items-center justify-end">
+          <div>
+            <div className="mb-1 text-xs text-gray-700">From</div>
+            <input
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className="w-full rounded-md border px-3 py-2"
+            />
+          </div>
+
+          <div>
+            <div className="mb-1 text-xs text-gray-700">To</div>
+            <input
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className="w-full rounded-md border px-3 py-2"
+            />
+          </div>
+
+          <div className="flex items-end">
             <button
-              onClick={() => load()}
-              disabled={loading || !hasMore}
-              className="rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
+              onClick={load}
+              className="rounded-md bg-black px-4 py-2 text-sm text-white"
+              disabled={loading}
             >
-              {loading ? "Loading…" : rows.length ? "Load more" : "Load trades"}
+              {loading ? "Loading…" : "Search"}
             </button>
           </div>
         </div>
@@ -127,81 +225,40 @@ export default function CongressionalTracker() {
         )}
       </section>
 
-      {/* List */}
-      <section className="rounded-2xl border bg-white">
-        {sorted.length === 0 && !loading ? (
-          <div className="p-8 text-center text-sm text-gray-500">
-            No trades yet. Try “Load trades” or adjust your search.
-          </div>
-        ) : (
-          <ul className="divide-y">
-            {sorted.map((row, i) => {
-              // Name: prefer house.senate fields but fall back if API varies
-              const name =
-                row.representative ||
-                row.senator ||
-                "—";
-
-              const meta = [row.party, row.state].filter(Boolean).join(" • ");
-              const ticker = (row.ticker || "—").toUpperCase();
-              const asset = row.assetName || "—";
-              const side = row.type || "—";
-              const amount = row.amount || "—";
-              const filed = fmtDate(row.filingDate);
-              const traded = fmtDate(row.transactionDate);
-
-              return (
-                <li key={`${row.id ?? ""}-${i}`} className="p-4 md:p-5">
-                  <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-4">
-                    {/* Left: name */}
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-semibold text-gray-900">{name}</div>
-                      <div className="text-xs text-gray-500">{meta || "\u2014"}</div>
-                    </div>
-
-                    {/* Middle: security & action */}
-                    <div className="min-w-[240px]">
-                      <div className="text-sm text-gray-900">
-                        <span className="font-medium">{ticker}</span>{" "}
-                        <span className="text-gray-500">• {asset}</span>
-                      </div>
-                      <div className="text-xs text-gray-500">Action: {side} • Amount: {amount}</div>
-                    </div>
-
-                    {/* Right: dates + source */}
-                    <div className="text-right">
-                      <div className="text-xs text-gray-900">Filed: {filed}</div>
-                      <div className="text-xs text-gray-500">Traded: {traded}</div>
-                      {row.link ? (
-                        <a
-                          href={row.link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="mt-1 inline-block text-xs text-blue-600 underline"
-                        >
-                          Filing
-                        </a>
-                      ) : null}
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-
-        {/* Footer “Load more” */}
-        {sorted.length > 0 && (
-          <div className="border-t p-3 text-center">
-            <button
-              onClick={() => load()}
-              disabled={loading || !hasMore}
-              className="rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
-            >
-              {loading ? "Loading…" : hasMore ? "Load more" : "No more"}
-            </button>
-          </div>
-        )}
+      {/* Results table */}
+      <section className="rounded-2xl border bg-white overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-50 text-gray-700">
+            <tr className="[&>th]:px-3 [&>th]:py-2 [&>th]:text-left">
+              <th className="w-[110px]">Date</th>
+              <th className="min-w-[180px]">Member</th>
+              <th className="w-[90px]">Ticker</th>
+              <th className="min-w-[200px]">Company</th>
+              <th className="w-[110px]">Action</th>
+              <th className="w-[140px]">Amount / Range</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {items.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-3 py-6 text-center text-gray-500">
+                  No trades found.
+                </td>
+              </tr>
+            ) : (
+              items.map((r, i) => (
+                <tr key={i} className="hover:bg-gray-50">
+                  <td className="px-3 py-2 text-gray-700">{r.date || "—"}</td>
+                  <td className="px-3 py-2 font-medium text-gray-900">{r.member || "—"}</td>
+                  <td className="px-3 py-2">{r.ticker || "—"}</td>
+                  <td className="px-3 py-2">{r.company || "—"}</td>
+                  <td className="px-3 py-2">{r.action || "—"}</td>
+                  <td className="px-3 py-2">{r.amount || "—"}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
       </section>
     </div>
   );
