@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 type Chamber = "senate" | "house";
 type SearchBy = "member" | "ticker";
 
-// Raw shape (loose; FMP returns slightly different keys per chamber)
+// Raw (loosely typed to handle minor schema diffs from FMP)
 type TradeRow = {
   date?: string;
   transactionDate?: string;
@@ -16,17 +16,17 @@ type TradeRow = {
   senator?: string;
   name?: string;
   owner?: string;
-  type?: string;         // buy/sell/etc
+  type?: string;
   transaction?: string;
   assetDescription?: string;
   symbol?: string;
   ticker?: string;
   amount?: string;
-  range?: string;        // sometimes FMP uses range
+  range?: string;
   comment?: string;
 };
 
-// Normalized shape we render in the table
+// Normalized for rendering
 type NormalizedTrade = {
   date: string;
   member: string;
@@ -50,21 +50,13 @@ function normalizeRow(r: TradeRow): NormalizedTrade {
     r.reportedDate ||
     "";
 
-  const member =
-    r.representative ||
-    r.senator ||
-    r.name ||
-    "";
-
+  const member = r.representative || r.senator || r.name || "";
   const ticker =
     (r.symbol && r.symbol !== "-" ? r.symbol : "") ||
     (r.ticker && r.ticker !== "-" ? r.ticker : "") ||
     "";
-
   const company = r.assetDescription || r.comment || "";
-
   const action = r.type || r.transaction || r.owner || "";
-
   const amount = r.amount || r.range || "";
 
   return {
@@ -99,7 +91,7 @@ export default function CongressionalTracker() {
       const params = new URLSearchParams();
       params.set("chamber", chamber);
       if (query.trim()) {
-        params.set("by", searchBy); // "member" or "ticker"
+        params.set("by", searchBy);
         params.set("q", query.trim());
       }
       if (from) params.set("from", from);
@@ -110,8 +102,7 @@ export default function CongressionalTracker() {
       if (!res.ok || data?.ok === false) throw new Error(data?.error || "Failed to load trades");
 
       const list: TradeRow[] = Array.isArray(data?.rows) ? data.rows : [];
-      const normalized: NormalizedTrade[] = list.map(normalizeRow);
-      setRows(normalized);
+      setRows(list.map(normalizeRow));
     } catch (e: any) {
       setErr(e?.message || "Unexpected error");
       setRows([]);
@@ -125,13 +116,14 @@ export default function CongressionalTracker() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const items = useMemo(() => {
-    return [...rows].sort((a, b) => (a.date < b.date ? 1 : -1));
-  }, [rows]);
+  const items = useMemo(
+    () => [...rows].sort((a, b) => (a.date < b.date ? 1 : -1)),
+    [rows]
+  );
 
   return (
     <div className="space-y-4">
-      {/* Controls */}
+      {/* Top controls */}
       <section className="rounded-2xl border bg-white p-4 md:p-5">
         {/* Even toggle buttons */}
         <div className="grid grid-cols-2 gap-2 mb-4">
@@ -153,8 +145,8 @@ export default function CongressionalTracker() {
           </button>
         </div>
 
-        {/* Filters */}
-        <div className="grid gap-3 md:grid-cols-[160px_minmax(160px,1fr)_160px_160px_auto]">
+        {/* Search row */}
+        <div className="grid gap-3 md:grid-cols-[140px_minmax(160px,1fr)_auto]">
           <div>
             <div className="mb-1 text-xs text-gray-700">Search by</div>
             <select
@@ -179,6 +171,19 @@ export default function CongressionalTracker() {
             />
           </div>
 
+          <div className="flex items-end">
+            <button
+              onClick={load}
+              className="rounded-md bg-black px-4 py-2 text-sm text-white"
+              disabled={loading}
+            >
+              {loading ? "Loading…" : "Search"}
+            </button>
+          </div>
+        </div>
+
+        {/* Date filters — always visible */}
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 md:grid-cols-[200px_200px]">
           <div>
             <div className="mb-1 text-xs text-gray-700">From</div>
             <input
@@ -188,7 +193,6 @@ export default function CongressionalTracker() {
               className="w-full rounded-md border px-3 py-2"
             />
           </div>
-
           <div>
             <div className="mb-1 text-xs text-gray-700">To</div>
             <input
@@ -197,16 +201,6 @@ export default function CongressionalTracker() {
               onChange={(e) => setTo(e.target.value)}
               className="w-full rounded-md border px-3 py-2"
             />
-          </div>
-
-          <div className="flex items-end">
-            <button
-              onClick={load}
-              className="rounded-md bg-black px-4 py-2 text-sm text-white"
-              disabled={loading}
-            >
-              {loading ? "Loading…" : "Search"}
-            </button>
           </div>
         </div>
 
