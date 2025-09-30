@@ -1,7 +1,6 @@
 // app/components/InsiderTape.tsx
+// app/components/InsiderTape.tsx
 "use client";
-import { useEffect, useMemo, useState } from "react";
-// (rest unchanged)
 
 import { useEffect, useMemo, useState } from "react";
 
