@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 type Chamber = "senate" | "house";
 type SearchBy = "member" | "ticker";
 
+// Raw shape (loose; FMP returns slightly different keys per chamber)
 type TradeRow = {
   date?: string;
   transactionDate?: string;
@@ -15,29 +16,33 @@ type TradeRow = {
   senator?: string;
   name?: string;
   owner?: string;
-  type?: string; // buy/sell/etc
+  type?: string;         // buy/sell/etc
   transaction?: string;
   assetDescription?: string;
   symbol?: string;
   ticker?: string;
   amount?: string;
-  range?: string; // sometimes FMP uses range
+  range?: string;        // sometimes FMP uses range
   comment?: string;
+};
+
+// Normalized shape we render in the table
+type NormalizedTrade = {
+  date: string;
+  member: string;
+  ticker: string;
+  company: string;
+  action: string;
+  amount: string;
 };
 
 function fmtDate(str?: string) {
   if (!str) return "—";
-  try {
-    const d = new Date(str);
-    if (Number.isNaN(d.getTime())) return str;
-    return d.toISOString().slice(0, 10);
-  } catch {
-    return str;
-  }
+  const d = new Date(str);
+  return Number.isNaN(d.getTime()) ? str : d.toISOString().slice(0, 10);
 }
 
-function normalizeRow(r: TradeRow, chamber: Chamber) {
-  // Choose a consistent set of fields across Senate/House
+function normalizeRow(r: TradeRow): NormalizedTrade {
   const date =
     r.date ||
     r.transactionDate ||
@@ -56,21 +61,11 @@ function normalizeRow(r: TradeRow, chamber: Chamber) {
     (r.ticker && r.ticker !== "-" ? r.ticker : "") ||
     "";
 
-  const company =
-    r.assetDescription ||
-    r.comment ||
-    "";
+  const company = r.assetDescription || r.comment || "";
 
-  const action =
-    r.type ||
-    r.transaction ||
-    r.owner ||
-    "";
+  const action = r.type || r.transaction || r.owner || "";
 
-  const amt =
-    r.amount ||
-    r.range ||
-    "";
+  const amount = r.amount || r.range || "";
 
   return {
     date: fmtDate(date),
@@ -78,14 +73,13 @@ function normalizeRow(r: TradeRow, chamber: Chamber) {
     ticker,
     company,
     action,
-    amount: amt,
+    amount,
   };
 }
 
 export default function CongressionalTracker() {
-  // UI state
   const [chamber, setChamber] = useState<Chamber>("senate");
-  const [searchBy, setSearchBy] = useState<SearchBy>("member"); // member | ticker
+  const [searchBy, setSearchBy] = useState<SearchBy>("member");
   const [query, setQuery] = useState("");
   const [from, setFrom] = useState(() => {
     const d = new Date();
@@ -94,7 +88,7 @@ export default function CongressionalTracker() {
   });
   const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
 
-  const [rows, setRows] = useState<TradeRow[]>([]);
+  const [rows, setRows] = useState<NormalizedTrade[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -116,7 +110,7 @@ export default function CongressionalTracker() {
       if (!res.ok || data?.ok === false) throw new Error(data?.error || "Failed to load trades");
 
       const list: TradeRow[] = Array.isArray(data?.rows) ? data.rows : [];
-      const normalized = list.map(r => normalizeRow(r, chamber));
+      const normalized: NormalizedTrade[] = list.map(normalizeRow);
       setRows(normalized);
     } catch (e: any) {
       setErr(e?.message || "Unexpected error");
@@ -127,21 +121,19 @@ export default function CongressionalTracker() {
   }
 
   useEffect(() => {
-    // Auto-load on first mount
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Recompute table items (sorted latest first)
   const items = useMemo(() => {
     return [...rows].sort((a, b) => (a.date < b.date ? 1 : -1));
   }, [rows]);
 
   return (
     <div className="space-y-4">
-      {/* Top controls */}
+      {/* Controls */}
       <section className="rounded-2xl border bg-white p-4 md:p-5">
-        {/* Chamber toggle: evenly-sized buttons */}
+        {/* Even toggle buttons */}
         <div className="grid grid-cols-2 gap-2 mb-4">
           <button
             onClick={() => setChamber("senate")}
@@ -161,7 +153,7 @@ export default function CongressionalTracker() {
           </button>
         </div>
 
-        {/* Filters: search by + query + date range */}
+        {/* Filters */}
         <div className="grid gap-3 md:grid-cols-[160px_minmax(160px,1fr)_160px_160px_auto]">
           <div>
             <div className="mb-1 text-xs text-gray-700">Search by</div>
@@ -225,7 +217,7 @@ export default function CongressionalTracker() {
         )}
       </section>
 
-      {/* Results table */}
+      {/* Results */}
       <section className="rounded-2xl border bg-white overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 text-gray-700">
