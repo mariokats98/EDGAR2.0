@@ -70,10 +70,7 @@ export default function HomePage() {
         </div>
 
         {/* Small helper line */}
-        <p className="mt-3 text-xs text-gray-500">
-          
-          <span className="font-mono">NVDA</span>).
-        </p>
+      
       </section>
 
       {/* Feature cards */}
