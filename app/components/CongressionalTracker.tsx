@@ -1,242 +1,389 @@
 // app/components/CongressionalTracker.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import * as React from "react";
 
 type Chamber = "senate" | "house";
+type Mode = "symbol" | "name";
 
 type Row = {
-  date: string;
-  filed?: string;
-  member: string;
-  ticker: string;
-  company?: string;
-  action: string;
-  shares?: number;
-  price?: number;
-  value?: number;
-  amountText?: string;
-  owner?: string;
-  link?: string;
+  chamber: string | null;
+  memberName: string | null;
+  transactionDate: string | null;
+  transactionType: string | null;
+  ticker: string | null;
+  assetName: string | null;
+  assetType: string | null;
+  owner: string | null;
+  amount: string | null;
+  shares: number | string | null;
+  price: number | string | null;
+  sourceUrl: string | null;
+  filingDate: string | null;
+  state: string | null;
+  party: string | null;
 };
 
-function fmtMoney(n?: number) {
-  return typeof n === "number" && isFinite(n)
-    ? n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 })
-    : "—";
+type ApiResponse =
+  | { data: Row[]; error?: undefined }
+  | { data: Row[]; error: string };
+
+function useDebounced<T>(value: T, delay = 300) {
+  const [debounced, setDebounced] = React.useState(value);
+  React.useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(id);
+  }, [value, delay]);
+  return debounced;
 }
-function fmtNum(n?: number) {
-  return typeof n === "number" && isFinite(n) ? n.toLocaleString() : "—";
-}
+
+const fmt = (v: unknown) =>
+  v === null || v === undefined || v === "" ? "—" : String(v);
+
+const fmtDate = (s: string | null) => {
+  if (!s) return "—";
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString();
+};
 
 export default function CongressionalTracker() {
-  const [chamber, setChamber] = useState<Chamber>("senate");
+  // Defaults so the table shows data immediately on load
+  const [mode, setMode] = React.useState<Mode>("symbol");  // "symbol" | "name"
+  const [chamber, setChamber] = React.useState<Chamber>("senate"); // "senate" | "house"
+  const [rawQuery, setRawQuery] = React.useState("AAPL");
+  const debouncedQuery = useDebounced(rawQuery, 300);
 
-  const [member, setMember] = useState("");
-  const [ticker, setTicker] = useState("");
-  const [q, setQ] = useState("");
+  const [data, setData] = React.useState<Row[] | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
 
-  // default: last 6 months
-  const [from, setFrom] = useState(() => {
-    const d = new Date();
-    d.setMonth(d.getMonth() - 6);
-    return d.toISOString().slice(0, 10);
-  });
-  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
+  React.useEffect(() => {
+    const controller = new AbortController();
 
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [rows, setRows] = useState<Row[]>([]);
+    async function run() {
+      const q = debouncedQuery.trim();
+      if (!q) {
+        setData([]);
+        setError(null);
+        return;
+      }
 
-  async function load() {
-    setLoading(true);
-    setErr(null);
-    try {
-      const params = new URLSearchParams();
-      params.set("chamber", chamber);
-      if (member.trim()) params.set("member", member.trim());
-      if (ticker.trim()) params.set("ticker", ticker.trim().toUpperCase());
-      if (q.trim()) params.set("q", q.trim());
-      if (from) params.set("from", from);
-      if (to) params.set("to", to);
+      setLoading(true);
+      setError(null);
+      try {
+        const url = new URL("/api/congress", window.location.origin);
+        url.searchParams.set("q", q);
+        url.searchParams.set("chamber", chamber);
+        url.searchParams.set("mode", mode);
 
-      const res = await fetch(`/api/congress?${params.toString()}`, { cache: "no-store" });
-      const js = await res.json();
-      if (!res.ok || js?.ok === false) throw new Error(js?.error || "Fetch failed");
-      setRows(Array.isArray(js.rows) ? js.rows : []);
-    } catch (e: any) {
-      setErr(e?.message || "Unexpected error");
-      setRows([]);
-    } finally {
-      setLoading(false);
+        const res = await fetch(url.toString(), {
+          signal: controller.signal,
+          headers: { "cache-control": "no-store" },
+        });
+        const json: ApiResponse = await res.json();
+
+        if (!res.ok) {
+          setError(json?.error || `HTTP ${res.status}`);
+          setData([]);
+        } else if ("error" in json && json.error) {
+          setError(json.error);
+          setData(json.data || []);
+        } else {
+          setData(Array.isArray(json.data) ? json.data : []);
+        }
+      } catch (e: any) {
+        if (e?.name !== "AbortError") {
+          setError(e?.message || "Unexpected error");
+          setData([]);
+        }
+      } finally {
+        setLoading(false);
+      }
     }
-  }
 
-  // Auto load on first mount & on chamber change
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chamber]);
-
-  function resetFilters() {
-    setMember("");
-    setTicker("");
-    setQ("");
-    const d1 = new Date();
-    d1.setMonth(d1.getMonth() - 6);
-    setFrom(d1.toISOString().slice(0, 10));
-    setTo(new Date().toISOString().slice(0, 10));
-  }
-
-  const hasAmountText = useMemo(() => rows.some((r) => r.amountText), [rows]);
+    run();
+    return () => controller.abort();
+  }, [debouncedQuery, mode, chamber]);
 
   return (
-    <section className="rounded-2xl border bg-white p-4 md:p-5">
-      <div className="mb-3">
-        <div className="text-xl font-semibold text-gray-900">Congressional Tracker</div>
-        <div className="text-sm text-gray-600">Stock trades by U.S. House & Senate members</div>
-      </div>
+    <div style={wrap}>
+      <header style={{ marginBottom: 8 }}>
+        <h2 style={{ margin: 0, fontSize: 18 }}>Congressional Trades</h2>
+        <p style={{ margin: "6px 0 0", color: "var(--muted)" as any }}>
+          Search disclosures by <strong>ticker</strong> or <strong>member name</strong>.
+        </p>
+      </header>
 
-      {/* chamber toggle */}
-      <div className="mb-4 grid grid-cols-2 gap-2">
-        {(["senate", "house"] as Chamber[]).map((c) => (
+      <div style={toolbar} aria-label="Search and filters">
+        {/* Mode toggle */}
+        <div style={segWrap} role="tablist" aria-label="Search mode">
           <button
-            key={c}
-            onClick={() => setChamber(c)}
-            className={`rounded-lg px-3 py-2 text-sm font-medium border ${
-              chamber === c ? "bg-black text-white border-black" : "bg-white text-gray-800"
-            }`}
+            role="tab"
+            aria-selected={mode === "symbol"}
+            onClick={() => setMode("symbol")}
+            style={mode === "symbol" ? segActive : seg}
           >
-            {c === "senate" ? "Senate" : "House"}
+            Ticker
           </button>
-        ))}
+          <button
+            role="tab"
+            aria-selected={mode === "name"}
+            onClick={() => setMode("name")}
+            style={mode === "name" ? segActive : seg}
+          >
+            Member name
+          </button>
+        </div>
+
+        {/* Search input */}
+        <input
+          aria-label={mode === "symbol" ? "Ticker search" : "Member name search"}
+          placeholder={mode === "symbol" ? "e.g., AAPL" : "e.g., Nancy Pelosi"}
+          value={rawQuery}
+          onChange={(e) => setRawQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") setRawQuery((v) => v.trim());
+          }}
+          style={search}
+        />
+
+        {/* Chamber toggle */}
+        <div style={segWrap} role="tablist" aria-label="Chamber">
+          <button
+            role="tab"
+            aria-selected={chamber === "senate"}
+            onClick={() => setChamber("senate")}
+            style={chamber === "senate" ? segActive : seg}
+          >
+            Senate
+          </button>
+          <button
+            role="tab"
+            aria-selected={chamber === "house"}
+            onClick={() => setChamber("house")}
+            style={chamber === "house" ? segActive : seg}
+          >
+            House
+          </button>
+        </div>
       </div>
 
-      {/* Filters */}
-      <div className="mb-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-        <div>
-          <div className="mb-1 text-xs text-gray-700">Member</div>
-          <input
-            value={member}
-            onChange={(e) => setMember(e.target.value)}
-            placeholder="e.g., Pelosi"
-            className="w-full rounded-md border px-3 py-2"
-          />
-        </div>
-        <div>
-          <div className="mb-1 text-xs text-gray-700">Ticker</div>
-          <input
-            value={ticker}
-            onChange={(e) => setTicker(e.target.value.toUpperCase())}
-            placeholder="e.g., AAPL"
-            className="w-full rounded-md border px-3 py-2"
-          />
-        </div>
-        <div>
-          <div className="mb-1 text-xs text-gray-700">Search</div>
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="member, ticker, or company"
-            className="w-full rounded-md border px-3 py-2"
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <div className="mb-1 text-xs text-gray-700">From</div>
-            <input
-              type="date"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              className="w-full rounded-md border px-3 py-2"
-            />
+      {/* Error */}
+      {error && (
+        <div role="alert" style={errBox}>
+          <strong>Couldn’t load results.</strong>
+          <div style={{ marginTop: 6 }}>{error}</div>
+          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+            Try switching Ticker/Member or Senate/House, or check your spelling.
           </div>
-          <div>
-            <div className="mb-1 text-xs text-gray-700">To</div>
-            <input
-              type="date"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              className="w-full rounded-md border px-3 py-2"
-            />
-          </div>
         </div>
-      </div>
+      )}
 
-      <div className="mb-4 flex gap-2">
-        <button
-          onClick={load}
-          disabled={loading}
-          className="rounded-md bg-black px-4 py-2 text-sm text-white disabled:opacity-60"
-        >
-          {loading ? "Loading…" : "Search"}
-        </button>
-        <button
-          onClick={resetFilters}
-          disabled={loading}
-          className="rounded-md border px-4 py-2 text-sm text-gray-800"
-        >
-          Reset
-        </button>
-      </div>
+      {/* Loading */}
+      {loading && <div style={muted}>Loading…</div>}
 
-      {err && (
-        <div className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-          {err}
+      {/* Empty */}
+      {!loading && !error && data && data.length === 0 && (
+        <div style={emptyBox}>
+          <div>No results for “{debouncedQuery}”.</div>
+          <div style={{ marginTop: 6, fontSize: 13, opacity: 0.8 }}>
+            Try switching <em>Ticker/Member</em> or <em>Senate/House</em>.
+          </div>
         </div>
       )}
 
       {/* Table */}
-      <div className="overflow-x-auto rounded-lg border">
-        <table className="min-w-full text-sm">
-          <thead className="bg-gray-50 text-gray-600">
-            <tr>
-              <th className="px-3 py-2 text-left">Date</th>
-              <th className="px-3 py-2 text-left">Member</th>
-              <th className="px-3 py-2 text-left">Ticker</th>
-              <th className="px-3 py-2 text-left">Company</th>
-              <th className="px-3 py-2 text-left">Action</th>
-              <th className="px-3 py-2 text-right">Shares</th>
-              <th className="px-3 py-2 text-right">Price</th>
-              <th className="px-3 py-2 text-right">Value</th>
-              {hasAmountText && <th className="px-3 py-2 text-left">Amount (range)</th>}
-              <th className="px-3 py-2 text-left">Link</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
+      {!loading && !error && data && data.length > 0 && (
+        <div style={{ overflow: "auto", borderRadius: 10, border: "1px solid var(--line)" }}>
+          <table style={tbl}>
+            <thead>
               <tr>
-                <td className="px-3 py-6 text-center text-gray-500" colSpan={hasAmountText ? 10 : 9}>
-                  No trades match your filters
-                </td>
+                <Th>Date</Th>
+                <Th>Member</Th>
+                <Th>Chamber</Th>
+                <Th>Ticker</Th>
+                <Th>Asset</Th>
+                <Th>Type</Th>
+                <Th>Owner</Th>
+                <Th>Amount</Th>
+                <Th>Shares</Th>
+                <Th>Price</Th>
+                <Th>Source</Th>
               </tr>
-            ) : (
-              rows.map((r, i) => (
-                <tr key={`${r.date}-${r.ticker}-${i}`} className={i % 2 ? "bg-white" : "bg-gray-50/40"}>
-                  <td className="px-3 py-2 text-gray-700">{r.date || "—"}</td>
-                  <td className="px-3 py-2 font-medium text-gray-900">{r.member || "—"}</td>
-                  <td className="px-3 py-2">{r.ticker || "—"}</td>
-                  <td className="px-3 py-2">{r.company || "—"}</td>
-                  <td className="px-3 py-2">{r.action || "—"}</td>
-                  <td className="px-3 py-2 text-right">{fmtNum(r.shares)}</td>
-                  <td className="px-3 py-2 text-right">{fmtMoney(r.price)}</td>
-                  <td className="px-3 py-2 text-right">{fmtMoney(r.value)}</td>
-                  {hasAmountText && <td className="px-3 py-2">{r.amountText || "—"}</td>}
-                  <td className="px-3 py-2">
-                    {r.link ? (
-                      <a className="text-blue-600 hover:underline" href={r.link} target="_blank" rel="noreferrer">
-                        source
+            </thead>
+            <tbody>
+              {data.map((r, i) => (
+                <tr key={i} style={i % 2 ? trAlt : undefined}>
+                  <Td>{fmtDate(r.transactionDate)}</Td>
+                  <Td>
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      <span>{fmt(r.memberName)}</span>
+                      <span style={subtle}>
+                        {fmt(r.party)} {r.state ? `• ${r.state}` : ""}
+                      </span>
+                    </div>
+                  </Td>
+                  <Td>{fmt(r.chamber)}</Td>
+                  <Td><code style={pill}>{fmt(r.ticker)}</code></Td>
+                  <Td>
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      <span>{fmt(r.assetName)}</span>
+                      <span style={subtle}>{fmt(r.assetType)}</span>
+                    </div>
+                  </Td>
+                  <Td>{fmt(r.transactionType)}</Td>
+                  <Td>{fmt(r.owner)}</Td>
+                  <Td>{fmt(r.amount)}</Td>
+                  <Td>{fmt(r.shares)}</Td>
+                  <Td>{fmt(r.price)}</Td>
+                  <Td>
+                    {r.sourceUrl ? (
+                      <a href={r.sourceUrl} target="_blank" rel="noreferrer" style={link}>
+                        View
                       </a>
                     ) : (
                       "—"
                     )}
-                  </td>
+                  </Td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
+        Note: <em>shares</em> and <em>price</em> may be absent in the source; “—” is shown when missing.
       </div>
-    </section>
+    </div>
   );
 }
+
+/* ——— tiny presentation helpers ——— */
+function Th({ children }: { children: React.ReactNode }) {
+  return <th style={th}>{children}</th>;
+}
+function Td({ children }: { children: React.ReactNode }) {
+  return <td style={td}>{children}</td>;
+}
+
+/* ——— inline styles (dependency-free) ——— */
+const wrap: React.CSSProperties = {
+  ["--muted" as any]: "#6b7280",
+  ["--line" as any]: "rgba(0,0,0,0.1)",
+  ["--bgAlt" as any]: "rgba(0,0,0,0.03)",
+  color: "#0f172a",
+  fontFamily:
+    'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans"',
+};
+
+const toolbar: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "auto 1fr auto",
+  gap: 12,
+  alignItems: "center",
+  margin: "12px 0 14px",
+};
+
+const segWrap: React.CSSProperties = {
+  display: "inline-flex",
+  border: "1px solid var(--line)",
+  borderRadius: 10,
+  overflow: "hidden",
+  height: 38,
+};
+
+const seg: React.CSSProperties = {
+  padding: "0 14px",
+  background: "#fff",
+  border: "none",
+  cursor: "pointer",
+  fontWeight: 500,
+};
+
+const segActive: React.CSSProperties = {
+  ...seg,
+  background: "#111827",
+  color: "#fff",
+};
+
+const search: React.CSSProperties = {
+  height: 38,
+  borderRadius: 10,
+  border: "1px solid var(--line)",
+  padding: "0 12px",
+  fontSize: 14,
+  width: "100%",
+  outline: "none",
+};
+
+const errBox: React.CSSProperties = {
+  border: "1px solid #ef4444",
+  background: "#fef2f2",
+  color: "#991b1b",
+  padding: 12,
+  borderRadius: 10,
+  marginBottom: 12,
+};
+
+const muted: React.CSSProperties = {
+  padding: "8px 0 14px",
+  color: "var(--muted)",
+};
+
+const emptyBox: React.CSSProperties = {
+  padding: 20,
+  border: "1px dashed var(--line)",
+  borderRadius: 10,
+  textAlign: "center",
+  marginTop: 8,
+};
+
+const tbl: React.CSSProperties = {
+  width: "100%",
+  borderCollapse: "separate",
+  borderSpacing: 0,
+  fontSize: 14,
+};
+
+const th: React.CSSProperties = {
+  textAlign: "left",
+  padding: "10px 12px",
+  fontWeight: 700,
+  fontSize: 12,
+  textTransform: "uppercase",
+  letterSpacing: 0.4,
+  color: "var(--muted)",
+  position: "sticky",
+  top: 0,
+  background: "#fff",
+  borderBottom: "1px solid var(--line)",
+};
+
+const td: React.CSSProperties = {
+  padding: "12px",
+  borderTop: "1px solid var(--line)",
+  verticalAlign: "top",
+  whiteSpace: "nowrap",
+};
+
+const trAlt: React.CSSProperties = { background: "var(--bgAlt)" };
+
+const link: React.CSSProperties = {
+  textDecoration: "underline",
+};
+
+const pill: React.CSSProperties = {
+  display: "inline-block",
+  background: "var(--bgAlt)",
+  border: "1px solid var(--line)",
+  borderRadius: 6,
+  padding: "2px 6px",
+  fontSize: 12,
+};
+
+const subtle: React.CSSProperties = {
+  fontSize: 12,
+  color: "var(--muted)",
+  marginTop: 2,
+};
