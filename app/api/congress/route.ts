@@ -1,103 +1,62 @@
-// app/api/congress/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-const FMP_BASE = "https://financialmodelingprep.com/api/v4";
-const SENATE_EP = `${FMP_BASE}/senate-trading`;
-const HOUSE_EP = `${FMP_BASE}/house-trading`;
+type Chamber = "senate" | "house";
+type Mode = "symbol" | "name";
 
-function dateOnly(s?: string) {
-  return (s || "").slice(0, 10);
+function endpoint(chamber: Chamber, mode: Mode, q: string) {
+  const base = "https://financialmodelingprep.com/stable";
+  const encoded = encodeURIComponent(q.trim());
+  if (chamber === "senate" && mode === "symbol") return `${base}/senate-trades?symbol=${encoded}`;
+  if (chamber === "house"  && mode === "symbol") return `${base}/house-trades?symbol=${encoded}`;
+  if (chamber === "senate" && mode === "name")   return `${base}/senate-trades-by-name?name=${encoded}`;
+  if (chamber === "house"  && mode === "name")   return `${base}/house-trades-by-name?name=${encoded}`;
+  throw new Error("Bad params");
+}
+
+// Normalize FMP rows for UI
+function normalizeRow(r: any) {
+  return {
+    chamber: r.chamber ?? (r.senate ? "senate" : r.house ? "house" : null),
+    memberName: r.senator || r.representative || r.politician || r.name || null,
+    transactionDate: r.transactionDate ?? r.date ?? null,
+    transactionType: r.transaction ?? r.type ?? null,  // e.g., Purchase, Sale (Full/Partial)
+    ticker: r.symbol ?? r.ticker ?? null,
+    assetName: r.assetName ?? r.asset_description ?? null,
+    assetType: r.assetType ?? null,
+    owner: r.owner ?? null,            // Self / Spouse / Joint
+    amount: r.amount ?? r.amountRange ?? null, // often a range string
+    shares: r.shares ?? null,          // may be absent
+    price: r.price ?? null,            // may be absent
+    sourceUrl: r.link || r.source || null,
+    filingDate: r.filing_date ?? r.reportedDate ?? null,
+    state: r.state ?? null,
+    party: r.party ?? null,
+  };
 }
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const chamber = (searchParams.get("chamber") || "senate").toLowerCase();
-    const from = searchParams.get("from");
-    const to = searchParams.get("to");
-    const tickerQ = (searchParams.get("ticker") || "").toUpperCase();
-    const memberQ = (searchParams.get("member") || "").toLowerCase();
+    const q = searchParams.get("q") || "";
+    const chamber = (searchParams.get("chamber") || "senate") as Chamber;
+    const mode = (searchParams.get("mode") || "symbol") as Mode;
 
-    const apiKey =
-      process.env.FMP_API_KEY || process.env.NEXT_PUBLIC_FMP_KEY || "";
-    const endpoint = chamber === "house" ? HOUSE_EP : SENATE_EP;
+    if (!q) return NextResponse.json({ data: [], error: "Missing q" }, { status: 400 });
 
-    const url = new URL(endpoint);
-    url.searchParams.set("page", "0");
-    url.searchParams.set("size", "500");
-    if (apiKey) url.searchParams.set("apikey", apiKey);
+    const url = endpoint(chamber, mode, q);
+    const key = process.env.FMP_API_KEY;
+    if (!key) return NextResponse.json({ data: [], error: "Missing FMP_API_KEY" }, { status: 500 });
 
-    const res = await fetch(url.toString(), { cache: "no-store" });
-    if (!res.ok) {
-      return NextResponse.json(
-        { ok: false, error: `FMP error ${res.status}` },
-        { status: 502 }
-      );
+    const resp = await fetch(`${url}&apikey=${key}`, { next: { revalidate: 60 } });
+    if (!resp.ok) {
+      const text = await resp.text();
+      return NextResponse.json({ data: [], error: `FMP ${resp.status}: ${text.slice(0,200)}` }, { status: 502 });
     }
-    const json = await res.json();
-    const list = Array.isArray(json)
-      ? json
-      : Array.isArray(json?.data)
-      ? json.data
-      : [];
-
-    let rows = list.map((raw: any) => {
-      return {
-        date:
-          dateOnly(raw?.transactionDate) ||
-          dateOnly(raw?.date) ||
-          dateOnly(raw?.filed),
-        member:
-          raw?.representative ||
-          raw?.senator ||
-          raw?.politicianName ||
-          raw?.name ||
-          "",
-        ticker: raw?.ticker || raw?.assetTicker || "",
-        company:
-          raw?.assetDescription || raw?.company || raw?.asset_name || "",
-        action:
-          raw?.typeOfTransaction ||
-          raw?.transaction ||
-          raw?.type ||
-          raw?.action ||
-          "",
-        shares: raw?.shares || 0,
-        price: raw?.price || 0,
-        value: raw?.value || 0,
-        amount: raw?.amount || raw?.amountRange || "",
-        link: raw?.link || raw?.source || "",
-      };
-    });
-
-    // apply filters
-    if (from || to) {
-      const fromT = from ? new Date(from).getTime() : undefined;
-      const toT = to ? new Date(to).getTime() : undefined;
-      rows = rows.filter((r) => {
-        const t = r.date ? new Date(r.date).getTime() : NaN;
-        if (!Number.isFinite(t)) return false;
-        if (fromT && t < fromT) return false;
-        if (toT && t > toT) return false;
-        return true;
-      });
-    }
-    if (tickerQ) {
-      rows = rows.filter((r) => (r.ticker || "").toUpperCase() === tickerQ);
-    }
-    if (memberQ) {
-      rows = rows.filter((r) =>
-        (r.member || "").toLowerCase().includes(memberQ)
-      );
-    }
-
-    rows.sort((a, b) => (a.date > b.date ? -1 : 1));
-
-    return NextResponse.json({ ok: true, rows });
+    const raw = await resp.json();
+    const arr = Array.isArray(raw) ? raw : (raw?.data ?? []);
+    const data = arr.map(normalizeRow);
+    return NextResponse.json({ data });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Unexpected error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ data: [], error: e.message || "Unknown error" }, { status: 500 });
   }
 }
