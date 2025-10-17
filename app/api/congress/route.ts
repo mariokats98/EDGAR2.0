@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 type Chamber = "senate" | "house" | "all";
 type Mode = "symbol" | "name";
-type View = "search" | "latest";
+
+type TxFilter = "all" | "purchase" | "sale";
 
 /* ---------------- Endpoint builders ---------------- */
 
@@ -25,7 +26,6 @@ function searchEndpoint(
   }
 }
 
-// Latest (Most Recent) endpoints
 function latestEndpoints(chamber: Chamber) {
   const base = "https://financialmodelingprep.com/stable";
   if (chamber === "senate") return [`${base}/senate-latest`];
@@ -74,12 +74,22 @@ function extractAmount(r: any): string | null {
   );
 }
 
+// Canonicalize transaction type to "Purchase" / "Sale" when possible
+function normalizeTxType(raw: any): string | null {
+  if (!raw) return null;
+  const s = String(raw).toLowerCase();
+  if (s.includes("purchase") || s.includes("buy")) return "Purchase";
+  if (s.includes("sale") || s.includes("sell")) return "Sale";
+  // keep original for other types if any appear
+  return String(raw);
+}
+
 function normalizeRow(r: any) {
   return {
     memberName: extractMemberName(r),
     transactionDate:
       r.transactionDate ?? r.date ?? r.filing_date ?? r.reportedDate ?? null,
-    transactionType: r.transaction ?? r.type ?? null, // Purchase / Sale
+    transactionType: normalizeTxType(r.transaction ?? r.type ?? null),
     ticker: r.symbol ?? r.ticker ?? null,
     assetName: r.assetName ?? r.asset_description ?? null,
     assetType: r.assetType ?? null,
@@ -117,22 +127,32 @@ function inDateRange(
   return true;
 }
 
+function passTxFilter(tx: TxFilter, t: string | null) {
+  if (tx === "all") return true;
+  if (!t) return false;
+  const canonical = normalizeTxType(t);
+  if (tx === "purchase") return canonical === "Purchase";
+  if (tx === "sale") return canonical === "Sale";
+  return true;
+}
+
 /* ---------------- handler ---------------- */
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
 
+    // Determine view implicitly (latest if no q provided)
     const viewRaw = (searchParams.get("view") || "").toLowerCase();
-    // Backward-compatible: if view is "latest" OR (no view AND no q), treat as latest.
     const qRaw = (searchParams.get("q") || "").trim();
     const isLatest =
       viewRaw === "latest" || (!viewRaw && (!qRaw || qRaw.length === 0));
 
     const chamberParam = (searchParams.get("chamber") || (isLatest ? "all" : "senate")) as Chamber;
-    const mode = (searchParams.get("mode") || "symbol") as Mode; // only for search
+    const mode = (searchParams.get("mode") || "symbol") as Mode; // for search
     const start = searchParams.get("start"); // YYYY-MM-DD
-    const end = searchParams.get("end"); // YYYY-MM-DD
+    const end = searchParams.get("end");     // YYYY-MM-DD
+    const tx = (searchParams.get("tx") || "all").toLowerCase() as TxFilter;
     const limit = Math.max(
       1,
       Math.min(1000, Number(searchParams.get("limit") || 200))
@@ -149,7 +169,7 @@ export async function GET(req: NextRequest) {
     let rows: any[] = [];
 
     if (isLatest) {
-      // MOST RECENT: fetch senate/house (or both), merge
+      // MOST RECENT
       const urls = latestEndpoints(chamberParam).map(
         (u) => `${u}?apikey=${encodeURIComponent(key)}`
       );
@@ -167,7 +187,7 @@ export async function GET(req: NextRequest) {
       const payloads = await Promise.all(resps.map((r) => r.json()));
       rows = payloads.flatMap((p) => (Array.isArray(p) ? p : p?.data ?? []));
     } else {
-      // SEARCH: require q
+      // SEARCH
       if (!qRaw) {
         return NextResponse.json(
           { data: [], error: "Missing q" },
@@ -186,11 +206,13 @@ export async function GET(req: NextRequest) {
           { status: 400 }
         );
       }
+
       const url = `${searchEndpoint(
         chamberParam as Exclude<Chamber, "all">,
         mode,
         qRaw
       )}&apikey=${encodeURIComponent(key)}`;
+
       const resp = await fetch(url, { cache: "no-store" });
       if (!resp.ok) {
         const text = await resp.text();
@@ -203,22 +225,29 @@ export async function GET(req: NextRequest) {
       rows = Array.isArray(raw) ? raw : raw?.data ?? [];
     }
 
-    // Normalize → date filter → sort desc → limit
+    // Normalize
     let data = rows.map(normalizeRow);
 
+    // Date filter
     const hasDateFilter =
       (start && start.length === 10) || (end && end.length === 10);
     if (hasDateFilter) {
       data = data.filter((r) => inDateRange(r.transactionDate, start, end));
     }
 
+    // Transaction type filter
+    if (tx !== "all") {
+      data = data.filter((r) => passTxFilter(tx, r.transactionType));
+    }
+
+    // Sort newest first and limit
     data.sort((a, b) => {
       const ta = Date.parse(a.transactionDate || "");
       const tb = Date.parse(b.transactionDate || "");
       if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
       if (Number.isNaN(ta)) return 1;
       if (Number.isNaN(tb)) return -1;
-      return tb - ta; // newest first
+      return tb - ta;
     });
 
     if (limit) data = data.slice(0, limit);
