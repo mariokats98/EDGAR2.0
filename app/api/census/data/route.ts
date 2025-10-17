@@ -1,94 +1,82 @@
-import { NextResponse } from "next/server";
+// app/api/census/data/route.ts
+import { NextRequest, NextResponse } from "next/server";
 
 /**
- * GET /api/census/data?dataset=...&get=...&for=...&year=...
- * - Annual datasets (e.g., acs/acs5): require year (or we try /latest + fallbacks) AND a "for=" geography.
- * - Timeseries datasets (e.g., timeseries/eits/marts): require "time=..." and DO NOT accept "for=".
- *   Optional extra filters (e.g., category_code=44X72) are passed through.
+ * GET /api/census/data?name=GDP&start=YYYY-MM-DD&end=YYYY-MM-DD&limit=1000
+ * Proxies your cached FMP route (/api/fmp/...) and returns normalized rows:
+ *   { date, value, name, unit }
  */
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const dataset = (searchParams.get("dataset") || "acs/acs5").trim();
-  const get = (searchParams.get("get") || "NAME,B01001_001E").trim();
-  const key = process.env.CENSUS_API_KEY || "";
-  const isTimeseries = dataset.startsWith("timeseries/");
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams, origin } = new URL(req.url);
+    const name = (searchParams.get("name") || "").trim();
+    const start = searchParams.get("start"); // YYYY-MM-DD
+    const end = searchParams.get("end");     // YYYY-MM-DD
+    const limit = Math.max(1, Math.min(5000, Number(searchParams.get("limit") || 1000)));
 
-  if (!get) {
-    return NextResponse.json({ ok: false, error: "Missing get parameters." }, { status: 400 });
-  }
+    if (!name) {
+      return NextResponse.json({ data: [], error: "Missing indicator name" }, { status: 400 });
+    }
 
-  // Collect pass-through params except reserved ones we manage explicitly
-  const passthrough = new URLSearchParams();
-  for (const [k, v] of searchParams.entries()) {
-    if (["dataset", "get", "year", "for", "time"].includes(k)) continue;
-    if (v) passthrough.set(k, v);
-  }
-  if (key) passthrough.set("key", key);
-  passthrough.set("get", get);
+    // Hit your internal FMP proxy (keeps API key server-only, cached + rate-limited)
+    const upstream = new URL(origin + "/api/fmp/stable/economic-indicators");
+    upstream.searchParams.set("name", name);
 
-  // TIMESERIES
-  if (isTimeseries) {
-    const time = (searchParams.get("time") || "").trim();
-    if (!time) {
+    const resp = await fetch(upstream.toString(), { cache: "no-store" });
+    if (!resp.ok) {
+      const txt = await resp.text();
       return NextResponse.json(
-        { ok: false, error: 'Timeseries datasets require a "time" parameter, e.g. time=from 2021-01 to 2025-12.' },
-        { status: 400 }
+        { data: [], error: `Upstream error ${resp.status}: ${txt.slice(0, 200)}` },
+        { status: 502 }
       );
     }
-    // Do NOT include "for" for timeseries; Census returns 400 if present
-    passthrough.set("time", time);
 
-    const url = `https://api.census.gov/data/${dataset}?${passthrough.toString()}`;
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) {
-      const text = await r.text().catch(() => "");
-      return NextResponse.json(
-        { ok: false, error: `Census timeseries fetch failed: ${r.status} ${r.statusText}`, detail: text.slice(0, 400) },
-        { status: r.status }
-      );
+    type Raw = { date?: string; value?: number | string; name?: string; unit?: string };
+    const raw = await resp.json();
+    const rows: Raw[] = Array.isArray(raw) ? raw : (raw?.data ?? []);
+
+    let data = rows.map((r) => ({
+      date: r.date ?? null,
+      value: r.value ?? null,
+      name: r.name ?? name,
+      unit: r.unit ?? null,
+    }));
+
+    // Inclusive date filter
+    const inRange = (d: string | null) => {
+      if (!d) return false;
+      const t = Date.parse(d);
+      if (Number.isNaN(t)) return false;
+      if (start) {
+        const s = Date.parse(start);
+        if (!Number.isNaN(s) && t < s) return false;
+      }
+      if (end) {
+        const e = new Date(end);
+        const ePlus = new Date(e.getFullYear(), e.getMonth(), e.getDate() + 1).getTime();
+        if (t >= ePlus) return false;
+      }
+      return true;
+    };
+
+    if ((start && start.length === 10) || (end && end.length === 10)) {
+      data = data.filter((r) => inRange(r.date));
     }
-    const json = await r.json();
-    return NextResponse.json({ ok: true, data: json, used: url });
-  }
 
-  // ANNUAL (e.g., acs/acs5, acs/acs1, etc.)
-  // Must include a geography "for=" (e.g., us:1, state:*, county:* etc.)
-  const geoFor = (searchParams.get("for") || "us:1").trim();
-  if (!geoFor) {
-    return NextResponse.json({ ok: false, error: 'Annual datasets require a "for" geography, e.g., for=us:1.' }, { status: 400 });
-  }
-  passthrough.set("for", geoFor);
+    // Sort newest first
+    data.sort((a, b) => {
+      const ta = Date.parse(a.date || "");
+      const tb = Date.parse(b.date || "");
+      if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
+      if (Number.isNaN(ta)) return 1;
+      if (Number.isNaN(tb)) return -1;
+      return tb - ta;
+    });
 
-  // Resolve year path: use /latest if requested, then fall back
-  const yearQ = (searchParams.get("year") || "latest").trim().toLowerCase();
-  const bases: string[] = [];
-  if (yearQ === "latest") {
-    bases.push(`https://api.census.gov/data/latest/${dataset}`);
-    const now = new Date().getFullYear();
-    for (let y = now; y >= now - 6; y--) {
-      bases.push(`https://api.census.gov/data/${y}/${dataset}`);
-    }
-  } else {
-    bases.push(`https://api.census.gov/data/${yearQ}/${dataset}`);
-  }
+    if (limit) data = data.slice(0, limit);
 
-  let lastErr: any = null;
-  for (const base of bases) {
-    const url = `${base}?${passthrough.toString()}`;
-    const r = await fetch(url, { cache: "no-store" });
-    if (r.ok) {
-      const json = await r.json();
-      return NextResponse.json({ ok: true, data: json, used: url });
-    }
-    lastErr = `${r.status} ${r.statusText}`;
+    return NextResponse.json({ data });
+  } catch (e: any) {
+    return NextResponse.json({ data: [], error: e?.message || "Unknown error" }, { status: 500 });
   }
-
-  return NextResponse.json(
-    {
-      ok: false,
-      error: "Census annual fetch failed for all attempts.",
-      detail: { dataset, year: yearQ, for: geoFor, tried: bases, lastErr },
-    },
-    { status: 502 }
-  );
 }
