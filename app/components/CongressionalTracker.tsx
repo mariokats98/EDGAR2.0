@@ -5,6 +5,7 @@ import * as React from "react";
 type Chamber = "senate" | "house" | "all";
 type Mode = "symbol" | "name";
 type View = "search" | "latest";
+type TxFilter = "all" | "purchase" | "sale";
 
 type Row = {
   memberName: string | null;
@@ -41,27 +42,29 @@ const fmtDate = (s: string | null) => {
 };
 
 export default function CongressionalTracker() {
-  // New: Search vs Latest
+  // Views
   const [view, setView] = React.useState<View>("search");
 
-  // For "search" view:
+  // Search view state
   const [mode, setMode] = React.useState<Mode>("symbol");
   const [chamber, setChamber] = React.useState<Chamber>("senate");
   const [rawQuery, setRawQuery] = React.useState("AAPL");
   const debouncedQuery = useDebounced(rawQuery, 300);
 
-  // For "latest" view:
+  // Latest view chamber
   const [latestChamber, setLatestChamber] = React.useState<Chamber>("all");
 
-  // Date filters (apply to both views):
-  const [start, setStart] = React.useState<string>(""); // YYYY-MM-DD
-  const [end, setEnd] = React.useState<string>("");     // YYYY-MM-DD
+  // Date filter (both views)
+  const [start, setStart] = React.useState<string>("");
+  const [end, setEnd] = React.useState<string>("");
+
+  // NEW: transaction type filter (both views)
+  const [tx, setTx] = React.useState<TxFilter>("all");
 
   const [data, setData] = React.useState<Row[] | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // Build URL for fetch based on current view/filters
   const buildUrl = React.useCallback(() => {
     const url = new URL("/api/congress", window.location.origin);
     url.searchParams.set("view", view);
@@ -73,20 +76,21 @@ export default function CongressionalTracker() {
       url.searchParams.set("chamber", chamber);
     } else {
       url.searchParams.set("chamber", latestChamber);
-      // url.searchParams.set("limit", "200"); // optional
     }
 
     if (start) url.searchParams.set("start", start);
     if (end) url.searchParams.set("end", end);
 
+    // NEW: transaction type filter
+    url.searchParams.set("tx", tx);
+
     return url.toString();
-  }, [view, debouncedQuery, mode, chamber, latestChamber, start, end]);
+  }, [view, debouncedQuery, mode, chamber, latestChamber, start, end, tx]);
 
   React.useEffect(() => {
     const controller = new AbortController();
 
     async function run() {
-      // For search view, if q is empty, don't call server
       if (view === "search" && !debouncedQuery.trim()) {
         setData([]);
         setError(null);
@@ -237,12 +241,12 @@ export default function CongressionalTracker() {
               </button>
             </div>
 
-            {/* spacer to balance grid */}
+            {/* spacer */}
             <div />
           </>
         )}
 
-        {/* Date range (applies to both views) */}
+        {/* Date range */}
         <div style={dateWrap}>
           <label style={label}>
             <span style={lblTxt}>Start</span>
@@ -252,6 +256,34 @@ export default function CongressionalTracker() {
             <span style={lblTxt}>End</span>
             <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} style={dateInput} />
           </label>
+        </div>
+
+        {/* NEW: Transaction type filter */}
+        <div style={segWrap} role="tablist" aria-label="Transaction type">
+          <button
+            role="tab"
+            aria-selected={tx === "all"}
+            onClick={() => setTx("all")}
+            style={tx === "all" ? segActive : seg}
+          >
+            All
+          </button>
+          <button
+            role="tab"
+            aria-selected={tx === "purchase"}
+            onClick={() => setTx("purchase")}
+            style={tx === "purchase" ? segActive : seg}
+          >
+            Purchases
+          </button>
+          <button
+            role="tab"
+            aria-selected={tx === "sale"}
+            onClick={() => setTx("sale")}
+            style={tx === "sale" ? segActive : seg}
+          >
+            Sales
+          </button>
         </div>
       </div>
 
@@ -274,7 +306,7 @@ export default function CongressionalTracker() {
         <div style={emptyBox}>
           <div>No results found.</div>
           <div style={{ marginTop: 6, fontSize: 13, opacity: 0.8 }}>
-            Try different dates or (in Search) switch Ticker/Name or Senate/House.
+            Try different dates or change the transaction type filter.
           </div>
         </div>
       )}
@@ -371,7 +403,7 @@ const segActive: React.CSSProperties = {
 
 const toolbar: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "auto 1fr auto",
+  gridTemplateColumns: "auto 1fr auto auto",
   gap: 12,
   alignItems: "center",
   margin: "12px 0 14px",
