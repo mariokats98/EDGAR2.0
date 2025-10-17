@@ -58,12 +58,16 @@ export default function CongressionalTracker() {
   const [start, setStart] = React.useState<string>("");
   const [end, setEnd] = React.useState<string>("");
 
-  // NEW: transaction type filter (both views)
+  // Transaction type filter (both views)
   const [tx, setTx] = React.useState<TxFilter>("all");
 
+  // Data state
   const [data, setData] = React.useState<Row[] | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  // NEW: manual refresh key (Search button bumps this to force-fetch immediately)
+  const [refreshKey, setRefreshKey] = React.useState(0);
 
   const buildUrl = React.useCallback(() => {
     const url = new URL("/api/congress", window.location.origin);
@@ -81,7 +85,6 @@ export default function CongressionalTracker() {
     if (start) url.searchParams.set("start", start);
     if (end) url.searchParams.set("end", end);
 
-    // NEW: transaction type filter
     url.searchParams.set("tx", tx);
 
     return url.toString();
@@ -91,6 +94,7 @@ export default function CongressionalTracker() {
     const controller = new AbortController();
 
     async function run() {
+      // In search view, if q is empty, don't call server (keeps UI calm)
       if (view === "search" && !debouncedQuery.trim()) {
         setData([]);
         setError(null);
@@ -126,7 +130,28 @@ export default function CongressionalTracker() {
 
     run();
     return () => controller.abort();
-  }, [buildUrl, view, debouncedQuery]);
+  }, [buildUrl, view, debouncedQuery, refreshKey]);
+
+  // --- Buttons ---
+  const onSearchClick = () => {
+    // Trim the query and force a refetch now (ignores debounce wait)
+    if (view === "search") setRawQuery((v) => v.trim());
+    setRefreshKey((k) => k + 1);
+  };
+
+  const onResetClick = () => {
+    if (view === "search") {
+      setMode("symbol");
+      setChamber("senate");
+      setRawQuery("");          // clear query
+    } else {
+      setLatestChamber("all");
+    }
+    setStart("");
+    setEnd("");
+    setTx("all");
+    setRefreshKey((k) => k + 1); // refetch with clean filters
+  };
 
   return (
     <div style={wrap}>
@@ -187,7 +212,12 @@ export default function CongressionalTracker() {
               placeholder={mode === "symbol" ? "e.g., AAPL" : "e.g., Nancy Pelosi"}
               value={rawQuery}
               onChange={(e) => setRawQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") setRawQuery((v) => v.trim()); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  setRawQuery((v) => v.trim());
+                  onSearchClick();
+                }
+              }}
               style={search}
             />
 
@@ -241,7 +271,7 @@ export default function CongressionalTracker() {
               </button>
             </div>
 
-            {/* spacer */}
+            {/* spacer to balance grid */}
             <div />
           </>
         )}
@@ -258,7 +288,7 @@ export default function CongressionalTracker() {
           </label>
         </div>
 
-        {/* NEW: Transaction type filter */}
+        {/* Transaction type */}
         <div style={segWrap} role="tablist" aria-label="Transaction type">
           <button
             role="tab"
@@ -285,6 +315,16 @@ export default function CongressionalTracker() {
             Sales
           </button>
         </div>
+
+        {/* ACTION BUTTONS */}
+        <div style={btnRow}>
+          <button onClick={onSearchClick} disabled={loading} style={primaryBtn}>
+            {loading ? "Searching…" : "Search"}
+          </button>
+          <button onClick={onResetClick} disabled={loading} style={ghostBtn}>
+            Reset
+          </button>
+        </div>
       </div>
 
       {/* Error */}
@@ -306,7 +346,7 @@ export default function CongressionalTracker() {
         <div style={emptyBox}>
           <div>No results found.</div>
           <div style={{ marginTop: 6, fontSize: 13, opacity: 0.8 }}>
-            Try different dates or change the transaction type filter.
+            Try different dates or change the filters above.
           </div>
         </div>
       )}
@@ -403,7 +443,7 @@ const segActive: React.CSSProperties = {
 
 const toolbar: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "auto 1fr auto auto",
+  gridTemplateColumns: "auto 1fr auto auto auto",
   gap: 12,
   alignItems: "center",
   margin: "12px 0 14px",
@@ -433,6 +473,26 @@ const dateInput: React.CSSProperties = {
   border: "1px solid var(--line)",
   padding: "0 8px",
   fontSize: 13,
+};
+
+const btnRow: React.CSSProperties = { display: "inline-flex", gap: 8, alignItems: "center" };
+const baseBtn: React.CSSProperties = {
+  height: 38,
+  borderRadius: 10,
+  padding: "0 14px",
+  fontSize: 14,
+  cursor: "pointer",
+  border: "1px solid var(--line)",
+};
+const primaryBtn: React.CSSProperties = {
+  ...baseBtn,
+  background: "#111827",
+  color: "#fff",
+  border: "1px solid #111827",
+};
+const ghostBtn: React.CSSProperties = {
+  ...baseBtn,
+  background: "#fff",
 };
 
 const errBox: React.CSSProperties = {
