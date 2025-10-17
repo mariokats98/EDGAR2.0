@@ -2,8 +2,9 @@
 
 import * as React from "react";
 
-type Chamber = "senate" | "house";
+type Chamber = "senate" | "house" | "all";
 type Mode = "symbol" | "name";
+type View = "search" | "latest";
 
 type Row = {
   memberName: string | null;
@@ -32,9 +33,7 @@ function useDebounced<T>(value: T, delay = 300) {
   return debounced;
 }
 
-const fmt = (v: unknown) =>
-  v === null || v === undefined || v === "" ? "—" : String(v);
-
+const fmt = (v: unknown) => (v == null || v === "" ? "—" : String(v));
 const fmtDate = (s: string | null) => {
   if (!s) return "—";
   const d = new Date(s);
@@ -42,21 +41,54 @@ const fmtDate = (s: string | null) => {
 };
 
 export default function CongressionalTracker() {
+  // New: Search vs Latest
+  const [view, setView] = React.useState<View>("search");
+
+  // For "search" view:
   const [mode, setMode] = React.useState<Mode>("symbol");
   const [chamber, setChamber] = React.useState<Chamber>("senate");
   const [rawQuery, setRawQuery] = React.useState("AAPL");
   const debouncedQuery = useDebounced(rawQuery, 300);
 
+  // For "latest" view:
+  const [latestChamber, setLatestChamber] = React.useState<Chamber>("all");
+
+  // Date filters (apply to both views):
+  const [start, setStart] = React.useState<string>(""); // YYYY-MM-DD
+  const [end, setEnd] = React.useState<string>("");     // YYYY-MM-DD
+
   const [data, setData] = React.useState<Row[] | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  // Build URL for fetch based on current view/filters
+  const buildUrl = React.useCallback(() => {
+    const url = new URL("/api/congress", window.location.origin);
+    url.searchParams.set("view", view);
+
+    if (view === "search") {
+      const q = debouncedQuery.trim();
+      if (q) url.searchParams.set("q", q);
+      url.searchParams.set("mode", mode);
+      url.searchParams.set("chamber", chamber);
+    } else {
+      url.searchParams.set("chamber", latestChamber);
+      // optional: you can expose a limit picker; default is server’s 200
+      // url.searchParams.set("limit", "200");
+    }
+
+    if (start) url.searchParams.set("start", start);
+    if (end) url.searchParams.set("end", end);
+
+    return url.toString();
+  }, [view, debouncedQuery, mode, chamber, latestChamber, start, end]);
 
   React.useEffect(() => {
     const controller = new AbortController();
 
     async function run() {
-      const q = debouncedQuery.trim();
-      if (!q) {
+      // Validation: for search view, require q
+      if (view === "search" && !debouncedQuery.trim()) {
         setData([]);
         setError(null);
         return;
@@ -65,17 +97,11 @@ export default function CongressionalTracker() {
       setLoading(true);
       setError(null);
       try {
-        const url = new URL("/api/congress", window.location.origin);
-        url.searchParams.set("q", q);
-        url.searchParams.set("chamber", chamber);
-        url.searchParams.set("mode", mode);
-
-        const res = await fetch(url.toString(), {
+        const res = await fetch(buildUrl(), {
           signal: controller.signal,
           headers: { "cache-control": "no-store" },
         });
         const json: ApiResponse = await res.json();
-
         if (!res.ok) {
           setError(json?.error || `HTTP ${res.status}`);
           setData([]);
@@ -97,68 +123,136 @@ export default function CongressionalTracker() {
 
     run();
     return () => controller.abort();
-  }, [debouncedQuery, mode, chamber]);
+  }, [buildUrl]);
 
   return (
     <div style={wrap}>
       <header style={{ marginBottom: 8 }}>
         <h2 style={{ margin: 0, fontSize: 18 }}>Congressional Trades</h2>
         <p style={{ margin: "6px 0 0", color: "var(--muted)" as any }}>
-          Search disclosures by <strong>ticker</strong> or <strong>member name</strong>.
+          Search by <strong>ticker</strong> or <strong>member name</strong>, or view the <strong>most recent</strong> disclosures.
         </p>
       </header>
 
-      <div style={toolbar} aria-label="Search and filters">
-        {/* Mode toggle */}
-        <div style={segWrap} role="tablist" aria-label="Search mode">
-          <button
-            role="tab"
-            aria-selected={mode === "symbol"}
-            onClick={() => setMode("symbol")}
-            style={mode === "symbol" ? segActive : seg}
-          >
-            Ticker
-          </button>
-          <button
-            role="tab"
-            aria-selected={mode === "name"}
-            onClick={() => setMode("name")}
-            style={mode === "name" ? segActive : seg}
-          >
-            Member name
-          </button>
-        </div>
+      {/* View tabs: Search | Most Recent */}
+      <div style={segWrap} role="tablist" aria-label="View">
+        <button
+          role="tab"
+          aria-selected={view === "search"}
+          onClick={() => setView("search")}
+          style={view === "search" ? segActive : seg}
+        >
+          Search
+        </button>
+        <button
+          role="tab"
+          aria-selected={view === "latest"}
+          onClick={() => setView("latest")}
+          style={view === "latest" ? segActive : seg}
+        >
+          Most Recent
+        </button>
+      </div>
 
-        {/* Search input */}
-        <input
-          aria-label={mode === "symbol" ? "Ticker search" : "Member name search"}
-          placeholder={mode === "symbol" ? "e.g., AAPL" : "e.g., Nancy Pelosi"}
-          value={rawQuery}
-          onChange={(e) => setRawQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") setRawQuery((v) => v.trim());
-          }}
-          style={search}
-        />
+      {/* Filters row */}
+      <div style={toolbar} aria-label="Filters">
+        {view === "search" ? (
+          <>
+            {/* Search mode (Ticker / Name) */}
+            <div style={segWrap} role="tablist" aria-label="Search mode">
+              <button
+                role="tab"
+                aria-selected={mode === "symbol"}
+                onClick={() => setMode("symbol")}
+                style={mode === "symbol" ? segActive : seg}
+              >
+                Ticker
+              </button>
+              <button
+                role="tab"
+                aria-selected={mode === "name"}
+                onClick={() => setMode("name")}
+                style={mode === "name" ? segActive : seg}
+              >
+                Member name
+              </button>
+            </div>
 
-        {/* Chamber toggle */}
-        <div style={segWrap} role="tablist" aria-label="Chamber">
-          <button
-            role="tab"
-            aria-selected={chamber === "senate"}
-            onClick={() => setChamber("senate")}
-            style={chamber === "senate" ? segActive : seg}
-          >
-            Senate
-          </button>
-          <button
-            role="tab"
-            aria-selected={chamber === "house"}
-            onClick={() => setChamber("house")}
-            style={chamber === "house" ? segActive : seg}
-          >
-            House
-          </button>
+            {/* Query input */}
+            <input
+              aria-label={mode === "symbol" ? "Ticker search" : "Member name search"}
+              placeholder={mode === "symbol" ? "e.g., AAPL" : "e.g., Nancy Pelosi"}
+              value={rawQuery}
+              onChange={(e) => setRawQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") setRawQuery((v) => v.trim()); }}
+              style={search}
+            />
+
+            {/* Chamber (Senate / House) */}
+            <div style={segWrap} role="tablist" aria-label="Chamber">
+              <button
+                role="tab"
+                aria-selected={chamber === "senate"}
+                onClick={() => setChamber("senate")}
+                style={chamber === "senate" ? segActive : seg}
+              >
+                Senate
+              </button>
+              <button
+                role="tab"
+                aria-selected={chamber === "house"}
+                onClick={() => setChamber("house")}
+                style={chamber === "house" ? segActive : seg}
+              >
+                House
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Latest chamber (All / Senate / House) */}
+            <div style={segWrap} role="tablist" aria-label="Latest chamber">
+              <button
+                role="tab"
+                aria-selected={latestChamber === "all"}
+                onClick={() => setLatestChamber("all")}
+                style={latestChamber === "all" ? segActive : seg}
+              >
+                All
+              </button>
+              <button
+                role="tab"
+                aria-selected={latestChamber === "senate"}
+                onClick={() => setLatestChamber("senate")}
+                style={latestChamber === "senate" ? segActive : seg}
+              >
+                Senate
+              </button>
+              <button
+                role="tab"
+                aria-selected={latestChamber === "house"}
+                onClick={() => setLatestChamber("house")}
+                style={latestChamber === "house" ? segActive : seg}
+              >
+                House
+              </button>
+            </div>
+
+            {/* Placeholder to keep grid balanced */}
+            <div />
+          </>
+        )}
+
+        {/* Date range (applies to both views) */}
+        <div style={dateWrap}>
+          <label style={label}>
+            <span style={lblTxt}>Start</span>
+            <input type="date" value={start} onChange={(e) => setStart(e.target.value)} style={dateInput} />
+          </label>
+          <label style={label}>
+            <span style={lblTxt}>End</span>
+            <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} style={dateInput} />
+          </label>
         </div>
       </div>
 
@@ -168,7 +262,7 @@ export default function CongressionalTracker() {
           <strong>Couldn’t load results.</strong>
           <div style={{ marginTop: 6 }}>{error}</div>
           <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-            Try switching Ticker/Member or Senate/House, or check your spelling.
+            Try adjusting filters or dates.
           </div>
         </div>
       )}
@@ -179,9 +273,9 @@ export default function CongressionalTracker() {
       {/* Empty */}
       {!loading && !error && data && data.length === 0 && (
         <div style={emptyBox}>
-          <div>No results for “{debouncedQuery}”.</div>
+          <div>No results found.</div>
           <div style={{ marginTop: 6, fontSize: 13, opacity: 0.8 }}>
-            Try switching <em>Ticker/Member</em> or <em>Senate/House</em>.
+            Try different dates or (in Search) switch Ticker/Name or Senate/House.
           </div>
         </div>
       )}
@@ -226,12 +320,8 @@ export default function CongressionalTracker() {
                   <Td>{fmt(r.amount)}</Td>
                   <Td>
                     {r.sourceUrl ? (
-                      <a href={r.sourceUrl} target="_blank" rel="noreferrer" style={link}>
-                        View
-                      </a>
-                    ) : (
-                      "—"
-                    )}
+                      <a href={r.sourceUrl} target="_blank" rel="noreferrer" style={link}>View</a>
+                    ) : "—"}
                   </Td>
                 </tr>
               ))}
@@ -243,15 +333,11 @@ export default function CongressionalTracker() {
   );
 }
 
-/* Helpers */
-function Th({ children }: { children: React.ReactNode }) {
-  return <th style={th}>{children}</th>;
-}
-function Td({ children }: { children: React.ReactNode }) {
-  return <td style={td}>{children}</td>;
-}
+/* mini components */
+function Th({ children }: { children: React.ReactNode }) { return <th style={th}>{children}</th>; }
+function Td({ children }: { children: React.ReactNode }) { return <td style={td}>{children}</td>; }
 
-/* Styles */
+/* styles */
 const wrap: React.CSSProperties = {
   ["--muted" as any]: "#6b7280",
   ["--line" as any]: "rgba(0,0,0,0.1)",
@@ -261,20 +347,13 @@ const wrap: React.CSSProperties = {
     'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans"',
 };
 
-const toolbar: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "auto 1fr auto",
-  gap: 12,
-  alignItems: "center",
-  margin: "12px 0 14px",
-};
-
 const segWrap: React.CSSProperties = {
   display: "inline-flex",
   border: "1px solid var(--line)",
   borderRadius: 10,
   overflow: "hidden",
   height: 38,
+  margin: "10px 0",
 };
 
 const seg: React.CSSProperties = {
@@ -291,6 +370,14 @@ const segActive: React.CSSProperties = {
   color: "#fff",
 };
 
+const toolbar: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "auto 1fr auto",
+  gap: 12,
+  alignItems: "center",
+  margin: "12px 0 14px",
+};
+
 const search: React.CSSProperties = {
   height: 38,
   borderRadius: 10,
@@ -299,6 +386,22 @@ const search: React.CSSProperties = {
   fontSize: 14,
   width: "100%",
   outline: "none",
+};
+
+const dateWrap: React.CSSProperties = {
+  display: "inline-flex",
+  gap: 8,
+  alignItems: "center",
+};
+
+const label: React.CSSProperties = { display: "inline-flex", flexDirection: "column", gap: 4 };
+const lblTxt: React.CSSProperties = { fontSize: 11, color: "var(--muted)" as any };
+const dateInput: React.CSSProperties = {
+  height: 34,
+  borderRadius: 8,
+  border: "1px solid var(--line)",
+  padding: "0 8px",
+  fontSize: 13,
 };
 
 const errBox: React.CSSProperties = {
@@ -310,25 +413,10 @@ const errBox: React.CSSProperties = {
   marginBottom: 12,
 };
 
-const muted: React.CSSProperties = {
-  padding: "8px 0 14px",
-  color: "var(--muted)",
-};
+const muted: React.CSSProperties = { padding: "8px 0 14px", color: "var(--muted)" as any };
+const emptyBox: React.CSSProperties = { padding: 20, border: "1px dashed var(--line)", borderRadius: 10, textAlign: "center", marginTop: 8 };
 
-const emptyBox: React.CSSProperties = {
-  padding: 20,
-  border: "1px dashed var(--line)",
-  borderRadius: 10,
-  textAlign: "center",
-  marginTop: 8,
-};
-
-const tbl: React.CSSProperties = {
-  width: "100%",
-  borderCollapse: "separate",
-  borderSpacing: 0,
-  fontSize: 14,
-};
+const tbl: React.CSSProperties = { width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 14 };
 
 const th: React.CSSProperties = {
   textAlign: "left",
@@ -337,37 +425,15 @@ const th: React.CSSProperties = {
   fontSize: 12,
   textTransform: "uppercase",
   letterSpacing: 0.4,
-  color: "var(--muted)",
+  color: "var(--muted)" as any,
   position: "sticky",
   top: 0,
   background: "#fff",
   borderBottom: "1px solid var(--line)",
 };
 
-const td: React.CSSProperties = {
-  padding: "12px",
-  borderTop: "1px solid var(--line)",
-  verticalAlign: "top",
-  whiteSpace: "nowrap",
-};
-
+const td: React.CSSProperties = { padding: "12px", borderTop: "1px solid var(--line)", verticalAlign: "top", whiteSpace: "nowrap" };
 const trAlt: React.CSSProperties = { background: "var(--bgAlt)" };
-
-const link: React.CSSProperties = {
-  textDecoration: "underline",
-};
-
-const pill: React.CSSProperties = {
-  display: "inline-block",
-  background: "var(--bgAlt)",
-  border: "1px solid var(--line)",
-  borderRadius: 6,
-  padding: "2px 6px",
-  fontSize: 12,
-};
-
-const subtle: React.CSSProperties = {
-  fontSize: 12,
-  color: "var(--muted)",
-  marginTop: 2,
-};
+const link: React.CSSProperties = { textDecoration: "underline" };
+const pill: React.CSSProperties = { display: "inline-block", background: "var(--bgAlt)", border: "1px solid var(--line)", borderRadius: 6, padding: "2px 6px", fontSize: 12 };
+const subtle: React.CSSProperties = { fontSize: 12, color: "var(--muted)" as any, marginTop: 2 };
