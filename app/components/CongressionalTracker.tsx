@@ -1,4 +1,3 @@
-// app/components/CongressionalTracker.tsx
 "use client";
 
 import * as React from "react";
@@ -7,7 +6,6 @@ type Chamber = "senate" | "house";
 type Mode = "symbol" | "name";
 
 type Row = {
-  chamber: string | null;
   memberName: string | null;
   transactionDate: string | null;
   transactionType: string | null;
@@ -16,10 +14,7 @@ type Row = {
   assetType: string | null;
   owner: string | null;
   amount: string | null;
-  shares: number | string | null;
-  price: number | string | null;
   sourceUrl: string | null;
-  filingDate: string | null;
   state: string | null;
   party: string | null;
 };
@@ -47,9 +42,8 @@ const fmtDate = (s: string | null) => {
 };
 
 export default function CongressionalTracker() {
-  // Defaults so the table shows data immediately on load
-  const [mode, setMode] = React.useState<Mode>("symbol");  // "symbol" | "name"
-  const [chamber, setChamber] = React.useState<Chamber>("senate"); // "senate" | "house"
+  const [mode, setMode] = React.useState<Mode>("symbol");
+  const [chamber, setChamber] = React.useState<Chamber>("senate");
   const [rawQuery, setRawQuery] = React.useState("AAPL");
   const debouncedQuery = useDebounced(rawQuery, 300);
 
@@ -200,14 +194,11 @@ export default function CongressionalTracker() {
               <tr>
                 <Th>Date</Th>
                 <Th>Member</Th>
-                <Th>Chamber</Th>
                 <Th>Ticker</Th>
                 <Th>Asset</Th>
                 <Th>Type</Th>
                 <Th>Owner</Th>
                 <Th>Amount</Th>
-                <Th>Shares</Th>
-                <Th>Price</Th>
                 <Th>Source</Th>
               </tr>
             </thead>
@@ -223,7 +214,6 @@ export default function CongressionalTracker() {
                       </span>
                     </div>
                   </Td>
-                  <Td>{fmt(r.chamber)}</Td>
                   <Td><code style={pill}>{fmt(r.ticker)}</code></Td>
                   <Td>
                     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -234,8 +224,6 @@ export default function CongressionalTracker() {
                   <Td>{fmt(r.transactionType)}</Td>
                   <Td>{fmt(r.owner)}</Td>
                   <Td>{fmt(r.amount)}</Td>
-                  <Td>{fmt(r.shares)}</Td>
-                  <Td>{fmt(r.price)}</Td>
                   <Td>
                     {r.sourceUrl ? (
                       <a href={r.sourceUrl} target="_blank" rel="noreferrer" style={link}>
@@ -251,15 +239,11 @@ export default function CongressionalTracker() {
           </table>
         </div>
       )}
-
-      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
-        Note: <em>shares</em> and <em>price</em> may be absent in the source; “—” is shown when missing.
-      </div>
     </div>
   );
 }
 
-/* ——— tiny presentation helpers ——— */
+/* Helpers */
 function Th({ children }: { children: React.ReactNode }) {
   return <th style={th}>{children}</th>;
 }
@@ -267,7 +251,7 @@ function Td({ children }: { children: React.ReactNode }) {
   return <td style={td}>{children}</td>;
 }
 
-/* ——— inline styles (dependency-free) ——— */
+/* Styles */
 const wrap: React.CSSProperties = {
   ["--muted" as any]: "#6b7280",
   ["--line" as any]: "rgba(0,0,0,0.1)",
