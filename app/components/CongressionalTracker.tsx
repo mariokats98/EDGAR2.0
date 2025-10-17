@@ -73,8 +73,7 @@ export default function CongressionalTracker() {
       url.searchParams.set("chamber", chamber);
     } else {
       url.searchParams.set("chamber", latestChamber);
-      // optional: you can expose a limit picker; default is server’s 200
-      // url.searchParams.set("limit", "200");
+      // url.searchParams.set("limit", "200"); // optional
     }
 
     if (start) url.searchParams.set("start", start);
@@ -87,7 +86,7 @@ export default function CongressionalTracker() {
     const controller = new AbortController();
 
     async function run() {
-      // Validation: for search view, require q
+      // For search view, if q is empty, don't call server
       if (view === "search" && !debouncedQuery.trim()) {
         setData([]);
         setError(null);
@@ -123,7 +122,7 @@ export default function CongressionalTracker() {
 
     run();
     return () => controller.abort();
-  }, [buildUrl]);
+  }, [buildUrl, view, debouncedQuery]);
 
   return (
     <div style={wrap}>
@@ -158,7 +157,7 @@ export default function CongressionalTracker() {
       <div style={toolbar} aria-label="Filters">
         {view === "search" ? (
           <>
-            {/* Search mode (Ticker / Name) */}
+            {/* Search mode */}
             <div style={segWrap} role="tablist" aria-label="Search mode">
               <button
                 role="tab"
@@ -188,7 +187,7 @@ export default function CongressionalTracker() {
               style={search}
             />
 
-            {/* Chamber (Senate / House) */}
+            {/* Search chamber */}
             <div style={segWrap} role="tablist" aria-label="Chamber">
               <button
                 role="tab"
@@ -210,7 +209,7 @@ export default function CongressionalTracker() {
           </>
         ) : (
           <>
-            {/* Latest chamber (All / Senate / House) */}
+            {/* Latest chamber */}
             <div style={segWrap} role="tablist" aria-label="Latest chamber">
               <button
                 role="tab"
@@ -238,7 +237,7 @@ export default function CongressionalTracker() {
               </button>
             </div>
 
-            {/* Placeholder to keep grid balanced */}
+            {/* spacer to balance grid */}
             <div />
           </>
         )}
