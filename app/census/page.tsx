@@ -1,221 +1,339 @@
+// app/census/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import * as React from "react";
 
-type TableRow = string[];
+type Row = {
+  date: string | null;
+  value: number | string | null;
+  name: string | null;
+  unit: string | null;
+};
 
-async function getJSON(url: string) {
-  const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  return r.json();
+type ApiResponse =
+  | { data: Row[]; error?: undefined }
+  | { data: Row[]; error: string };
+
+const presetIndicators = [
+  "Population",
+  "GDP",
+  "CPI",
+  "Unemployment Rate",
+  "PPI",
+  "Retail Sales",
+  "Industrial Production",
+  "Consumer Confidence",
+];
+
+function useDebounced<T>(value: T, delay = 300) {
+  const [debounced, setDebounced] = React.useState(value);
+  React.useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(id);
+  }, [value, delay]);
+  return debounced;
 }
 
+const fmt = (v: unknown) => (v == null || v === "" ? "—" : String(v));
+const fmtDate = (s: string | null) => {
+  if (!s) return "—";
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString();
+};
+
 export default function CensusPage() {
-  const [dataset, setDataset] = useState<"acs/acs5" | "timeseries/eits/marts">("acs/acs5");
-  const [year, setYear] = useState("latest");        // annual only
-  const [geoFor, setGeoFor] = useState("us:1");      // annual only
-  const [timeStr, setTimeStr] = useState("from 2021-01 to 2025-12"); // timeseries only
-  const [variables, setVariables] = useState("NAME,B01001_001E");    // changes per dataset
-  const [category, setCategory] = useState("44X72"); // MARTS: total retail & food services
+  // Indicator name
+  const [name, setName] = React.useState<string>("Population");
+  const debouncedName = useDebounced(name, 250);
 
-  const [vars, setVars] = useState<any>({});
-  const [varsLoading, setVarsLoading] = useState(false);
-  const [varsErr, setVarsErr] = useState<string | null>(null);
+  // Dates
+  const [start, setStart] = React.useState<string>("");
+  const [end, setEnd] = React.useState<string>("");
 
-  const [rows, setRows] = useState<TableRow[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  // Fetching
+  const [data, setData] = React.useState<Row[] | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = React.useState(0); // Search button forces refresh
 
-  const isTimeseries = dataset.startsWith("timeseries/");
+  const buildUrl = React.useCallback(() => {
+    const url = new URL("/api/census/data", window.location.origin);
+    if (debouncedName.trim()) url.searchParams.set("name", debouncedName.trim());
+    if (start) url.searchParams.set("start", start);
+    if (end) url.searchParams.set("end", end);
+    url.searchParams.set("limit", "1000");
+    return url.toString();
+  }, [debouncedName, start, end]);
 
-  // Load variables list
-  useEffect(() => {
-    setVarsLoading(true);
-    setVarsErr(null);
-    setVars({});
-    const params = new URLSearchParams({ dataset });
-    if (!isTimeseries) params.set("year", year || "latest");
-    getJSON(`/api/census/variables?${params.toString()}`)
-      .then((j) => setVars(j?.data?.variables || j?.variables || {}))
-      .catch((e) => setVarsErr(e.message || "Failed to load variables"))
-      .finally(() => setVarsLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataset, year]);
+  React.useEffect(() => {
+    const controller = new AbortController();
 
-  // Set sensible defaults per dataset
-  useEffect(() => {
-    if (isTimeseries) {
-      setVariables("cell_value,category_code,seasonally_adj,time");
-    } else {
-      setVariables("NAME,B01001_001E");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataset]);
-
-  async function run() {
-    setLoading(true);
-    setErr(null);
-    setRows(null);
-    try {
-      const qs = new URLSearchParams({ dataset, get: variables });
-      if (isTimeseries) {
-        qs.set("time", timeStr);
-        if (category) qs.set("category_code", category); // MARTS filter
-      } else {
-        qs.set("year", year || "latest");
-        qs.set("for", geoFor || "us:1");
+    async function run() {
+      if (!debouncedName.trim()) {
+        setData([]);
+        setError(null);
+        return;
       }
-      const j = await getJSON(`/api/census/data?${qs.toString()}`);
-      const data: TableRow[] = j?.data;
-      if (!Array.isArray(data) || data.length === 0) throw new Error("No data");
-      setRows(data);
-    } catch (e: any) {
-      setErr(e.message || "Fetch failed");
-    } finally {
-      setLoading(false);
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(buildUrl(), {
+          signal: controller.signal,
+          headers: { "cache-control": "no-store" },
+        });
+        const json: ApiResponse = await res.json();
+        if (!res.ok) {
+          setError(json?.error || `HTTP ${res.status}`);
+          setData([]);
+        } else if ("error" in json && json.error) {
+          setError(json.error);
+          setData(json.data || []);
+        } else {
+          setData(Array.isArray(json.data) ? json.data : []);
+        }
+      } catch (e: any) {
+        if (e?.name !== "AbortError") {
+          setError(e?.message || "Unexpected error");
+          setData([]);
+        }
+      } finally {
+        setLoading(false);
+      }
     }
-  }
 
-  // Chart helper: pick x=time (if present) else first col; y=first numeric col after x
-  const chartMeta = useMemo(() => {
-    if (!rows || rows.length < 2) return null;
-    const header = rows[0];
-    let xIdx = header.findIndex((h) => /time|date/i.test(h));
-    if (xIdx < 0) xIdx = 0;
-    let yIdx = header.findIndex((h, i) => i !== xIdx && rows.slice(1).some((r) => Number.isFinite(Number(r[i]))));
-    if (yIdx < 0) yIdx = 1;
-    return { xIdx, yIdx, header };
-  }, [rows]);
+    run();
+    return () => controller.abort();
+  }, [buildUrl, debouncedName, refreshKey]);
+
+  const onSearch = () => setRefreshKey((k) => k + 1);
+  const onReset = () => {
+    setName("Population");
+    setStart("");
+    setEnd("");
+    setRefreshKey((k) => k + 1);
+  };
+
+  // Build sparkline (last up to 30 obs, chronological)
+  const spark = React.useMemo(() => {
+    const rows = (data || []).slice(0, 30).slice().reverse();
+    const values = rows
+      .map((r) => (typeof r.value === "string" ? Number(r.value) : (r.value as number)))
+      .filter((v) => Number.isFinite(v)) as number[];
+    if (values.length < 2) return null;
+    const w = 120, h = 28, pad = 2;
+    const min = Math.min(...values), max = Math.max(...values);
+    const norm = (v: number) =>
+      max === min ? h / 2 : h - pad - ((v - min) / (max - min)) * (h - pad * 2);
+    const step = (w - pad * 2) / (values.length - 1);
+    const d = values
+      .map((v, i) => `${i === 0 ? "M" : "L"}${pad + i * step},${norm(v)}`)
+      .join(" ");
+    return { d, w, h };
+  }, [data]);
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-white to-slate-50">
-      <section className="mx-auto max-w-6xl px-4 py-8">
-        <h1 className="text-2xl font-semibold">U.S. Census</h1>
-        <p className="text-gray-600 text-sm mb-4">Live queries with correct parameters for each dataset.</p>
+    <main className="mx-auto max-w-6xl px-4 py-8">
+      <div style={wrap}>
+        <header style={{ marginBottom: 8 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>Census & Macro (FMP)</h2>
+          <p style={{ margin: "6px 0 0", color: "var(--muted)" as any }}>
+            Explore economic indicators via FMP (e.g., <em>Population</em>, <em>GDP</em>, <em>CPI</em>, <em>Unemployment Rate</em>).
+          </p>
+        </header>
 
-        <div className="rounded-2xl border bg-white p-4 space-y-3">
-          <div className="flex flex-wrap gap-3">
-            <label>
-              <div className="text-sm text-gray-700">Dataset</div>
-              <select
-                value={dataset}
-                onChange={(e) => setDataset(e.target.value as any)}
-                className="border rounded-md px-3 py-2"
-              >
-                <option value="acs/acs5">ACS 5-year (annual)</option>
-                <option value="timeseries/eits/marts">Retail Trade (MARTS, timeseries)</option>
-              </select>
-            </label>
-
-            {!isTimeseries && (
-              <>
-                <label>
-                  <div className="text-sm text-gray-700">Year (or “latest”)</div>
-                  <input value={year} onChange={(e) => setYear(e.target.value)} className="border rounded-md px-3 py-2 w-28" />
-                </label>
-                <label>
-                  <div className="text-sm text-gray-700">Geography (for)</div>
-                  <input value={geoFor} onChange={(e) => setGeoFor(e.target.value)} className="border rounded-md px-3 py-2 w-36" placeholder="us:1" />
-                </label>
-              </>
-            )}
-
-            {isTimeseries && (
-              <>
-                <label>
-                  <div className="text-sm text-gray-700">Time window</div>
-                  <input
-                    value={timeStr}
-                    onChange={(e) => setTimeStr(e.target.value)}
-                    className="border rounded-md px-3 py-2 w-64"
-                    placeholder="from 2021-01 to 2025-12"
-                  />
-                </label>
-                <label>
-                  <div className="text-sm text-gray-700">category_code</div>
-                  <input
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                    className="border rounded-md px-3 py-2 w-28"
-                    placeholder="44X72"
-                  />
-                </label>
-              </>
-            )}
-
-            <label className="flex-1 min-w-[260px]">
-              <div className="text-sm text-gray-700">
-                Variables {varsLoading ? <span className="text-xs text-gray-500">(loading…)</span> : null}
-              </div>
-              <input value={variables} onChange={(e) => setVariables(e.target.value)} className="border rounded-md px-3 py-2 w-full" />
-            </label>
-
-            <button
-              onClick={run}
-              disabled={loading || varsLoading}
-              className="px-4 py-2 rounded-md bg-black text-white text-sm disabled:opacity-60 h-[38px] self-end"
-            >
-              {loading ? "Getting…" : "Get data"}
-            </button>
+        {/* Controls */}
+        <div style={toolbar} aria-label="Filters">
+          <div className="relative">
+            <input
+              aria-label="Indicator name"
+              list="indicator-list"
+              placeholder="e.g., Population"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") onSearch(); }}
+              className="h-10 w-full rounded-lg border px-3 text-sm outline-none bg-white"
+            />
+            <datalist id="indicator-list">
+              {presetIndicators.map((p) => <option key={p} value={p} />)}
+            </datalist>
+            <div className="mt-1 text-[11px] text-gray-500">
+              Must match FMP’s indicator <code>name</code> (e.g., <code>Population</code>, <code>GDP</code>, <code>CPI</code>).
+            </div>
           </div>
 
-          {varsErr ? (
-            <div className="text-sm text-red-600">Variables error: {varsErr}</div>
-          ) : (
-            <details className="mt-1">
-              <summary className="text-sm text-gray-700 cursor-pointer">Browse variables (first 30)</summary>
-              <div className="mt-2 max-h-48 overflow-auto rounded border">
-                <ul className="text-xs">
-                  {Object.entries(vars)
-                    .slice(0, 30)
-                    .map(([k, meta]: any) => (
-                      <li key={k} className="px-3 py-1 border-b last:border-0">
-                        <code className="font-mono">{k}</code> — {meta?.label || ""}
-                      </li>
-                    ))}
-                </ul>
-              </div>
-            </details>
-          )}
+          <div style={dateWrap}>
+            <label style={label}>
+              <span style={lblTxt}>Start</span>
+              <input type="date" value={start} onChange={(e) => setStart(e.target.value)} style={dateInput} />
+            </label>
+            <label style={label}>
+              <span style={lblTxt}>End</span>
+              <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} style={dateInput} />
+            </label>
+          </div>
+
+          <div style={btnRow}>
+            <button onClick={onSearch} disabled={loading} style={primaryBtn}>
+              {loading ? "Searching…" : "Search"}
+            </button>
+            <button onClick={onReset} disabled={loading} style={ghostBtn}>
+              Reset
+            </button>
+          </div>
         </div>
 
-        <div className="mt-6">
-          {err && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{err}</div>}
+        {/* Error */}
+        {error && (
+          <div role="alert" style={errBox}>
+            <strong>Couldn’t load results.</strong>
+            <div style={{ marginTop: 6 }}>{error}</div>
+            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+              Try a different indicator name or adjust dates.
+            </div>
+          </div>
+        )}
 
-          {rows && (
-            <>
-              <div className="rounded-2xl border bg-white p-4 overflow-x-auto">
-                <div className="text-sm font-medium mb-2">Data (first 200 rows)</div>
-                <table className="min-w-[720px] text-sm">
-                  <thead>
-                    <tr className="bg-gray-50">
-                      {rows[0].map((h, i) => (
-                        <th key={i} className="px-3 py-2 text-left font-medium text-gray-700 border-b">
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.slice(1, 201).map((r, i) => (
-                      <tr key={i} className="border-b last:border-0">
-                        {r.map((c, j) => (
-                          <td key={j} className="px-3 py-2 whitespace-nowrap">
-                            {c}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {rows.length > 201 && <div className="text-xs text-gray-500 mt-2">Showing first 200 rows.</div>}
-              </div>
-            </>
-          )}
+        {/* Loading */}
+        {loading && <div style={muted}>Loading…</div>}
 
-          {!rows && !err && <div className="text-sm text-gray-600">Pick a dataset and click “Get data”.</div>}
-        </div>
-      </section>
+        {/* Sparkline */}
+        {!loading && !error && data && data.length > 1 && spark && (
+          <div style={{ margin: "8px 0 12px", display: "flex", alignItems: "center", gap: 8 }}>
+            <svg width={spark.w} height={spark.h} viewBox={`0 0 ${spark.w} ${spark.h}`}>
+              <path d={spark.d} fill="none" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+            <span style={{ fontSize: 12, color: "var(--muted)" as any }}>
+              Last {Math.min(30, data.length)} observations
+            </span>
+          </div>
+        )}
+
+        {/* Empty */}
+        {!loading && !error && data && data.length === 0 && (
+          <div style={emptyBox}>
+            <div>No results found for “{name}”.</div>
+            <div style={{ marginTop: 6, fontSize: 13, opacity: 0.8 }}>
+              Try a different indicator (e.g., GDP, CPI, Unemployment Rate).
+            </div>
+          </div>
+        )}
+
+        {/* Table */}
+        {!loading && !error && data && data.length > 0 && (
+          <div style={{ overflow: "auto", borderRadius: 10, border: "1px solid var(--line)" }}>
+            <table style={tbl}>
+              <thead>
+                <tr>
+                  <Th>Date</Th>
+                  <Th>Indicator</Th>
+                  <Th>Value</Th>
+                  <Th>Unit</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((r, i) => (
+                  <tr key={i} style={i % 2 ? trAlt : undefined}>
+                    <Td>{fmtDate(r.date)}</Td>
+                    <Td>{fmt(r.name)}</Td>
+                    <Td>{fmt(r.value)}</Td>
+                    <Td>{fmt(r.unit)}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </main>
   );
 }
+
+/* tiny elements */
+function Th({ children }: { children: React.ReactNode }) { return <th style={th}>{children}</th>; }
+function Td({ children }: { children: React.ReactNode }) { return <td style={td}>{children}</td>; }
+
+/* styles */
+const wrap: React.CSSProperties = {
+  ["--muted" as any]: "#6b7280",
+  ["--line" as any]: "rgba(0,0,0,0.1)",
+  ["--bgAlt" as any]: "rgba(0,0,0,0.03)",
+  color: "#0f172a",
+  fontFamily:
+    'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans"',
+};
+
+const toolbar: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(260px, 1fr) auto auto",
+  gap: 12,
+  alignItems: "center",
+  margin: "12px 0 14px",
+};
+
+const dateWrap: React.CSSProperties = {
+  display: "inline-flex",
+  gap: 8,
+  alignItems: "center",
+};
+
+const label: React.CSSProperties = { display: "inline-flex", flexDirection: "column", gap: 4 };
+const lblTxt: React.CSSProperties = { fontSize: 11, color: "var(--muted)" as any };
+const dateInput: React.CSSProperties = {
+  height: 34,
+  borderRadius: 8,
+  border: "1px solid var(--line)",
+  padding: "0 8px",
+  fontSize: 13,
+  background: "#fff",
+};
+
+const btnRow: React.CSSProperties = { display: "inline-flex", gap: 8, alignItems: "center" };
+const baseBtn: React.CSSProperties = {
+  height: 38,
+  borderRadius: 10,
+  padding: "0 14px",
+  fontSize: 14,
+  cursor: "pointer",
+  border: "1px solid var(--line)",
+};
+const primaryBtn: React.CSSProperties = {
+  ...baseBtn,
+  background: "#111827",
+  color: "#fff",
+  border: "1px solid #111827",
+};
+const ghostBtn: React.CSSProperties = {
+  ...baseBtn,
+  background: "#fff",
+};
+
+const errBox: React.CSSProperties = {
+  border: "1px solid #ef4444",
+  background: "#fef2f2",
+  color: "#991b1b",
+  padding: 12,
+  borderRadius: 10,
+  marginBottom: 12,
+};
+
+const muted: React.CSSProperties = { padding: "8px 0 14px", color: "var(--muted)" as any };
+const emptyBox: React.CSSProperties = { padding: 20, border: "1px dashed var(--line)", borderRadius: 10, textAlign: "center", marginTop: 8 };
+
+const tbl: React.CSSProperties = { width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 14 };
+
+const th: React.CSSProperties = {
+  textAlign: "left",
+  padding: "10px 12px",
+  fontWeight: 700,
+  fontSize: 12,
+  textTransform: "uppercase",
+  letterSpacing: 0.4,
+  color: "var(--muted)" as any,
+  position: "sticky",
+  top: 0,
+  background: "#fff",
+  borderBottom: "1px solid var(--line)",
+};
+
+const td: React.CSSProperties = { padding: "12px", borderTop: "1px solid var(--line)", verticalAlign: "top", whiteSpace: "nowrap" };
+const trAlt: React.CSSProperties = { background: "var(--bgAlt)" };
