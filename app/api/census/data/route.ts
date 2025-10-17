@@ -3,12 +3,11 @@ import { NextRequest, NextResponse } from "next/server";
 
 /**
  * GET /api/census/data?name=GDP&start=YYYY-MM-DD&end=YYYY-MM-DD&limit=1000
- * Proxies your cached FMP route (/api/fmp/...) and returns normalized rows:
- *   { date, value, name, unit }
+ * Calls FMP directly and returns normalized rows: { date, value, name, unit }
  */
 export async function GET(req: NextRequest) {
   try {
-    const { searchParams, origin } = new URL(req.url);
+    const { searchParams } = new URL(req.url);
     const name = (searchParams.get("name") || "").trim();
     const start = searchParams.get("start"); // YYYY-MM-DD
     const end = searchParams.get("end");     // YYYY-MM-DD
@@ -18,11 +17,18 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ data: [], error: "Missing indicator name" }, { status: 400 });
     }
 
-    // Hit your internal FMP proxy (keeps API key server-only, cached + rate-limited)
-    const upstream = new URL(origin + "/api/fmp/stable/economic-indicators");
-    upstream.searchParams.set("name", name);
+    const key = process.env.FMP_API_KEY;
+    if (!key) {
+      return NextResponse.json({ data: [], error: "Missing FMP_API_KEY" }, { status: 500 });
+    }
 
-    const resp = await fetch(upstream.toString(), { cache: "no-store" });
+    // Direct FMP call (no proxy)
+    // Note: this endpoint expects a valid indicator `name` (e.g., Population, GDP, CPI, Unemployment Rate)
+    const url = new URL("https://financialmodelingprep.com/stable/economic-indicators");
+    url.searchParams.set("name", name);
+    url.searchParams.set("apikey", key);
+
+    const resp = await fetch(url.toString(), { cache: "no-store" });
     if (!resp.ok) {
       const txt = await resp.text();
       return NextResponse.json(
@@ -35,6 +41,7 @@ export async function GET(req: NextRequest) {
     const raw = await resp.json();
     const rows: Raw[] = Array.isArray(raw) ? raw : (raw?.data ?? []);
 
+    // Normalize
     let data = rows.map((r) => ({
       date: r.date ?? null,
       value: r.value ?? null,
