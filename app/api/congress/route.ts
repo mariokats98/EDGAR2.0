@@ -3,37 +3,30 @@ import { NextRequest, NextResponse } from "next/server";
 
 type Chamber = "senate" | "house" | "all";
 type Mode = "symbol" | "name";
-
 type TxFilter = "all" | "purchase" | "sale";
 
-/* ---------------- Endpoint builders ---------------- */
+/* ---------------- endpoint helpers (now hitting our proxy) ---------------- */
 
-function searchEndpoint(
-  chamber: Exclude<Chamber, "all">,
-  mode: Mode,
-  q: string
-) {
-  const base = "https://financialmodelingprep.com/stable";
+function searchPath(chamber: Exclude<Chamber, "all">, mode: Mode, q: string) {
   const encoded = encodeURIComponent(q.trim());
   if (mode === "symbol") {
     return chamber === "senate"
-      ? `${base}/senate-trades?symbol=${encoded}`
-      : `${base}/house-trades?symbol=${encoded}`;
+      ? `/api/fmp/stable/senate-trades?symbol=${encoded}`
+      : `/api/fmp/stable/house-trades?symbol=${encoded}`;
   } else {
     return chamber === "senate"
-      ? `${base}/senate-trades-by-name?name=${encoded}`
-      : `${base}/house-trades-by-name?name=${encoded}`;
+      ? `/api/fmp/stable/senate-trades-by-name?name=${encoded}`
+      : `/api/fmp/stable/house-trades-by-name?name=${encoded}`;
   }
 }
 
-function latestEndpoints(chamber: Chamber) {
-  const base = "https://financialmodelingprep.com/stable";
-  if (chamber === "senate") return [`${base}/senate-latest`];
-  if (chamber === "house") return [`${base}/house-latest`];
-  return [`${base}/senate-latest`, `${base}/house-latest`];
+function latestPaths(chamber: Chamber) {
+  if (chamber === "senate") return [`/api/fmp/stable/senate-latest`];
+  if (chamber === "house") return [`/api/fmp/stable/house-latest`];
+  return [`/api/fmp/stable/senate-latest`, `/api/fmp/stable/house-latest`];
 }
 
-/* ---------------- helpers ---------------- */
+/* ---------------- normalizers ---------------- */
 
 function tidyName(raw?: string | null) {
   if (!raw) return null;
@@ -74,13 +67,11 @@ function extractAmount(r: any): string | null {
   );
 }
 
-// Canonicalize transaction type to "Purchase" / "Sale" when possible
 function normalizeTxType(raw: any): string | null {
   if (!raw) return null;
   const s = String(raw).toLowerCase();
   if (s.includes("purchase") || s.includes("buy")) return "Purchase";
   if (s.includes("sale") || s.includes("sell")) return "Sale";
-  // keep original for other types if any appear
   return String(raw);
 }
 
@@ -93,7 +84,7 @@ function normalizeRow(r: any) {
     ticker: r.symbol ?? r.ticker ?? null,
     assetName: r.assetName ?? r.asset_description ?? null,
     assetType: r.assetType ?? null,
-    owner: r.owner ?? null, // Self / Spouse / Joint
+    owner: r.owner ?? null,
     amount: extractAmount(r),
     price: extractPrice(r),
     sourceUrl: r.link ?? r.source ?? null,
@@ -115,7 +106,6 @@ function inDateRange(
     if (!Number.isNaN(s) && t < s) return false;
   }
   if (end) {
-    // inclusive end: add 1 day
     const e = new Date(end);
     const ePlus = new Date(
       e.getFullYear(),
@@ -140,84 +130,53 @@ function passTxFilter(tx: TxFilter, t: string | null) {
 
 export async function GET(req: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url);
+    const { searchParams, origin } = new URL(req.url);
 
-    // Determine view implicitly (latest if no q provided)
+    // Determine "latest" implicitly if no q provided (back-compat)
     const viewRaw = (searchParams.get("view") || "").toLowerCase();
     const qRaw = (searchParams.get("q") || "").trim();
     const isLatest =
       viewRaw === "latest" || (!viewRaw && (!qRaw || qRaw.length === 0));
 
     const chamberParam = (searchParams.get("chamber") || (isLatest ? "all" : "senate")) as Chamber;
-    const mode = (searchParams.get("mode") || "symbol") as Mode; // for search
+    const mode = (searchParams.get("mode") || "symbol") as Mode;
     const start = searchParams.get("start"); // YYYY-MM-DD
     const end = searchParams.get("end");     // YYYY-MM-DD
     const tx = (searchParams.get("tx") || "all").toLowerCase() as TxFilter;
-    const limit = Math.max(
-      1,
-      Math.min(1000, Number(searchParams.get("limit") || 200))
-    );
-
-    const key = process.env.FMP_API_KEY;
-    if (!key) {
-      return NextResponse.json(
-        { data: [], error: "Missing FMP_API_KEY" },
-        { status: 500 }
-      );
-    }
+    const limit = Math.max(1, Math.min(1000, Number(searchParams.get("limit") || 200)));
 
     let rows: any[] = [];
 
     if (isLatest) {
-      // MOST RECENT
-      const urls = latestEndpoints(chamberParam).map(
-        (u) => `${u}?apikey=${encodeURIComponent(key)}`
-      );
-      const resps = await Promise.all(
-        urls.map((u) => fetch(u, { cache: "no-store" }))
-      );
+      // hit our proxy for senate/house latest
+      const urls = latestPaths(chamberParam).map((p) => origin + p);
+      const resps = await Promise.all(urls.map((u) => fetch(u, { cache: "no-store" })));
       const bad = resps.find((r) => !r.ok);
       if (bad) {
         const text = await bad.text();
         return NextResponse.json(
-          { data: [], error: `FMP error ${bad.status}: ${text.slice(0, 200)}` },
+          { data: [], error: `Upstream error ${bad.status}: ${text.slice(0, 200)}` },
           { status: 502 }
         );
       }
       const payloads = await Promise.all(resps.map((r) => r.json()));
       rows = payloads.flatMap((p) => (Array.isArray(p) ? p : p?.data ?? []));
     } else {
-      // SEARCH
       if (!qRaw) {
-        return NextResponse.json(
-          { data: [], error: "Missing q" },
-          { status: 400 }
-        );
+        return NextResponse.json({ data: [], error: "Missing q" }, { status: 400 });
       }
       if (!["senate", "house"].includes(chamberParam)) {
-        return NextResponse.json(
-          { data: [], error: "Invalid chamber" },
-          { status: 400 }
-        );
+        return NextResponse.json({ data: [], error: "Invalid chamber" }, { status: 400 });
       }
       if (!["symbol", "name"].includes(mode)) {
-        return NextResponse.json(
-          { data: [], error: "Invalid mode" },
-          { status: 400 }
-        );
+        return NextResponse.json({ data: [], error: "Invalid mode" }, { status: 400 });
       }
-
-      const url = `${searchEndpoint(
-        chamberParam as Exclude<Chamber, "all">,
-        mode,
-        qRaw
-      )}&apikey=${encodeURIComponent(key)}`;
-
+      const url = origin + searchPath(chamberParam as Exclude<Chamber, "all">, mode, qRaw);
       const resp = await fetch(url, { cache: "no-store" });
       if (!resp.ok) {
         const text = await resp.text();
         return NextResponse.json(
-          { data: [], error: `FMP error ${resp.status}: ${text.slice(0, 200)}` },
+          { data: [], error: `Upstream error ${resp.status}: ${text.slice(0, 200)}` },
           { status: 502 }
         );
       }
@@ -235,12 +194,12 @@ export async function GET(req: NextRequest) {
       data = data.filter((r) => inDateRange(r.transactionDate, start, end));
     }
 
-    // Transaction type filter
+    // Tx filter
     if (tx !== "all") {
       data = data.filter((r) => passTxFilter(tx, r.transactionType));
     }
 
-    // Sort newest first and limit
+    // Sort newest first + limit
     data.sort((a, b) => {
       const ta = Date.parse(a.transactionDate || "");
       const tb = Date.parse(b.transactionDate || "");
