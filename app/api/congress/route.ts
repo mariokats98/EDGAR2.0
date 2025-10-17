@@ -5,33 +5,10 @@ type Chamber = "senate" | "house" | "all";
 type Mode = "symbol" | "name";
 type TxFilter = "all" | "purchase" | "sale";
 
-/* ---------------- endpoint helpers (now hitting our proxy) ---------------- */
-
-function searchPath(chamber: Exclude<Chamber, "all">, mode: Mode, q: string) {
-  const encoded = encodeURIComponent(q.trim());
-  if (mode === "symbol") {
-    return chamber === "senate"
-      ? `/api/fmp/stable/senate-trades?symbol=${encoded}`
-      : `/api/fmp/stable/house-trades?symbol=${encoded}`;
-  } else {
-    return chamber === "senate"
-      ? `/api/fmp/stable/senate-trades-by-name?name=${encoded}`
-      : `/api/fmp/stable/house-trades-by-name?name=${encoded}`;
-  }
-}
-
-function latestPaths(chamber: Chamber) {
-  if (chamber === "senate") return [`/api/fmp/stable/senate-latest`];
-  if (chamber === "house") return [`/api/fmp/stable/house-latest`];
-  return [`/api/fmp/stable/senate-latest`, `/api/fmp/stable/house-latest`];
-}
-
-/* ---------------- normalizers ---------------- */
-
 function tidyName(raw?: string | null) {
   if (!raw) return null;
   const s = String(raw).trim();
-  const m = s.match(/^([^,]+),\s*(.+)$/); // "Last, First" -> "First Last"
+  const m = s.match(/^([^,]+),\s*(.+)$/); // "Last, First" → "First Last"
   if (m) return `${m[2]} ${m[1]}`.replace(/\s+/g, " ").trim();
   return s;
 }
@@ -56,6 +33,7 @@ function extractMemberName(r: any): string | null {
 function extractPrice(r: any): number | string | null {
   return r.price ?? r.pricePerShare ?? r.asset_price ?? r.tradePrice ?? null;
 }
+
 function extractAmount(r: any): string | null {
   return (
     r.amount ??
@@ -93,11 +71,7 @@ function normalizeRow(r: any) {
   };
 }
 
-function inDateRange(
-  d: string | null,
-  start?: string | null,
-  end?: string | null
-) {
+function inDateRange(d: string | null, start?: string | null, end?: string | null) {
   if (!d) return false;
   const t = Date.parse(d);
   if (Number.isNaN(t)) return false;
@@ -107,11 +81,7 @@ function inDateRange(
   }
   if (end) {
     const e = new Date(end);
-    const ePlus = new Date(
-      e.getFullYear(),
-      e.getMonth(),
-      e.getDate() + 1
-    ).getTime();
+    const ePlus = new Date(e.getFullYear(), e.getMonth(), e.getDate() + 1).getTime();
     if (t >= ePlus) return false;
   }
   return true;
@@ -126,41 +96,44 @@ function passTxFilter(tx: TxFilter, t: string | null) {
   return true;
 }
 
-/* ---------------- handler ---------------- */
-
 export async function GET(req: NextRequest) {
   try {
-    const { searchParams, origin } = new URL(req.url);
-
-    // Determine "latest" implicitly if no q provided (back-compat)
+    const { searchParams } = new URL(req.url);
     const viewRaw = (searchParams.get("view") || "").toLowerCase();
     const qRaw = (searchParams.get("q") || "").trim();
-    const isLatest =
-      viewRaw === "latest" || (!viewRaw && (!qRaw || qRaw.length === 0));
+    const isLatest = viewRaw === "latest" || (!viewRaw && (!qRaw || qRaw.length === 0));
 
     const chamberParam = (searchParams.get("chamber") || (isLatest ? "all" : "senate")) as Chamber;
     const mode = (searchParams.get("mode") || "symbol") as Mode;
-    const start = searchParams.get("start"); // YYYY-MM-DD
-    const end = searchParams.get("end");     // YYYY-MM-DD
+    const start = searchParams.get("start");
+    const end = searchParams.get("end");
     const tx = (searchParams.get("tx") || "all").toLowerCase() as TxFilter;
     const limit = Math.max(1, Math.min(1000, Number(searchParams.get("limit") || 200)));
 
     let rows: any[] = [];
 
     if (isLatest) {
-      // hit our proxy for senate/house latest
-      const urls = latestPaths(chamberParam).map((p) => origin + p);
-      const resps = await Promise.all(urls.map((u) => fetch(u, { cache: "no-store" })));
-      const bad = resps.find((r) => !r.ok);
+      const urls =
+        chamberParam === "all"
+          ? [
+              `https://financialmodelingprep.com/api/v4/senate-latest?apikey=${process.env.FMP_API_KEY}`,
+              `https://financialmodelingprep.com/api/v4/house-latest?apikey=${process.env.FMP_API_KEY}`,
+            ]
+          : [
+              `https://financialmodelingprep.com/api/v4/${chamberParam}-latest?apikey=${process.env.FMP_API_KEY}`,
+            ];
+
+      const responses = await Promise.all(urls.map((u) => fetch(u)));
+      const bad = responses.find((r) => !r.ok);
       if (bad) {
-        const text = await bad.text();
+        const txt = await bad.text();
         return NextResponse.json(
-          { data: [], error: `Upstream error ${bad.status}: ${text.slice(0, 200)}` },
+          { data: [], error: `Upstream error ${bad.status}: ${txt.slice(0, 200)}` },
           { status: 502 }
         );
       }
-      const payloads = await Promise.all(resps.map((r) => r.json()));
-      rows = payloads.flatMap((p) => (Array.isArray(p) ? p : p?.data ?? []));
+      const payloads = await Promise.all(responses.map((r) => r.json()));
+      rows = payloads.flat();
     } else {
       if (!qRaw) {
         return NextResponse.json({ data: [], error: "Missing q" }, { status: 400 });
@@ -168,38 +141,37 @@ export async function GET(req: NextRequest) {
       if (!["senate", "house"].includes(chamberParam)) {
         return NextResponse.json({ data: [], error: "Invalid chamber" }, { status: 400 });
       }
-      if (!["symbol", "name"].includes(mode)) {
-        return NextResponse.json({ data: [], error: "Invalid mode" }, { status: 400 });
-      }
-      const url = origin + searchPath(chamberParam as Exclude<Chamber, "all">, mode, qRaw);
-      const resp = await fetch(url, { cache: "no-store" });
+
+      const url =
+        mode === "symbol"
+          ? `https://financialmodelingprep.com/api/v4/${chamberParam}-trading?symbol=${encodeURIComponent(
+              qRaw
+            )}&apikey=${process.env.FMP_API_KEY}`
+          : `https://financialmodelingprep.com/api/v4/${chamberParam}-trading-by-name?name=${encodeURIComponent(
+              qRaw
+            )}&apikey=${process.env.FMP_API_KEY}`;
+
+      const resp = await fetch(url);
       if (!resp.ok) {
-        const text = await resp.text();
+        const txt = await resp.text();
         return NextResponse.json(
-          { data: [], error: `Upstream error ${resp.status}: ${text.slice(0, 200)}` },
+          { data: [], error: `Upstream error ${resp.status}: ${txt.slice(0, 200)}` },
           { status: 502 }
         );
       }
-      const raw = await resp.json();
-      rows = Array.isArray(raw) ? raw : raw?.data ?? [];
+      rows = await resp.json();
     }
 
-    // Normalize
     let data = rows.map(normalizeRow);
 
-    // Date filter
-    const hasDateFilter =
-      (start && start.length === 10) || (end && end.length === 10);
+    const hasDateFilter = (start && start.length === 10) || (end && end.length === 10);
     if (hasDateFilter) {
       data = data.filter((r) => inDateRange(r.transactionDate, start, end));
     }
-
-    // Tx filter
     if (tx !== "all") {
       data = data.filter((r) => passTxFilter(tx, r.transactionType));
     }
 
-    // Sort newest first + limit
     data.sort((a, b) => {
       const ta = Date.parse(a.transactionDate || "");
       const tb = Date.parse(b.transactionDate || "");
