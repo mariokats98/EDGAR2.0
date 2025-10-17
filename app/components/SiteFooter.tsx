@@ -7,15 +7,9 @@ export default function SiteFooter() {
           © {new Date().getFullYear()} Herevna.io — All rights reserved.
         </div>
         <nav className="flex gap-4 text-center sm:text-right">
-          <a href="/about" className="hover:text-gray-900 transition">
-            About Us
-          </a>
-          <a href="/pricing" className="hover:text-gray-900 transition">
-            Pricing
-          </a>
-          <a href="/disclaimer" className="hover:text-gray-900 transition">
-            Data Disclaimer
-          </a>
+          <a href="/about" className="hover:text-gray-900 transition">About Us</a>
+          <a href="/pricing" className="hover:text-gray-900 transition">Pricing</a>
+          <a href="/disclaimer" className="hover:text-gray-900 transition">Data Disclaimer</a>
         </nav>
       </div>
     </footer>
