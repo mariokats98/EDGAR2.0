@@ -48,13 +48,13 @@ export default function SubscribePage() {
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-white via-slate-50 to-slate-100">
-      {/* top accent */}
+      {/* soft background accents */}
       <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
         <div className="absolute -top-24 left-1/2 h-64 w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-r from-indigo-600/10 to-blue-500/10 blur-3xl" />
         <div className="absolute -bottom-32 right-[-6rem] h-80 w-80 rounded-full bg-gradient-to-tr from-emerald-400/10 to-cyan-500/10 blur-3xl" />
       </div>
 
-      {/* Header / social proof row */}
+      {/* Header */}
       <section className="mx-auto max-w-6xl px-4 pt-12">
         {isPro && (
           <div className="mb-4 rounded-lg border bg-white px-4 py-3 text-sm text-emerald-700">
@@ -63,24 +63,12 @@ export default function SubscribePage() {
         )}
 
         <div className="text-center">
-          <span className="inline-flex items-center gap-2 rounded-full border bg-white/80 backdrop-blur px-3 py-1 text-xs text-gray-700 shadow-sm">
-            <span className="inline-block h-2 w-2 rounded-full bg-indigo-600 animate-pulse" />
-            Trusted dashboards for research-driven investors
-          </span>
-          <h1 className="mt-4 text-4xl sm:text-5xl font-extrabold tracking-tight text-gray-900">
+          <h1 className="mt-2 text-4xl sm:text-5xl font-extrabold tracking-tight text-gray-900">
             Unlock <span className="bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-blue-500">Herevna Pro</span>
           </h1>
           <p className="mt-3 text-gray-600 max-w-2xl mx-auto">
             Faster data. Clearer insights. Premium dashboards for EDGAR, BLS, FRED, and market screening — all in one place.
           </p>
-        </div>
-
-        {/* Trust bar */}
-        <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center text-xs text-gray-600">
-          <div className="rounded-lg border bg-white px-3 py-2">Cancel anytime</div>
-          <div className="rounded-lg border bg-white px-3 py-2">Secure Stripe checkout</div>
-          <div className="rounded-lg border bg-white px-3 py-2">No ads or noise</div>
-          <div className="rounded-lg border bg-white px-3 py-2">Email support</div>
         </div>
       </section>
 
@@ -91,11 +79,10 @@ export default function SubscribePage() {
           <div className="rounded-2xl border bg-white p-6 shadow-sm">
             <div className="flex items-end justify-between">
               <div>
-                <div className="text-3xl sm:text-4xl font-extrabold text-gray-900">$9.99<span className="text-base font-medium text-gray-600">/mo</span></div>
+                <div className="text-3xl sm:text-4xl font-extrabold text-gray-900">
+                  $9.99<span className="text-base font-medium text-gray-600">/mo</span>
+                </div>
                 <p className="mt-1 text-gray-600 text-sm">Full access to premium dashboards & faster refresh.</p>
-              </div>
-              <div className="hidden sm:flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-full px-2 py-1">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" /> Popular
               </div>
             </div>
 
@@ -107,10 +94,10 @@ export default function SubscribePage() {
                 "Stock Screener — volume, momentum, market cap filters",
                 "Congressional Trading — track recent disclosures",
                 "Faster refresh, cleaner UI, no clutter",
-                "Email support and ongoing feature updates"
+                "Email support and ongoing feature updates",
               ].map((f) => (
                 <li key={f} className="flex items-start gap-3">
-                  <svg className="h-5 w-5 text-indigo-600 mt-0.5" viewBox="0 0 24 24" fill="currentColor">
+                  <svg className="h-5 w-5 text-indigo-600 mt-0.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                     <path d="M9 16.2l-3.5-3.6L4 14l5 5 11-11-1.5-1.5z" />
                   </svg>
                   <span>{f}</span>
@@ -138,11 +125,7 @@ export default function SubscribePage() {
               </a>
             </div>
 
-            {error && (
-              <p className="mt-3 text-xs text-red-600">
-                {error}
-              </p>
-            )}
+            {error && <p className="mt-3 text-xs text-red-600">{error}</p>}
 
             <p className="mt-3 text-[11px] text-gray-500">
               By subscribing, you agree to our <a href="/disclaimer" className="underline hover:no-underline">Data Disclaimer</a>.
@@ -216,7 +199,7 @@ export default function SubscribePage() {
               </div>
             </div>
 
-            {/* Guarantee / risk reversal */}
+            {/* Risk reversal */}
             <div className="mt-8 rounded-lg border bg-indigo-50 p-4 text-sm text-indigo-900">
               Not sure yet? Try it for a month. If it doesn’t help your workflow, you can cancel anytime.
             </div>
@@ -238,7 +221,12 @@ function Faq({ q, children }: { q: string; children: React.ReactNode }) {
         className="flex w-full items-center justify-between px-3 py-2 text-left text-sm"
       >
         <span className="font-medium text-gray-900">{q}</span>
-        <svg className={`h-4 w-4 text-gray-500 transition ${open ? "rotate-180" : ""}`} viewBox="0 0 20 20" fill="currentColor">
+        <svg
+          className={`h-4 w-4 text-gray-500 transition ${open ? "rotate-180" : ""}`}
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
+        >
           <path d="M5.25 7.5l4.5 4 4.5-4" />
         </svg>
       </button>
