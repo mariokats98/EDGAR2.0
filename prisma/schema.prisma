@@ -1,10 +1,11 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_DATABASE_URL") // <-- your custom env var on Vercel
+  url      = env("DATABASE_URL") // <-- Use DATABASE_URL in Vercel
 }
 
 enum Role {
@@ -16,7 +17,17 @@ model User {
   id        String   @id @default(cuid())
   email     String   @unique
   name      String?
+  image     String?
   role      Role     @default(FREE)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  stripeCustomer StripeCustomer?
+}
+
+model StripeCustomer {
+  id         String @id @default(cuid())
+  userId     String @unique
+  user       User   @relation(fields: [userId], references: [id])
+  customerId String @unique
 }
