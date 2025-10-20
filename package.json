@@ -16,7 +16,10 @@
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "tailwindcss": "^3.4.10",
-    "@vercel/analytics": "latest"
+    "@vercel/analytics": "latest",
+
+    // 👇 add this new line
+    "stripe": "^14.0.0"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
