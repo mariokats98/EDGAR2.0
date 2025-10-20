@@ -1,7 +1,7 @@
 // app/account/page.tsx
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma"; // or wherever you export your Prisma client
+import { prisma } from "@/lib/prisma";
 
 export default async function AccountPage() {
   const session = await getServerSession(authOptions);
@@ -11,7 +11,8 @@ export default async function AccountPage() {
       <div className="mx-auto max-w-2xl px-4 py-12">
         <h1 className="text-2xl font-semibold">Account</h1>
         <p className="mt-4 text-gray-600">
-          You’re not signed in. <a className="text-indigo-600 underline" href="/signin">Sign in</a>
+          You’re not signed in.{" "}
+          <a className="text-indigo-600 underline" href="/signin">Sign in</a>
         </p>
       </div>
     );
@@ -19,8 +20,8 @@ export default async function AccountPage() {
 
   const user = await prisma.user.findUnique({
     where: { email: session.user.email },
-    // ✅ remove isPro; select fields that exist on your schema
-    select: { email: true, role: true, stripeCustomerId: true },
+    // 👇 Only select fields that exist in your schema (Option B: id, email, role)
+    select: { email: true, role: true },
   });
 
   const isPro = user?.role === "PRO";
@@ -36,12 +37,8 @@ export default async function AccountPage() {
         <div className="mt-4 text-sm text-gray-600">Plan</div>
         <div className="font-medium">{isPro ? "Pro" : "Free"}</div>
 
-        {user?.stripeCustomerId ? (
-          <form
-            action="/api/stripe/create-portal-session"
-            method="POST"
-            className="mt-6"
-          >
+        {isPro ? (
+          <form action="/api/stripe/create-portal-session" method="POST" className="mt-6">
             <button
               type="submit"
               className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-black/80"
@@ -50,11 +47,7 @@ export default async function AccountPage() {
             </button>
           </form>
         ) : (
-          <form
-            action="/api/stripe/create-checkout-session"
-            method="POST"
-            className="mt-6"
-          >
+          <form action="/api/stripe/create-checkout-session" method="POST" className="mt-6">
             <input type="hidden" name="priceId" value="price_pro_monthly" />
             <button
               type="submit"
