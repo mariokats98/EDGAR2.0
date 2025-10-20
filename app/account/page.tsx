@@ -1,53 +1,63 @@
+// app/account/page.tsx
 import { getServerSession } from "next-auth";
-import { authOptions, prisma } from "@/lib/auth";
+import { authOptions } from "@/lib/auth";
+import prisma from "@/lib/prisma";
 
 export default async function AccountPage() {
   const session = await getServerSession(authOptions);
-  const email = session?.user?.email || "";
-  const user = email ? await prisma.user.findUnique({
-    where: { email },
-    select: { isPro: true, stripeCustomerId: true }
-  }) : null;
 
-  const isPro = Boolean(user?.isPro);
+  if (!session?.user?.email) {
+    return (
+      <main className="mx-auto max-w-2xl px-4 py-16">
+        <h1 className="text-xl font-semibold">Account</h1>
+        <p className="mt-2 text-gray-600">
+          You’re signed out. <a className="underline" href="/signin">Sign in</a> to manage your plan.
+        </p>
+      </main>
+    );
+  }
+
+  // (Optional) reload user to ensure we have latest isPro
+  const user = await prisma.user.findUnique({
+    where: { email: session.user.email },
+    select: { email: true, isPro: true, stripeCustomerId: true },
+  });
 
   return (
-    <main className="mx-auto max-w-2xl px-4 py-12">
+    <main className="mx-auto max-w-2xl px-4 py-16">
       <h1 className="text-2xl font-semibold">Account</h1>
-      {!email ? (
-        <p className="mt-3 text-gray-600">
-          You’re not signed in. <a className="underline" href="/signin">Sign in</a>
-        </p>
-      ) : (
-        <>
-          <p className="mt-2 text-gray-700">Signed in as <span className="font-medium">{email}</span></p>
-          <div className="mt-6 rounded-xl border bg-white p-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm text-gray-500">Plan</div>
-                <div className="text-lg font-semibold">{isPro ? "Herevna Pro" : "Free"}</div>
-              </div>
-              <div className="flex gap-2">
-                {!isPro && (
-                  <a href="/subscribe" className="rounded-full bg-black text-white px-4 py-2 text-sm hover:opacity-90">
-                    Upgrade
-                  </a>
-                )}
-                {user?.stripeCustomerId && (
-                  <form action="/api/stripe/create-portal-session" method="POST">
-                    <button
-                      type="submit"
-                      className="rounded-full border px-4 py-2 text-sm hover:bg-gray-50"
-                    >
-                      Manage Billing
-                    </button>
-                  </form>
-                )}
-              </div>
-            </div>
+      <div className="mt-4 rounded-lg border bg-white p-4">
+        <div className="text-sm text-gray-700">
+          <div><span className="font-medium">Email:</span> {user?.email}</div>
+          <div className="mt-1">
+            <span className="font-medium">Plan:</span>{" "}
+            {user?.isPro ? "Herevna Pro (active)" : "Free"}
           </div>
-        </>
-      )}
+        </div>
+
+        <div className="mt-4 flex gap-3">
+          {!user?.isPro ? (
+            <a
+              href="/subscribe"
+              className="rounded-md bg-black px-4 py-2 text-sm text-white hover:opacity-90"
+            >
+              Upgrade to Pro
+            </a>
+          ) : (
+            <form
+              action="/api/stripe/create-portal-session"
+              method="POST"
+            >
+              <button
+                type="submit"
+                className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50"
+              >
+                Manage Billing
+              </button>
+            </form>
+          )}
+        </div>
+      </div>
     </main>
   );
 }
