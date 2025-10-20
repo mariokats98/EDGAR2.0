@@ -1,50 +1,83 @@
-// app/api/stripe/webhook/route.ts
-import { headers } from "next/headers";
 import { NextResponse } from "next/server";
-import Stripe from "stripe";
+import { stripe } from "@/lib/stripe";
+import prisma from "@/lib/prisma"; // your Prisma client
+import type Stripe from "stripe";
 
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY ?? "";
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? "";
-
-export const runtime = "nodejs"; // required for webhooks
+export const config = { api: { bodyParser: false } }; // Next.js (app router ignores, but safe)
 
 export async function POST(req: Request) {
-  if (!STRIPE_SECRET_KEY || !STRIPE_WEBHOOK_SECRET) {
-    return NextResponse.json(
-      { error: "Stripe webhook not configured" },
-      { status: 500 }
-    );
+  const sig = req.headers.get("stripe-signature");
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!endpointSecret || !sig) {
+    return new NextResponse("Missing webhook secret or signature", { status: 400 });
   }
-
-  const buf = await req.arrayBuffer();
-  const sig = (await headers()).get("stripe-signature") ?? "";
-
-  const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(
-      Buffer.from(buf),
-      sig,
-      STRIPE_WEBHOOK_SECRET
-    );
+    const raw = await req.text();
+    event = stripe.webhooks.constructEvent(raw, sig, endpointSecret);
   } catch (err: any) {
-    return NextResponse.json({ error: `Webhook Error: ${err.message}` }, { status: 400 });
+    console.error("Webhook signature verification failed:", err.message);
+    return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
   }
 
-  // Handle only the basics, safely (no DB)
-  switch (event.type) {
-    case "checkout.session.completed":
-      // You can read event.data.object here and later store customer id
-      break;
-    case "customer.subscription.deleted":
-    case "invoice.payment_failed":
-      // Downgrade logic would go here once you store subscription/customer ids.
-      break;
-    default:
-      // noop
-      break;
-  }
+  try {
+    switch (event.type) {
+      case "checkout.session.completed": {
+        const s = event.data.object as Stripe.Checkout.Session;
+        const email = (s.customer_details?.email || s.customer_email || (typeof s.customer === "string" ? s.customer : undefined)) ?? undefined;
 
-  return NextResponse.json({ received: true });
+        // If you store subscriptions in your DB, you can upsert by customer/email here.
+        // Example: mark PRO by role when subscription becomes active (handled again below).
+        break;
+      }
+
+      case "customer.subscription.created":
+      case "customer.subscription.updated": {
+        const sub = event.data.object as Stripe.Subscription;
+        const cust = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
+
+        // Try to get the customer to retrieve email
+        const customer = await stripe.customers.retrieve(cust);
+        const email =
+          (customer as Stripe.Customer).email ??
+          (sub as any).customer_email ??
+          undefined;
+
+        if (email) {
+          // If active/trialing -> set role PRO, else downgrade
+          const isActive = ["active", "trialing"].includes(sub.status);
+          await prisma.user.updateMany({
+            where: { email },
+            data: { role: isActive ? "PRO" : "FREE" },
+          });
+        }
+        break;
+      }
+
+      case "customer.subscription.deleted": {
+        const sub = event.data.object as Stripe.Subscription;
+        const cust = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
+        const customer = await stripe.customers.retrieve(cust);
+        const email = (customer as any)?.email as string | undefined;
+
+        if (email) {
+          await prisma.user.updateMany({
+            where: { email },
+            data: { role: "FREE" },
+          });
+        }
+        break;
+      }
+
+      default:
+        // no-op for other events
+        break;
+    }
+
+    return NextResponse.json({ received: true });
+  } catch (err: any) {
+    console.error("Webhook handler error:", err);
+    return new NextResponse("Webhook handler error", { status: 500 });
+  }
 }
