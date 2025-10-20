@@ -1,14 +1,14 @@
 // app/layout.tsx
 import "./styles/globals.css";
-import Header from "./components/Header";
 import Providers from "./providers";
-import { Analytics } from "@vercel/analytics/react"; // ✅ correct import
+import Header from "./components/Header";
+import { Analytics } from "@vercel/analytics/react";
 
 export const metadata = {
   title: "Herevna — EDGAR, BLS, FRED & Markets",
   description:
     "Streamlined access to SEC filings, economic data, and market dashboards. Built for clarity and research speed.",
-  icons: { icon: "/favicon.ico" },
+  icons: { icon: "/favicon.ico" }
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -16,24 +16,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body className="min-h-screen bg-gradient-to-b from-white to-slate-50 text-gray-900 antialiased">
         <Providers>
-          {/* Global Header */}
           <Header />
-
-          {/* Page content */}
           <main className="min-h-[60vh]">{children}</main>
-
-          {/* Footer */}
           <SiteFooter />
-
-          {/* Analytics (Vercel) */}
           <Analytics />
         </Providers>
       </body>
     </html>
   );
 }
-
-/* ---------------- Footer (inline to avoid missing imports) ---------------- */
 
 function SiteFooter() {
   const year = new Date().getFullYear();
