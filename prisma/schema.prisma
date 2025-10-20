@@ -5,8 +5,8 @@ generator client {
 
 datasource db {
   provider  = "postgresql"
-  url       = env("DATABASE_URL")   // pooled
-  directUrl = env("DIRECT_URL")     // unpooled for migrations
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
@@ -14,8 +14,22 @@ model User {
   email            String   @unique
   name             String?
   isPro            Boolean  @default(false)
-  stripeCustomerId String?
+  stripeCustomerId String?  @unique
+  subscriptions    Subscription[]
+
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }
 
+model Subscription {
+  id               String   @id @default(cuid())
+  stripeSubId      String   @unique     // e.g. sub_123
+  stripePriceId    String               // e.g. price_123
+  status           String               // active | trialing | past_due | canceled | incomplete | ...
+  currentPeriodEnd DateTime?
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId           String
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
