@@ -1,68 +1,47 @@
 // app/account/page.tsx
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { PrismaClient } from "@prisma/client";
 import { redirect } from "next/navigation";
-
-const prisma = new PrismaClient();
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
 
 export default async function AccountPage() {
-  const session = await getServerSession(authOptions);
+  const session = await auth();
   if (!session?.user?.email) redirect("/signin");
 
   const user = await prisma.user.findUnique({
     where: { email: session.user.email },
-    select: { email: true, role: true, stripeCustomerId: true },
+    select: { id: true, email: true, role: true, stripeCustomer: true }
   });
 
-  const isPro = user?.role === "PRO";
+  if (!user) redirect("/signin");
+
+  const isPro = user.role === "PRO";
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
-      <h1 className="text-2xl font-bold mb-6">Account</h1>
+    <div className="mx-auto max-w-3xl px-4 py-12">
+      <h1 className="mb-2 text-2xl font-semibold">Account</h1>
+      <p className="mb-6 text-gray-600">Signed in as {user.email}</p>
 
-      <div className="space-y-4">
-        <p>
-          <strong>Email:</strong> {user?.email}
-        </p>
-        <p>
-          <strong>Status:</strong>{" "}
-          {isPro ? (
-            <span className="text-green-600 font-semibold">PRO Member</span>
+      <div className="rounded border bg-white p-4">
+        <div className="mb-2 text-sm">
+          <span className="font-medium">Plan:</span> {isPro ? "Pro" : "Free"}
+        </div>
+
+        <div className="flex gap-3">
+          {!isPro ? (
+            <form action="/api/stripe/create-checkout-session" method="POST">
+              <button className="rounded border px-3 py-1.5 text-sm hover:bg-gray-50">
+                Upgrade to Pro
+              </button>
+            </form>
           ) : (
-            <span className="text-gray-700 font-semibold">Free Tier</span>
+            <form action="/api/stripe/create-portal-session" method="POST">
+              <button className="rounded border px-3 py-1.5 text-sm hover:bg-gray-50">
+                Manage Billing
+              </button>
+            </form>
           )}
-        </p>
+        </div>
       </div>
-
-      <div className="mt-10 space-x-4">
-        {!isPro && (
-          <form action="/api/stripe/create-checkout-session" method="POST">
-            <button
-              type="submit"
-              className="px-5 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition"
-            >
-              Upgrade to PRO
-            </button>
-          </form>
-        )}
-
-        {isPro && (
-          <form action="/api/stripe/create-portal-session" method="POST">
-            <button
-              type="submit"
-              className="px-5 py-2 bg-gray-800 text-white rounded-md hover:bg-gray-900 transition"
-            >
-              Manage Subscription
-            </button>
-          </form>
-        )}
-      </div>
-
-      <p className="mt-10 text-sm text-gray-500">
-        Changes to your plan take effect immediately upon confirmation via
-        Stripe.
-      </p>
-    </main>
+    </div>
   );
 }
