@@ -1,40 +1,44 @@
-// app/api/stripe/create-checkout-session/route.ts
 import { NextResponse } from "next/server";
-import Stripe from "stripe";
 import { auth } from "@/auth";
+import { stripe } from "@/lib/stripe";
 
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY ?? "";
-const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID ?? "";
-const SITE_URL =
-  process.env.SITE_URL ||
-  process.env.NEXT_PUBLIC_SITE_URL ||
-  "http://localhost:3000";
+const PRICE_ID = process.env.STRIPE_PRICE_ID; // e.g. price_123
 
 export async function POST() {
   const session = await auth();
-
-  if (!STRIPE_SECRET_KEY || !STRIPE_PRICE_ID) {
-    return NextResponse.json(
-      { error: "Stripe not configured" },
-      { status: 500 }
-    );
+  if (!session?.user?.email) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!PRICE_ID) {
+    return NextResponse.json({ error: "Missing STRIPE_PRICE_ID" }, { status: 500 });
   }
 
-  const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
-
   try {
+    // Reuse customer if one exists; otherwise create by email
+    const existing = await stripe.customers.list({
+      email: session.user.email,
+      limit: 1,
+    });
+    const customerId = existing.data[0]?.id ?? (await stripe.customers.create({
+      email: session.user.email,
+      name: session.user.name ?? undefined,
+    })).id;
+
     const checkout = await stripe.checkout.sessions.create({
+      customer: customerId,
       mode: "subscription",
-      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
-      success_url: `${SITE_URL}/subscribe/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${SITE_URL}/pricing`,
-      // optionally pass email if signed in
-      customer_email: session?.user?.email ?? undefined,
+      line_items: [{ price: PRICE_ID, quantity: 1 }],
       allow_promotion_codes: true,
+      success_url: `${process.env.NEXT_PUBLIC_APP_URL}/account?status=success`,
+      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/account?status=cancel`,
+      metadata: {
+        userEmail: session.user.email,
+      },
     });
 
     return NextResponse.json({ url: checkout.url });
   } catch (err: any) {
+    console.error("create-checkout-session error:", err);
     return NextResponse.json({ error: err.message ?? "Stripe error" }, { status: 500 });
   }
 }
