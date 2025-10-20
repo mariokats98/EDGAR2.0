@@ -84,3 +84,22 @@
     background-position: 50% 50%;
   }
 }
+
+/* ---- Extra global enhancements ---- */
+html,
+body {
+  scroll-behavior: smooth;
+}
+
+a {
+  text-decoration: none;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* hide focus outlines unless keyboard navigation */
+:focus:not(:focus-visible) {
+  outline: none;
+}
