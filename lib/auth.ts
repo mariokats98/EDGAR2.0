@@ -1,65 +1,51 @@
-// lib/auth.ts
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
+import { prisma } from "@/lib/prisma";
 import type { NextAuthOptions } from "next-auth";
-import EmailProvider from "next-auth/providers/email";
-import { prisma } from "./prisma";
+import Credentials from "next-auth/providers/credentials";
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt" },
+  pages: { signIn: "/signin" },
   providers: [
-    EmailProvider({
-      maxAge: 24 * 60 * 60,
-      async sendVerificationRequest({ identifier, url }) {
-        // Safe fallback if RESEND_API_KEY not set yet (logs magic link to console)
-        if (!process.env.RESEND_API_KEY) {
-          console.log("[Herevna] Sign-in link:", { to: identifier, url });
-          return;
+    Credentials({
+      name: "Email Only",
+      credentials: {
+        email: { label: "Email", type: "email", placeholder: "you@example.com" },
+      },
+      async authorize(credentials) {
+        const email = (credentials?.email || "").trim().toLowerCase();
+        // Basic sanity checks
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
+
+        // OPTIONAL: block disposable domains etc.
+        // if (email.endsWith("@mailinator.com")) return null;
+
+        // Find or create user
+        let user = await prisma.user.findUnique({ where: { email } });
+        if (!user) {
+          user = await prisma.user.create({ data: { email } });
         }
-        const { Resend } = await import("resend");
-        const resend = new Resend(process.env.RESEND_API_KEY!);
-        await resend.emails.send({
-          from: "Herevna <login@herevna.io>",
-          to: identifier,
-          subject: "Your Herevna sign-in link",
-          html: `
-            <div style="font-family:Inter,system-ui,-apple-system;max-width:480px;margin:auto">
-              <h2>Sign in to Herevna</h2>
-              <p>Click the secure link below to sign in:</p>
-              <p><a href="${url}" style="background:#111;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;border-radius:8px">Sign in</a></p>
-              <p style="font-size:12px;color:#666">If you didn’t request this, ignore this email.</p>
-            </div>
-          `,
-        });
+        // NextAuth needs a plain object with an id
+        return { id: user.id, email: user.email || undefined, name: user.name || undefined };
       },
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        token.userId = (user as any).id;
-        token.isPro = (user as any).isPro ?? false;
-      } else if (token?.userId) {
-        const db = await prisma.user.findUnique({
-          where: { id: token.userId as string },
+    async jwt({ token }) {
+      // Lift isPro flag into token on every request
+      if (token?.email) {
+        const u = await prisma.user.findUnique({
+          where: { email: token.email as string },
           select: { isPro: true },
         });
-        token.isPro = db?.isPro ?? false;
+        (token as any).isPro = u?.isPro ?? false;
       }
       return token;
     },
     async session({ session, token }) {
-      (session as any).userId = token.userId;
-      (session as any).isPro = token.isPro;
+      (session as any).isPro = (token as any)?.isPro ?? false;
       return session;
     },
   },
-  pages: {
-    signIn: "/signin",
-    verifyRequest: "/signin/check-email",
-  },
-  secret: process.env.NEXTAUTH_SECRET,
 };
-
-// Re-export prisma so imports from "@/lib/auth" can also get prisma
-export { prisma } from "./prisma";
