@@ -1,22 +1,18 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
-    "jsx": "preserve",
     "moduleResolution": "Bundler",
-    "resolveJsonModule": true,
-    "allowJs": true,
-    "noEmit": true,
+    "jsx": "preserve",
     "strict": true,
-    "incremental": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
+    "noEmit": true,
     "baseUrl": ".",
     "paths": {
       "@/*": ["./*"]
     },
     "types": ["node"]
   },
-  "include": ["**/*.ts", "**/*.tsx", ".next/types/**/*.ts"]
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
 }
