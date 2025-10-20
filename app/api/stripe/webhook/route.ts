@@ -1,82 +1,70 @@
 // app/api/stripe/webhook/route.ts
-import { NextResponse } from "next/server";
-import Stripe from "stripe";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { stripe } from "@/lib/stripe";
 
-export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2024-06-20" });
-
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   const sig = req.headers.get("stripe-signature");
-  if (!sig) return NextResponse.json({ error: "Missing signature" }, { status: 400 });
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-  const rawBody = await req.text();
-  let event: Stripe.Event;
-
-  try {
-    event = await stripe.webhooks.constructEventAsync(
-      rawBody,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET!
-    );
-  } catch (err: any) {
-    return NextResponse.json({ error: `Webhook Error: ${err.message}` }, { status: 400 });
+  if (!sig || !webhookSecret) {
+    return NextResponse.json({ error: "Missing Stripe webhook config" }, { status: 400 });
   }
 
-  switch (event.type) {
-    case "checkout.session.completed": {
-      const cs = event.data.object as Stripe.Checkout.Session;
-      const email = cs.customer_details?.email || cs.customer_email || undefined;
-      if (email) {
-        await prisma.user.update({
-          where: { email },
-          data: { role: "PRO" }
-        });
+  const rawBody = await req.text();
 
-        // ensure mapping exists
-        if (cs.customer) {
-          const customerId = typeof cs.customer === "string" ? cs.customer : cs.customer.id;
-          const user = await prisma.user.findUnique({ where: { email }, select: { id: true } });
-          if (user) {
-            await prisma.stripeCustomer.upsert({
-              where: { userId: user.id },
-              update: { customerId },
-              create: { userId: user.id, customerId }
-            });
-          }
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
+  } catch (err: any) {
+    return NextResponse.json({ error: `Webhook signature verification failed: ${err.message}` }, { status: 400 });
+  }
+
+  // Helper to locate an email on various events
+  const extractEmail = (): string | null => {
+    // Several objects include customer_email
+    const obj: any = event.data?.object ?? {};
+    if (obj.customer_email) return obj.customer_email;
+    if (obj.customer_details?.email) return obj.customer_details.email;
+    if (obj.client_reference_id) return obj.client_reference_id; // we set this to email in checkout
+    return null;
+  };
+
+  try {
+    switch (event.type) {
+      case "checkout.session.completed":
+      case "invoice.payment_succeeded": {
+        const email = extractEmail();
+        if (email) {
+          await prisma.user.update({
+            where: { email },
+            data: { role: "PRO" },
+          }).catch(() => Promise.resolve()); // ignore if no user yet
         }
-      }
-      break;
-    }
-    case "customer.subscription.deleted":
-    case "invoice.payment_failed": {
-      // downgrade by email if possible
-      const obj: any = event.data.object;
-      let email: string | undefined;
-      if ("customer_email" in obj && obj.customer_email) email = obj.customer_email as string;
-
-      if (!email && "customer" in obj && obj.customer) {
-        const customerId = obj.customer as string;
-        const sc = await prisma.stripeCustomer.findFirst({
-          where: { customerId },
-          select: { user: { select: { email: true } } }
-        });
-        email = sc?.user?.email;
+        break;
       }
 
-      if (email) {
-        await prisma.user.update({
-          where: { email },
-          data: { role: "FREE" }
-        });
+      case "customer.subscription.deleted":
+      case "invoice.payment_failed": {
+        const email = extractEmail();
+        if (email) {
+          await prisma.user.update({
+            where: { email },
+            data: { role: "FREE" },
+          }).catch(() => Promise.resolve());
+        }
+        break;
       }
-      break;
+
+      default:
+        // Ignore other events
+        break;
     }
-    default:
-      // ignore other events
-      break;
+  } catch (e: any) {
+    // Don’t fail the webhook: acknowledge receipt so Stripe doesn’t retry forever
+    return NextResponse.json({ received: true, note: e.message ?? "handled" }, { status: 200 });
   }
 
   return NextResponse.json({ received: true }, { status: 200 });
