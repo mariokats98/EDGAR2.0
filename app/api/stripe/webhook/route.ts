@@ -1,7 +1,7 @@
 // app/api/stripe/webhook/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
-import { prisma } from "@/lib/prisma";
+import { prisma } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,7 +9,6 @@ export const dynamic = "force-dynamic";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2023-10-16" });
 
 export async function POST(req: NextRequest) {
-  // In the App Router, req.text() returns the raw body (no body parser to disable)
   const sig = req.headers.get("stripe-signature");
   const rawBody = await req.text();
 
@@ -27,7 +26,6 @@ export async function POST(req: NextRequest) {
         const subscriptionId = cs.subscription as string | null;
         const customerId = cs.customer as string | null;
 
-        // Find user via metadata.userId, stripeCustomerId, or email fallback
         let user = cs.metadata?.userId
           ? await prisma.user.findUnique({ where: { id: cs.metadata.userId } })
           : null;
@@ -40,7 +38,6 @@ export async function POST(req: NextRequest) {
         }
         if (!user) break;
 
-        // Flip Pro on and upsert subscription record
         await prisma.user.update({
           where: { id: user.id },
           data: { isPro: true, stripeCustomerId: customerId ?? user.stripeCustomerId ?? undefined },
@@ -105,6 +102,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
-
-// ❌ Do NOT include: export const config = { api: { bodyParser: false } };
-// That’s for the Pages Router and causes the “Page config … is deprecated” build error.

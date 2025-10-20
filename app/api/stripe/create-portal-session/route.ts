@@ -1,3 +1,4 @@
+// app/api/stripe/create-portal-session/route.ts
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -8,7 +9,7 @@ import { authOptions, prisma } from "@/lib/auth";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2023-10-16" });
 
-export async function POST(req: NextRequest) {
+export async function POST(_req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.email) {
@@ -19,7 +20,6 @@ export async function POST(req: NextRequest) {
       where: { email: session.user.email },
       select: { stripeCustomerId: true },
     });
-
     if (!user?.stripeCustomerId) {
       return NextResponse.json({ error: "No Stripe customer on file." }, { status: 400 });
     }
