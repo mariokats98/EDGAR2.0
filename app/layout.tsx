@@ -1,14 +1,13 @@
 // app/layout.tsx
 import "./styles/globals.css";
-import Providers from "./providers";
 import Header from "./components/Header";
-import { Analytics } from "@vercel/analytics/react";
+import Providers from "./providers";
 
 export const metadata = {
   title: "Herevna — EDGAR, BLS, FRED & Markets",
   description:
     "Streamlined access to SEC filings, economic data, and market dashboards. Built for clarity and research speed.",
-  icons: { icon: "/favicon.ico" }
+  icons: { icon: "/favicon.ico" },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -19,12 +18,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Header />
           <main className="min-h-[60vh]">{children}</main>
           <SiteFooter />
-          <Analytics />
         </Providers>
       </body>
     </html>
   );
 }
+
+/* ---------------- Footer (inline to avoid missing imports) ---------------- */
 
 function SiteFooter() {
   const year = new Date().getFullYear();
@@ -40,27 +40,13 @@ function SiteFooter() {
           </div>
 
           <nav className="grid grid-cols-2 sm:flex sm:flex-wrap gap-x-6 gap-y-2 text-sm">
-            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/about">
-              About Us
-            </a>
-            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/pricing">
-              Pricing
-            </a>
-            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/terms">
-              Terms of Service
-            </a>
-            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/disclaimer">
-              Data Disclaimer
-            </a>
-            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/cookies">
-              Cookies
-            </a>
-            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/signin">
-              Sign In
-            </a>
-            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/account">
-              Account
-            </a>
+            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/about">About Us</a>
+            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/pricing">Pricing</a>
+            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/terms">Terms of Service</a>
+            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/disclaimer">Data Disclaimer</a>
+            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/cookies">Cookies</a>
+            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/signin">Sign In</a>
+            <a className="text-gray-700 hover:text-gray-900 hover:underline" href="/account">Account</a>
           </nav>
         </div>
 
