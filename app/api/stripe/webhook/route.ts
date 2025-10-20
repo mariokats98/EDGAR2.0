@@ -1,13 +1,12 @@
 // app/api/stripe/webhook/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
-import { prisma } from "@/lib/prisma"; // adjust import if your prisma instance path differs
+import { prisma } from "@/lib/prisma";
 
-export const runtime = "nodejs";         // need Node runtime for raw body + crypto
-export const dynamic = "force-dynamic";  // webhooks must not be statically rendered
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-// ^ omit apiVersion to avoid type mismatches during deploys
 
 export async function POST(req: NextRequest) {
   const sig = req.headers.get("stripe-signature");
@@ -17,7 +16,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing Stripe signature or webhook secret" }, { status: 400 });
   }
 
-  // IMPORTANT: get the raw body text for signature verification
   const body = await req.text();
 
   let event: Stripe.Event;
@@ -27,14 +25,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Webhook signature verification failed: ${err.message}` }, { status: 400 });
   }
 
+  const downgradeByEmail = async (email?: string | null) => {
+    if (!email) return;
+    await prisma.user.updateMany({ where: { email }, data: { role: "FREE" } });
+  };
+
   try {
     switch (event.type) {
       case "checkout.session.completed": {
         const cs = event.data.object as Stripe.Checkout.Session;
         const email = cs.customer_details?.email || cs.customer_email || cs.metadata?.email;
-
         if (email) {
-          // Mark user PRO; create user if they don’t exist yet
           await prisma.user.upsert({
             where: { email },
             update: { role: "PRO" },
@@ -44,32 +45,44 @@ export async function POST(req: NextRequest) {
         break;
       }
 
-      case "customer.subscription.deleted":
-      case "customer.subscription.canceled":
-      case "invoice.payment_failed": {
-        // Try to get an email to downgrade the user
-        const obj: any = event.data.object;
+      // Subscription status changed (e.g. canceled, past_due, unpaid)
+      case "customer.subscription.updated": {
+        const sub = event.data.object as Stripe.Subscription;
         const email =
-          obj?.customer_email || obj?.customer_details?.email || obj?.metadata?.email;
-
-        if (email) {
-          await prisma.user.updateMany({
-            where: { email },
-            data: { role: "FREE" },
-          });
+          (sub as any)?.customer_email || sub?.metadata?.email; // customer_email is present if you include it; metadata is a good fallback
+        const badStatuses: Stripe.Subscription.Status[] = ["canceled", "past_due", "unpaid", "incomplete_expired"];
+        if (badStatuses.includes(sub.status)) {
+          await downgradeByEmail(email);
         }
         break;
       }
 
-      // You can add other events as needed, but no stripeCustomerId usage
+      // Subscription removed entirely
+      case "customer.subscription.deleted": {
+        const sub = event.data.object as Stripe.Subscription;
+        const email =
+          (sub as any)?.customer_email || sub?.metadata?.email;
+        await downgradeByEmail(email);
+        break;
+      }
+
+      // Payment failed — often a temporary downgrade
+      case "invoice.payment_failed": {
+        const invoice = event.data.object as Stripe.Invoice;
+        const email =
+          invoice.customer_email || invoice.customer?.toString() || invoice.account_name || invoice.metadata?.email;
+        await downgradeByEmail(email);
+        break;
+      }
+
       default:
+        // No-op for other events
         break;
     }
 
     return NextResponse.json({ received: true }, { status: 200 });
   } catch (err: any) {
-    // Don’t let errors crash the function—return 200 so Stripe doesn’t retry forever,
-    // but log the failure in your own logging if you have it.
+    // Return 200 so Stripe doesn’t retry forever; log in your own system if needed.
     return NextResponse.json({ error: err.message ?? "Webhook handler error" }, { status: 200 });
   }
 }
