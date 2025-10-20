@@ -2,20 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import prisma from "@/lib/prisma";
 
-export const runtime = "nodejs"; // ensure Node runtime
+export const runtime = "nodejs";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2024-06-20",
-});
+// ⬇️ Remove apiVersion option
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET!;
 
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
   const sig = req.headers.get("stripe-signature");
-
-  if (!sig) {
-    return NextResponse.json({ error: "Missing signature" }, { status: 400 });
-  }
+  if (!sig) return NextResponse.json({ error: "Missing signature" }, { status: 400 });
 
   let event: Stripe.Event;
   try {
@@ -32,10 +28,12 @@ export async function POST(req: NextRequest) {
       case "checkout.session.completed": {
         const cs = event.data.object as Stripe.Checkout.Session;
         if (cs.customer && cs.customer_email) {
-          // store customer id on user
           await prisma.user.update({
             where: { email: cs.customer_email },
-            data: { stripeCustomerId: typeof cs.customer === "string" ? cs.customer : cs.customer.id },
+            data: {
+              stripeCustomerId:
+                typeof cs.customer === "string" ? cs.customer : cs.customer.id,
+            },
           });
         }
         break;
@@ -43,13 +41,9 @@ export async function POST(req: NextRequest) {
       case "customer.subscription.created":
       case "customer.subscription.updated": {
         const sub = event.data.object as Stripe.Subscription;
-        // mark user pro if active
-        const isActive =
-          sub.status === "active" ||
-          sub.status === "trialing";
+        const isActive = sub.status === "active" || sub.status === "trialing";
         const customerId =
           typeof sub.customer === "string" ? sub.customer : sub.customer.id;
-
         await prisma.user.updateMany({
           where: { stripeCustomerId: customerId },
           data: { isPro: isActive },
@@ -60,7 +54,6 @@ export async function POST(req: NextRequest) {
         const sub = event.data.object as Stripe.Subscription;
         const customerId =
           typeof sub.customer === "string" ? sub.customer : sub.customer.id;
-
         await prisma.user.updateMany({
           where: { stripeCustomerId: customerId },
           data: { isPro: false },
@@ -68,7 +61,6 @@ export async function POST(req: NextRequest) {
         break;
       }
       default:
-        // ignore other events
         break;
     }
     return NextResponse.json({ received: true });
