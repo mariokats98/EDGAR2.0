@@ -1,8 +1,8 @@
 // app/layout.tsx
 import "./styles/globals.css";
 import Header from "./components/Header";
-import Providers from "./providers"; // <-- client component
-import { Analytics } from "@vercel/analytics/next";
+import Providers from "./providers";
+import { Analytics } from "@vercel/analytics/react"; // ✅ correct import
 
 export const metadata = {
   title: "Herevna — EDGAR, BLS, FRED & Markets",
@@ -15,11 +15,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="min-h-screen bg-gradient-to-b from-white to-slate-50 text-gray-900 antialiased">
-        {/* All client contexts live inside this Providers wrapper */}
         <Providers>
+          {/* Global Header */}
           <Header />
+
+          {/* Page content */}
           <main className="min-h-[60vh]">{children}</main>
+
+          {/* Footer */}
           <SiteFooter />
+
+          {/* Analytics (Vercel) */}
           <Analytics />
         </Providers>
       </body>
