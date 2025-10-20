@@ -1,63 +1,68 @@
 // app/account/page.tsx
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { PrismaClient } from "@prisma/client";
+import { redirect } from "next/navigation";
+
+const prisma = new PrismaClient();
 
 export default async function AccountPage() {
   const session = await getServerSession(authOptions);
-
-  if (!session?.user?.email) {
-    return (
-      <div className="mx-auto max-w-2xl px-4 py-12">
-        <h1 className="text-2xl font-semibold">Account</h1>
-        <p className="mt-4 text-gray-600">
-          You’re not signed in.{" "}
-          <a className="text-indigo-600 underline" href="/signin">Sign in</a>
-        </p>
-      </div>
-    );
-  }
+  if (!session?.user?.email) redirect("/signin");
 
   const user = await prisma.user.findUnique({
     where: { email: session.user.email },
-    // 👇 Only select fields that exist in your schema (Option B: id, email, role)
-    select: { email: true, role: true },
+    select: { email: true, role: true, stripeCustomerId: true },
   });
 
   const isPro = user?.role === "PRO";
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-12">
-      <h1 className="text-2xl font-semibold">Account</h1>
+    <main className="mx-auto max-w-3xl px-6 py-12">
+      <h1 className="text-2xl font-bold mb-6">Account</h1>
 
-      <div className="mt-6 rounded-lg border bg-white p-4">
-        <div className="text-sm text-gray-600">Email</div>
-        <div className="font-medium">{user?.email}</div>
+      <div className="space-y-4">
+        <p>
+          <strong>Email:</strong> {user?.email}
+        </p>
+        <p>
+          <strong>Status:</strong>{" "}
+          {isPro ? (
+            <span className="text-green-600 font-semibold">PRO Member</span>
+          ) : (
+            <span className="text-gray-700 font-semibold">Free Tier</span>
+          )}
+        </p>
+      </div>
 
-        <div className="mt-4 text-sm text-gray-600">Plan</div>
-        <div className="font-medium">{isPro ? "Pro" : "Free"}</div>
-
-        {isPro ? (
-          <form action="/api/stripe/create-portal-session" method="POST" className="mt-6">
+      <div className="mt-10 space-x-4">
+        {!isPro && (
+          <form action="/api/stripe/create-checkout-session" method="POST">
             <button
               type="submit"
-              className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-black/80"
+              className="px-5 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition"
             >
-              Manage Billing
+              Upgrade to PRO
             </button>
           </form>
-        ) : (
-          <form action="/api/stripe/create-checkout-session" method="POST" className="mt-6">
-            <input type="hidden" name="priceId" value="price_pro_monthly" />
+        )}
+
+        {isPro && (
+          <form action="/api/stripe/create-portal-session" method="POST">
             <button
               type="submit"
-              className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+              className="px-5 py-2 bg-gray-800 text-white rounded-md hover:bg-gray-900 transition"
             >
-              Upgrade to Pro
+              Manage Subscription
             </button>
           </form>
         )}
       </div>
-    </div>
+
+      <p className="mt-10 text-sm text-gray-500">
+        Changes to your plan take effect immediately upon confirmation via
+        Stripe.
+      </p>
+    </main>
   );
 }
