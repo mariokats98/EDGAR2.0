@@ -1,23 +1,23 @@
 // app/api/stripe/webhook/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import Stripe from "stripe";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
 
-const prisma = new PrismaClient();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2024-06-20",
-});
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2024-06-20" });
+
+export async function POST(req: Request) {
   const sig = req.headers.get("stripe-signature");
   if (!sig) return NextResponse.json({ error: "Missing signature" }, { status: 400 });
 
-  const buf = Buffer.from(await req.arrayBuffer());
-
+  const rawBody = await req.text();
   let event: Stripe.Event;
+
   try {
-    event = stripe.webhooks.constructEvent(
-      buf,
+    event = await stripe.webhooks.constructEventAsync(
+      rawBody,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET!
     );
@@ -26,69 +26,58 @@ export async function POST(req: NextRequest) {
   }
 
   switch (event.type) {
-    // After checkout completes: save customer id & set PRO
     case "checkout.session.completed": {
       const cs = event.data.object as Stripe.Checkout.Session;
-      const email = cs.customer_details?.email ?? cs.customer_email ?? null;
-      const stripeCustomerId =
-        typeof cs.customer === "string" ? cs.customer : cs.customer?.id;
-
+      const email = cs.customer_details?.email || cs.customer_email || undefined;
       if (email) {
         await prisma.user.update({
           where: { email },
-          data: {
-            stripeCustomerId,
-            role: "PRO",
-          },
-        });
-      }
-      break;
-    }
-
-    // Subscription (re)activated or created: set PRO
-    case "customer.subscription.created":
-    case "customer.subscription.updated": {
-      const sub = event.data.object as Stripe.Subscription;
-      const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
-
-      const user = await prisma.user.findFirst({
-        where: { stripeCustomerId: customerId },
-        select: { email: true },
-      });
-
-      if (user?.email) {
-        await prisma.user.update({
-          where: { email: user.email },
-          data: { role: "PRO" },
-        });
-      }
-      break;
-    }
-
-    // Subscription ended or payment failed: set FREE
-    case "customer.subscription.deleted":
-    case "invoice.payment_failed": {
-      const obj = event.data.object as any;
-      const customerId: string | undefined =
-        obj?.customer && typeof obj.customer === "string" ? obj.customer :
-        obj?.customer?.id;
-
-      if (customerId) {
-        const user = await prisma.user.findFirst({
-          where: { stripeCustomerId: customerId },
-          select: { email: true },
+          data: { role: "PRO" }
         });
 
-        if (user?.email) {
-          await prisma.user.update({
-            where: { email: user.email },
-            data: { role: "FREE" },
-          });
+        // ensure mapping exists
+        if (cs.customer) {
+          const customerId = typeof cs.customer === "string" ? cs.customer : cs.customer.id;
+          const user = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+          if (user) {
+            await prisma.stripeCustomer.upsert({
+              where: { userId: user.id },
+              update: { customerId },
+              create: { userId: user.id, customerId }
+            });
+          }
         }
       }
       break;
     }
+    case "customer.subscription.deleted":
+    case "invoice.payment_failed": {
+      // downgrade by email if possible
+      const obj: any = event.data.object;
+      let email: string | undefined;
+      if ("customer_email" in obj && obj.customer_email) email = obj.customer_email as string;
+
+      if (!email && "customer" in obj && obj.customer) {
+        const customerId = obj.customer as string;
+        const sc = await prisma.stripeCustomer.findFirst({
+          where: { customerId },
+          select: { user: { select: { email: true } } }
+        });
+        email = sc?.user?.email;
+      }
+
+      if (email) {
+        await prisma.user.update({
+          where: { email },
+          data: { role: "FREE" }
+        });
+      }
+      break;
+    }
+    default:
+      // ignore other events
+      break;
   }
 
-  return NextResponse.json({ received: true });
+  return NextResponse.json({ received: true }, { status: 200 });
 }
