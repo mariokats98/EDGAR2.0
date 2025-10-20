@@ -1,25 +1,18 @@
-// app/api/stripe/verify-session/route.ts
 import { NextResponse } from "next/server";
-import Stripe from "stripe";
-
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY ?? "";
+import { stripe } from "@/lib/stripe";
 
 export async function GET(req: Request) {
-  if (!STRIPE_SECRET_KEY) {
-    return NextResponse.json(
-      { error: "Stripe not configured" },
-      { status: 500 }
-    );
+  const { searchParams } = new URL(req.url);
+  const sessionId = searchParams.get("session_id");
+  if (!sessionId) {
+    return NextResponse.json({ error: "Missing session_id" }, { status: 400 });
   }
-  const url = new URL(req.url);
-  const id = url.searchParams.get("session_id");
-  if (!id) return NextResponse.json({ ok: false }, { status: 400 });
 
-  const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
   try {
-    const sess = await stripe.checkout.sessions.retrieve(id);
-    return NextResponse.json({ ok: true, status: sess.status, session: sess });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e.message }, { status: 400 });
+    const s = await stripe.checkout.sessions.retrieve(sessionId);
+    return NextResponse.json({ status: s.status, customer: s.customer, subscription: s.subscription });
+  } catch (err: any) {
+    console.error("verify-session error:", err);
+    return NextResponse.json({ error: err.message ?? "Stripe error" }, { status: 500 });
   }
 }
