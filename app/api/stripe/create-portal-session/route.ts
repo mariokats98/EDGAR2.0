@@ -1,42 +1,33 @@
-// app/api/stripe/create-portal-session/route.ts
 import { NextResponse } from "next/server";
-import Stripe from "stripe";
+import { auth } from "@/auth";
+import { stripe } from "@/lib/stripe";
 
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY ?? "";
-const SITE_URL =
-  process.env.SITE_URL ||
-  process.env.NEXT_PUBLIC_SITE_URL ||
-  "http://localhost:3000";
-
-export async function POST(req: Request) {
-  if (!STRIPE_SECRET_KEY) {
-    return NextResponse.json(
-      { error: "Stripe not configured" },
-      { status: 500 }
-    );
+export async function POST() {
+  const session = await auth();
+  if (!session?.user?.email) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-
-  // For a real portal you need the Stripe customer id for the user.
-  // Since we’re not storing it yet, return a safe error.
-  const { customerId } = await req.json().catch(() => ({ customerId: null }));
-
-  if (!customerId) {
-    return NextResponse.json(
-      { error: "Missing customer id (not yet stored for users)" },
-      { status: 400 }
-    );
-  }
-
-  const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
   try {
+    // Find (or create) the customer by email
+    const existing = await stripe.customers.list({
+      email: session.user.email,
+      limit: 1,
+    });
+
+    const customer = existing.data[0] ?? await stripe.customers.create({
+      email: session.user.email,
+      name: session.user.name ?? undefined,
+    });
+
     const portal = await stripe.billingPortal.sessions.create({
-      customer: customerId,
-      return_url: SITE_URL + "/account",
+      customer: customer.id,
+      return_url: `${process.env.NEXT_PUBLIC_APP_URL}/account`,
     });
 
     return NextResponse.json({ url: portal.url });
   } catch (err: any) {
+    console.error("create-portal-session error:", err);
     return NextResponse.json({ error: err.message ?? "Stripe error" }, { status: 500 });
   }
 }
