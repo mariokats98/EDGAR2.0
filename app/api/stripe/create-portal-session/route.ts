@@ -1,31 +1,28 @@
 // app/api/stripe/create-portal-session/route.ts
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { prisma } from "@/lib/prisma";
-import Stripe from "stripe";
+import { stripe, getOrCreateCustomerByEmail } from "@/lib/stripe";
 
-export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2024-06-20" });
 
 export async function POST() {
   const session = await auth();
   const email = session?.user?.email;
-  if (!email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  const sc = await prisma.stripeCustomer.findFirst({
-    where: { user: { email } },
-    select: { customerId: true }
-  });
-  if (!sc?.customerId) {
-    return NextResponse.json({ error: "No Stripe customer on file" }, { status: 400 });
+  if (!email) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  const siteUrl = process.env.SITE_URL || process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}`;
+  if (!siteUrl) {
+    return NextResponse.json({ error: "Missing SITE_URL" }, { status: 500 });
+  }
+
+  const customer = await getOrCreateCustomerByEmail(email);
+
   const portal = await stripe.billingPortal.sessions.create({
-    customer: sc.customerId,
-    return_url: `${process.env.SITE_URL ?? "https://herevna.io"}/account`
+    customer: customer.id,
+    return_url: `${siteUrl}/account`,
   });
 
-  return NextResponse.redirect(portal.url, { status: 303 });
+  return NextResponse.json({ url: portal.url });
 }
