@@ -1,4 +1,3 @@
-// app/page.tsx
 "use client";
 
 import * as React from "react";
@@ -33,7 +32,7 @@ export default function HomePage() {
         <div className="absolute bottom-[-6rem] right-[-6rem] h-80 w-80 rounded-full bg-gradient-to-tr from-emerald-400/10 to-cyan-500/10 blur-3xl" />
       </div>
 
-      {/* Hero */}
+      {/* Hero Section */}
       <section className="mx-auto max-w-6xl px-4 pt-16 pb-10 text-center">
         <span className="inline-flex items-center gap-2 rounded-full border bg-white/70 backdrop-blur px-3 py-1 text-xs text-gray-700 shadow-sm">
           <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
@@ -53,20 +52,26 @@ export default function HomePage() {
           for speed, clarity, and easy research.
         </p>
 
-        {/* Quick actions */}
+        {/* Quick Action Buttons */}
         <div className="mt-8 flex flex-wrap justify-center gap-3">
-          {/* EDGAR is always open */}
+          {/* EDGAR always open */}
           <a
             href="/edgar"
             className="inline-flex items-center gap-2 rounded-full bg-black text-white px-5 py-2.5 text-sm hover:opacity-90 transition"
           >
             Explore EDGAR
-            <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <svg
+              aria-hidden
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+            >
               <path strokeWidth="2" strokeLinecap="round" d="M7 17L17 7M9 7h8v8" />
             </svg>
           </a>
 
-          {/* Locked CTAs (unlock if Pro) */}
+          {/* Locked CTAs */}
           {[
             { label: "Explore BLS", href: "/bls" },
             { label: "Explore FRED", href: "/fred" },
@@ -88,7 +93,6 @@ export default function HomePage() {
                 className="group relative inline-flex items-center gap-2 rounded-full bg-white text-gray-900 border px-5 py-2.5 text-sm transition"
               >
                 {x.label}
-                {/* hover tooltip */}
                 <span className="pointer-events-none absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border bg-white px-2 py-1 text-xs text-gray-700 shadow opacity-0 group-hover:opacity-100 transition">
                   Subscription required — click to upgrade
                 </span>
@@ -98,7 +102,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Feature cards */}
+      {/* Feature Cards */}
       <section className="mx-auto max-w-6xl px-4 pb-16">
         <div className="grid gap-5 md:grid-cols-4">
           <UnlockedTile
@@ -106,7 +110,7 @@ export default function HomePage() {
             title="EDGAR Filings"
             badge="SEC"
             badgeClass="bg-gray-100 text-gray-700"
-            copy="Search 8-K, 10-Q, 10-K, S-1, 13D/G, 6-K and more. Filter by dates, form types, and reporting persons."
+            copy="Search 8-K, 10-Q, 10-K, S-1, 13D/G, 6-K and more. Filter by form type, date, or filer."
             cta="Open EDGAR →"
           />
 
@@ -116,7 +120,7 @@ export default function HomePage() {
             title="BLS Dashboard"
             badge="Economy"
             badgeClass="bg-emerald-50 text-emerald-700"
-            copy="Track CPI, Unemployment, Payrolls and more. View latest prints, trends, and release calendars."
+            copy="Track CPI, payrolls, and unemployment trends with clean, real-time visuals."
             cta="Open BLS →"
           />
 
@@ -126,17 +130,17 @@ export default function HomePage() {
             title="FRED Benchmarks"
             badge="Rates"
             badgeClass="bg-indigo-50 text-indigo-700"
-            copy="Explore U.S. interest rates, yield curves, and macro benchmarks. Filter by series and date ranges."
+            copy="Explore interest rates, yield curves, and macro indicators from FRED data."
             cta="Open FRED →"
           />
 
           <LockedAwareTile
             isPro={isPro}
             href="/screener"
-            title="Stock Screener"
+            title="Screener"
             badge="Markets"
             badgeClass="bg-purple-50 text-purple-700"
-            copy="Filter by price action, volume, market cap, sector, and more. Click a row for a live chart."
+            copy="Filter stocks, view insider activity, and explore recent congressional trades — all in one dashboard."
             cta="Open Screener →"
           />
         </div>
@@ -151,7 +155,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* CTA Strip */}
+      {/* CTA Section */}
       <section className="mx-auto max-w-6xl px-4 pb-14">
         <div className="rounded-2xl border bg-white/80 backdrop-blur p-6 text-center shadow-sm">
           <h4 className="text-lg font-semibold text-gray-900">Ready to research faster?</h4>
@@ -185,24 +189,17 @@ export default function HomePage() {
       <section className="bg-slate-50 py-12 text-center">
         <h2 className="text-xl font-semibold text-gray-900">Stay updated with Herevna</h2>
         <p className="text-gray-600 text-sm mt-1">
-          Get the latest filings, economic updates, and news straight to your inbox.
+          Get the latest filings, economic updates, and market trends straight to your inbox.
         </p>
         <div className="mt-4">
           <NewsletterForm />
         </div>
       </section>
-
-      {/* Footer */}
-      <footer className="border-t bg-white">
-        <div className="mx-auto max-w-6xl px-4 py-6 text-center text-xs text-gray-500">
-          This site republishes SEC EDGAR filings, BLS data, and FRED data. © {new Date().getFullYear()} Herevna.io
-        </div>
-      </footer>
     </main>
   );
 }
 
-/* ---- Helper Components ---- */
+/* ---------------- Small Presentational Components ---------------- */
 
 function UnlockedTile({ href, title, badge, badgeClass, copy, cta }: any) {
   return (
@@ -230,9 +227,8 @@ function LockedAwareTile({ isPro, href, title, badge, badgeClass, copy, cta }: a
       <p className="mt-2 text-sm text-gray-600">{copy}</p>
       <div className="mt-4 text-sm text-gray-500">Pro access required</div>
 
-      {/* Blur + credit card overlay */}
+      {/* Hover Overlay */}
       <div className="absolute inset-0 bg-white/65 backdrop-blur-sm flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition">
-        {/* Credit Card icon (subscription cue) */}
         <svg
           xmlns="http://www.w3.org/2000/svg"
           className="h-8 w-8 text-indigo-600 mb-1"
