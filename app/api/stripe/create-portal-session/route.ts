@@ -1,40 +1,31 @@
 // app/api/stripe/create-portal-session/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { NextResponse } from "next/server";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
 import Stripe from "stripe";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-// ^ deliberately omit apiVersion to avoid type mismatch errors during builds
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-export async function POST(_req: NextRequest) {
-  const session = await getServerSession(authOptions);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2024-06-20" });
+
+export async function POST() {
+  const session = await auth();
   const email = session?.user?.email;
+  if (!email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  if (!email) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  const sc = await prisma.stripeCustomer.findFirst({
+    where: { user: { email } },
+    select: { customerId: true }
+  });
+  if (!sc?.customerId) {
+    return NextResponse.json({ error: "No Stripe customer on file" }, { status: 400 });
   }
-
-  // Look up (or create) the Stripe customer by email — no DB field needed
-  let customerId: string | undefined;
-
-  const list = await stripe.customers.list({ email, limit: 1 });
-  if (list.data.length > 0) {
-    customerId = list.data[0].id;
-  } else {
-    const created = await stripe.customers.create({ email });
-    customerId = created.id;
-  }
-
-  const siteUrl =
-    process.env.SITE_URL ??
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
   const portal = await stripe.billingPortal.sessions.create({
-    customer: customerId!,
-    return_url: `${siteUrl}/account`,
+    customer: sc.customerId,
+    return_url: `${process.env.SITE_URL ?? "https://herevna.io"}/account`
   });
 
-  // Redirect the user to Stripe’s billing portal
   return NextResponse.redirect(portal.url, { status: 303 });
 }
