@@ -2,30 +2,35 @@
   "name": "herevna",
   "version": "0.4.0",
   "private": true,
+  "engines": { "node": "20.x" },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
     "lint": "next lint",
-    "build:tickers": "node -e \"console.log('Skipping build:tickers (not used)')\""
+    "build:tickers": "node -e \"console.log('Skipping build:tickers (not used)')\"",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate:deploy": "prisma migrate deploy"
   },
   "dependencies": {
     "@vercel/analytics": "latest",
     "autoprefixer": "^10.4.19",
     "next": "14.2.5",
+    "next-auth": "^4.24.7",
     "postcss": "^8.4.41",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "stripe": "^14.0.0",
-    "tailwindcss": "^3.4.10"
+    "stripe": "^14.25.0",
+    "tailwindcss": "^3.4.10",
+    "@prisma/client": "^5.19.1",
+    "@next-auth/prisma-adapter": "^1.0.7",
+    "resend": "^3.3.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.12",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
+    "prisma": "^5.19.1",
     "typescript": "^5.5.4"
-  },
-  "engines": {
-    "node": "20.x"
   }
 }
