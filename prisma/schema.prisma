@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_DATABASE_URL") // 👈 stays as-is per your preference
+  url      = env("DATABASE_DATABASE_URL") // keep this env name in Vercel
 }
 
 enum Role {
@@ -13,8 +13,7 @@ enum Role {
   PRO
 }
 
-/* -------- NextAuth (v4) core models + your fields on User -------- */
-
+// NextAuth core models + your custom fields
 model User {
   id               String    @id @default(cuid())
   name             String?
@@ -22,7 +21,7 @@ model User {
   emailVerified    DateTime?
   image            String?
 
-  // 🔹 Your custom fields
+  // custom
   role             Role      @default(FREE)
   stripeCustomerId String?   @unique
 
