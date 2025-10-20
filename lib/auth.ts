@@ -1,51 +1,56 @@
-import { PrismaAdapter } from "@next-auth/prisma-adapter";
-import { prisma } from "@/lib/prisma";
+// lib/auth.ts
+import { PrismaClient } from "@prisma/client";
+import CredentialsProvider from "next-auth/providers/credentials";
 import type { NextAuthOptions } from "next-auth";
-import Credentials from "next-auth/providers/credentials";
+
+export const prisma = new PrismaClient();
 
 export const authOptions: NextAuthOptions = {
-  adapter: PrismaAdapter(prisma),
-  session: { strategy: "jwt" },
-  pages: { signIn: "/signin" },
   providers: [
-    Credentials({
-      name: "Email Only",
-      credentials: {
-        email: { label: "Email", type: "email", placeholder: "you@example.com" },
-      },
+    CredentialsProvider({
+      name: "Email",
+      credentials: { email: { label: "Email", type: "text" } },
       async authorize(credentials) {
-        const email = (credentials?.email || "").trim().toLowerCase();
-        // Basic sanity checks
-        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
+        const raw = credentials?.email || "";
+        const email = raw.trim().toLowerCase();
+        if (!email) return null;
 
-        // OPTIONAL: block disposable domains etc.
-        // if (email.endsWith("@mailinator.com")) return null;
-
-        // Find or create user
         let user = await prisma.user.findUnique({ where: { email } });
         if (!user) {
-          user = await prisma.user.create({ data: { email } });
+          user = await prisma.user.create({
+            data: { email, role: "FREE" }, // role field should exist in your schema
+          });
         }
-        // NextAuth needs a plain object with an id
-        return { id: user.id, email: user.email || undefined, name: user.name || undefined };
+        return { id: user.id, email: user.email, name: user.email };
       },
     }),
   ],
+  session: { strategy: "jwt" },
   callbacks: {
-    async jwt({ token }) {
-      // Lift isPro flag into token on every request
-      if (token?.email) {
+    async jwt({ token, user }) {
+      if (user) {
+        token.userId = (user as any).id;
+      }
+      if (token.email) {
         const u = await prisma.user.findUnique({
           where: { email: token.email as string },
-          select: { isPro: true },
+          select: { role: true, stripeCustomerId: true, id: true },
         });
-        (token as any).isPro = u?.isPro ?? false;
+        token.role = u?.role || "FREE";
+        token.stripeCustomerId = u?.stripeCustomerId || null;
+        token.userId = token.userId || u?.id;
       }
       return token;
     },
     async session({ session, token }) {
-      (session as any).isPro = (token as any)?.isPro ?? false;
+      if (session.user) {
+        (session.user as any).id = token.userId;
+        (session.user as any).role = token.role;
+        (session.user as any).stripeCustomerId = token.stripeCustomerId;
+      }
       return session;
     },
   },
+  pages: { signIn: "/signin" },
+  secret: process.env.NEXTAUTH_SECRET,
 };
