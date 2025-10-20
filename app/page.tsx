@@ -22,18 +22,6 @@ function lockedClick(e: React.MouseEvent<HTMLAnchorElement>, href: string) {
   window.location.href = `/subscribe?${params.toString()}`;
 }
 
-/** Small reusable badge for PRO features */
-function ProBadge({ className = "" }: { className?: string }) {
-  return (
-    <span
-      title="Available with Herevna Pro"
-      className={`inline-flex items-center rounded-full bg-gradient-to-r from-indigo-600 to-blue-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm ${className}`}
-    >
-      PRO
-    </span>
-  );
-}
-
 export default function HomePage() {
   const isPro = useIsProFromCookie();
 
@@ -100,7 +88,7 @@ export default function HomePage() {
                 className="group relative inline-flex items-center gap-2 rounded-full bg-white text-gray-900 border px-5 py-2.5 text-sm transition"
               >
                 {x.label}
-                <ProBadge className="ml-2" />
+                {/* hover tooltip */}
                 <span className="pointer-events-none absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border bg-white px-2 py-1 text-xs text-gray-700 shadow opacity-0 group-hover:opacity-100 transition">
                   Subscription required — click to upgrade
                 </span>
@@ -188,7 +176,6 @@ export default function HomePage() {
               className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-5 py-2.5 text-sm shadow hover:opacity-95 transition"
             >
               ✨ Ask Herevna AI
-              {!isPro && <ProBadge className="ml-2 bg-white/20 text-white/90" />}
             </a>
           </div>
         </div>
@@ -237,21 +224,19 @@ function LockedAwareTile({ isPro, href, title, badge, badgeClass, copy, cta }: a
     <div className="relative group rounded-2xl border bg-white p-5 transition hover:shadow-md overflow-hidden">
       <a href="#" onClick={(e) => lockedClick(e, href)} className="absolute inset-0 z-10" aria-label={`${title} (locked)`} />
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold flex items-center gap-2">
-          {title}
-          <ProBadge />
-        </h3>
+        <h3 className="text-lg font-semibold">{title}</h3>
         <span className={`text-xs rounded-full px-2 py-1 ${badgeClass}`}>{badge}</span>
       </div>
       <p className="mt-2 text-sm text-gray-600">{copy}</p>
       <div className="mt-4 text-sm text-gray-500">Pro access required</div>
 
-      {/* Blur + lock overlay */}
-      <div className="absolute inset-0 bg-white/60 backdrop-blur-sm flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition">
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-gray-600 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 11V7a4 4 0 10-8 0v4H3a2 2 0 012 2v7a2 2 0 002 2h10a2 2 0 002-2v-7a2 2 0 012-2h-1V7a6 6 0 00-12 0v4" />
+      {/* Blur + premium (crown) overlay */}
+      <div className="absolute inset-0 bg-white/65 backdrop-blur-sm flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition">
+        {/* Crown icon (premium/subscription cue) */}
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-indigo-600 mb-1" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M3 7l4.5 4 3.5-5 3.5 5L19 7l2 11H1L3 7zm2.5 10h13l-.8-4.5-2.8 2.2-3.4-4.9-3.4 4.9-2.8-2.2L5.5 17z"/>
         </svg>
-        <span className="text-xs text-gray-700 font-medium">Click to subscribe</span>
+        <span className="text-xs text-gray-800 font-medium">Subscribe to unlock</span>
       </div>
     </div>
   );
