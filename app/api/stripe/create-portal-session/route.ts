@@ -4,9 +4,8 @@ import { authOptions } from "@/lib/auth";
 import Stripe from "stripe";
 import prisma from "@/lib/prisma";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2024-06-20",
-});
+// ⬇️ Remove apiVersion option
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 export async function POST() {
   try {
@@ -18,13 +17,10 @@ export async function POST() {
     const siteUrl = process.env.NEXTAUTH_URL!;
     const user = await prisma.user.findUnique({
       where: { email: session.user.email },
-      select: { id: true, email: true, stripeCustomerId: true },
+      select: { stripeCustomerId: true },
     });
     if (!user?.stripeCustomerId) {
-      return NextResponse.json(
-        { error: "No Stripe customer on file" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "No Stripe customer on file" }, { status: 400 });
     }
 
     const portal = await stripe.billingPortal.sessions.create({
