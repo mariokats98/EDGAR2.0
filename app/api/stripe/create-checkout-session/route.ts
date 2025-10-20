@@ -4,9 +4,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2024-06-20",
-});
+// ⬇️ Remove apiVersion option
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,6 +13,7 @@ export async function POST(req: NextRequest) {
     if (!session?.user?.email) {
       return NextResponse.json({ error: "Not signed in" }, { status: 401 });
     }
+
     const priceId = process.env.STRIPE_PRICE_ID;
     const siteUrl = process.env.NEXTAUTH_URL;
     if (!priceId || !siteUrl) {
@@ -23,24 +23,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Ensure user in DB
     let user = await prisma.user.findUnique({ where: { email: session.user.email } });
-    if (!user) {
-      user = await prisma.user.create({ data: { email: session.user.email } });
-    }
+    if (!user) user = await prisma.user.create({ data: { email: session.user.email } });
 
-    // Ensure Stripe customer
     let customerId = user.stripeCustomerId ?? undefined;
     if (!customerId) {
       const customer = await stripe.customers.create({ email: user.email ?? undefined });
       customerId = customer.id;
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { stripeCustomerId: customerId },
-      });
+      await prisma.user.update({ where: { id: user.id }, data: { stripeCustomerId: customerId } });
     }
 
-    // Create checkout session (subscription)
     const checkout = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: customerId,
