@@ -54,20 +54,22 @@ export default function AboutPage() {
       <section className="mx-auto max-w-6xl px-4 py-10">
         <div className="grid gap-5 md:grid-cols-3">
           <ValueCard
-            title="One place for the truth"
-            copy="Filings, macro prints, and market activity—organized and searchable in a unified interface."
-            icon={<IconLayers />}
-          />
-          <ValueCard
-            title="Fast, clean visuals"
-            copy="Dashboards that load quickly and highlight what matters. No ads, no clutter."
-            icon={<IconSpark />}
-          />
-          <ValueCard
-            title="Built for real workflows"
-            copy="Filter, compare, and jump from macro to filings to trades—without leaving your flow."
-            icon={<IconFlow />}
-          />
+  title="Everything in One Dashboard"
+  copy="EDGAR filings, economic data, and market trends—brought together in a single, searchable view. Stop tab-hopping and focus on insights that matter."
+  icon={<IconDashboard />}
+/>
+
+<ValueCard
+  title="Visuals That Speak"
+  copy="Data that feels human. Each chart, table, and metric is designed for clarity and speed—so you spot patterns instantly without distractions."
+  icon={<IconChart />}
+/>
+
+<ValueCard
+  title="Built for How You Work"
+  copy="From screening tickers to tracking insider and congressional trades, Herevna Pro is shaped around the real workflows of researchers and investors."
+  icon={<IconWorkflow />}
+/>
         </div>
       </section>
 
