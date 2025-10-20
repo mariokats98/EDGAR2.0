@@ -1,16 +1,31 @@
-import { NextResponse, NextRequest } from "next/server";
+import { withAuth } from "next-auth/middleware";
 
-export const config = {
-  matcher: ["/bls/:path*", "/fred/:path*", "/screener/:path*", "/congress/:path*"],
-};
+export default withAuth(
+  function middleware() {},
+  {
+    callbacks: {
+      authorized: ({ token, req }) => {
+        const path = req.nextUrl.pathname;
 
-export function middleware(req: NextRequest) {
-  const isPro = req.cookies.get("isPro")?.value === "1";
-  if (!isPro) {
-    const url = req.nextUrl.clone();
-    url.pathname = "/subscribe";
-    url.searchParams.set("from", req.nextUrl.pathname + req.nextUrl.search);
-    return NextResponse.redirect(url);
+        // Public pages
+        const publicPaths = ["/", "/edgar", "/news", "/signin", "/subscribe", "/about", "/pricing", "/privacy", "/terms", "/cookies", "/sources", "/disclaimer"];
+        if (publicPaths.some((p) => path === p || path.startsWith(p + "/"))) return true;
+
+        // Pro-only dashboards
+        const proPaths = ["/bls", "/fred", "/screener", "/congress"];
+        if (proPaths.some((p) => path === p || path.startsWith(p + "/"))) {
+          return !!token?.isPro; // must be Pro (and signed in)
+        }
+
+        // Default: signed in
+        return !!token;
+      },
+    },
+    pages: {
+      signIn: "/signin",
+    },
   }
-  return NextResponse.next();
-}
+);
+
+// Match everything in app dir
+export const config = { matcher: ["/((?!_next|.*\\.(?:svg|png|jpg|jpeg|gif|ico|css|js|map)).*)"] };
