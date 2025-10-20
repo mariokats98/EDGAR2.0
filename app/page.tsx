@@ -230,11 +230,17 @@ function LockedAwareTile({ isPro, href, title, badge, badgeClass, copy, cta }: a
       <p className="mt-2 text-sm text-gray-600">{copy}</p>
       <div className="mt-4 text-sm text-gray-500">Pro access required</div>
 
-      {/* Blur + premium (crown) overlay */}
+      {/* Blur + credit card overlay */}
       <div className="absolute inset-0 bg-white/65 backdrop-blur-sm flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition">
-        {/* Crown icon (premium/subscription cue) */}
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-indigo-600 mb-1" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M3 7l4.5 4 3.5-5 3.5 5L19 7l2 11H1L3 7zm2.5 10h13l-.8-4.5-2.8 2.2-3.4-4.9-3.4 4.9-2.8-2.2L5.5 17z"/>
+        {/* Credit Card icon (subscription cue) */}
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          className="h-8 w-8 text-indigo-600 mb-1"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path d="M3 5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H3zm0 2h18v2H3V7zm0 4h18v6H3v-6zm2 3v2h6v-2H5z" />
         </svg>
         <span className="text-xs text-gray-800 font-medium">Subscribe to unlock</span>
       </div>
