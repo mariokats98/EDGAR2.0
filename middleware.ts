@@ -1,6 +1,5 @@
 // middleware.ts
-export { auth as middleware } from "@/auth";
-
-export const config = {
-  matcher: ["/account", "/api/stripe/:path*"]
-};
+import { NextResponse } from "next/server";
+export function middleware() {
+  return NextResponse.next();
+}
