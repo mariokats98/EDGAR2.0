@@ -4,10 +4,7 @@
 import * as React from "react";
 import NewsletterForm from "./components/NewsletterForm";
 
-/**
- * Reads a simple "isPro=1" cookie (set this after Stripe success/webhook).
- * If present -> unlocks all features on the homepage.
- */
+/** Detects if user has Pro subscription (from cookie) */
 function useIsProFromCookie() {
   const [isPro, setIsPro] = React.useState(false);
   React.useEffect(() => {
@@ -23,6 +20,18 @@ function lockedClick(e: React.MouseEvent<HTMLAnchorElement>, href: string) {
   e.preventDefault();
   const params = new URLSearchParams({ from: href });
   window.location.href = `/subscribe?${params.toString()}`;
+}
+
+/** Small reusable badge for PRO features */
+function ProBadge({ className = "" }: { className?: string }) {
+  return (
+    <span
+      title="Available with Herevna Pro"
+      className={`inline-flex items-center rounded-full bg-gradient-to-r from-indigo-600 to-blue-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm ${className}`}
+    >
+      PRO
+    </span>
+  );
 }
 
 export default function HomePage() {
@@ -64,18 +73,12 @@ export default function HomePage() {
             className="inline-flex items-center gap-2 rounded-full bg-black text-white px-5 py-2.5 text-sm hover:opacity-90 transition"
           >
             Explore EDGAR
-            <svg
-              aria-hidden
-              className="h-4 w-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-            >
+            <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
               <path strokeWidth="2" strokeLinecap="round" d="M7 17L17 7M9 7h8v8" />
             </svg>
           </a>
 
-          {/* Locked CTAs (unlock automatically if isPro) */}
+          {/* Locked CTAs (unlock if Pro) */}
           {[
             { label: "Explore BLS", href: "/bls" },
             { label: "Explore FRED", href: "/fred" },
@@ -97,10 +100,7 @@ export default function HomePage() {
                 className="group relative inline-flex items-center gap-2 rounded-full bg-white text-gray-900 border px-5 py-2.5 text-sm transition"
               >
                 {x.label}
-                <span className="ml-1 inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
-                  Locked
-                </span>
-                {/* hover tooltip */}
+                <ProBadge className="ml-2" />
                 <span className="pointer-events-none absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border bg-white px-2 py-1 text-xs text-gray-700 shadow opacity-0 group-hover:opacity-100 transition">
                   Subscription required — click to upgrade
                 </span>
@@ -113,80 +113,46 @@ export default function HomePage() {
       {/* Feature cards */}
       <section className="mx-auto max-w-6xl px-4 pb-16">
         <div className="grid gap-5 md:grid-cols-4">
-          {/* EDGAR (open) */}
-          <a
+          <UnlockedTile
             href="/edgar"
-            className="group block rounded-2xl border bg-white p-5 hover:shadow-md transition"
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">EDGAR Filings</h3>
-              <span className="text-xs rounded-full bg-gray-100 px-2 py-1 text-gray-700">SEC</span>
-            </div>
-            <p className="mt-2 text-sm text-gray-600">
-              Search 8-K, 10-Q, 10-K, S-1, 13D/G, 6-K and more. Filter by dates, form types, and reporting persons.
-            </p>
-            <div className="mt-4 text-sm text-blue-600 group-hover:underline">Open EDGAR →</div>
-          </a>
+            title="EDGAR Filings"
+            badge="SEC"
+            badgeClass="bg-gray-100 text-gray-700"
+            copy="Search 8-K, 10-Q, 10-K, S-1, 13D/G, 6-K and more. Filter by dates, form types, and reporting persons."
+            cta="Open EDGAR →"
+          />
 
-          {/* BLS (locked unless Pro) */}
-          {isPro ? (
-            <a
-              href="/bls"
-              className="group block rounded-2xl border bg-white p-5 hover:shadow-md transition"
-            >
-              <TileHeader title="BLS Dashboard" badge="Economy" badgeClass="bg-emerald-50 text-emerald-700" />
-              <TileCopy copy="Track CPI, Unemployment, Payrolls and more. View latest prints, trends, and release calendars." />
-              <TileCta text="Open BLS →" />
-            </a>
-          ) : (
-            <LockedTile
-              href="/bls"
-              title="BLS Dashboard"
-              badge="Economy"
-              badgeClass="bg-emerald-50 text-emerald-700"
-            />
-          )}
+          <LockedAwareTile
+            isPro={isPro}
+            href="/bls"
+            title="BLS Dashboard"
+            badge="Economy"
+            badgeClass="bg-emerald-50 text-emerald-700"
+            copy="Track CPI, Unemployment, Payrolls and more. View latest prints, trends, and release calendars."
+            cta="Open BLS →"
+          />
 
-          {/* FRED (locked unless Pro) */}
-          {isPro ? (
-            <a
-              href="/fred"
-              className="group block rounded-2xl border bg-white p-5 hover:shadow-md transition"
-            >
-              <TileHeader title="FRED Benchmarks" badge="Rates" badgeClass="bg-indigo-50 text-indigo-700" />
-              <TileCopy copy="Explore U.S. interest rates, yield curves, and macro benchmarks. Filter by series and date ranges." />
-              <TileCta text="Open FRED →" />
-            </a>
-          ) : (
-            <LockedTile
-              href="/fred"
-              title="FRED Benchmarks"
-              badge="Rates"
-              badgeClass="bg-indigo-50 text-indigo-700"
-            />
-          )}
+          <LockedAwareTile
+            isPro={isPro}
+            href="/fred"
+            title="FRED Benchmarks"
+            badge="Rates"
+            badgeClass="bg-indigo-50 text-indigo-700"
+            copy="Explore U.S. interest rates, yield curves, and macro benchmarks. Filter by series and date ranges."
+            cta="Open FRED →"
+          />
 
-          {/* Screener (locked unless Pro) */}
-          {isPro ? (
-            <a
-              href="/screener"
-              className="group block rounded-2xl border bg-white p-5 hover:shadow-md transition"
-            >
-              <TileHeader title="Stock Screener" badge="Markets" badgeClass="bg-purple-50 text-purple-700" />
-              <TileCopy copy="Filter by price action, volume, market cap, sector, and more. Click a row for a live chart." />
-              <TileCta text="Open Screener →" />
-            </a>
-          ) : (
-            <LockedTile
-              href="/screener"
-              title="Stock Screener"
-              badge="Markets"
-              badgeClass="bg-purple-50 text-purple-700"
-            />
-          )}
+          <LockedAwareTile
+            isPro={isPro}
+            href="/screener"
+            title="Stock Screener"
+            badge="Markets"
+            badgeClass="bg-purple-50 text-purple-700"
+            copy="Filter by price action, volume, market cap, sector, and more. Click a row for a live chart."
+            cta="Open Screener →"
+          />
         </div>
 
-        {/* News tease row (you can lock this too if needed) */}
         <div className="mt-8 grid place-items-center">
           <a
             href="/news"
@@ -197,7 +163,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* CTA strip */}
+      {/* CTA Strip */}
       <section className="mx-auto max-w-6xl px-4 pb-14">
         <div className="rounded-2xl border bg-white/80 backdrop-blur p-6 text-center shadow-sm">
           <h4 className="text-lg font-semibold text-gray-900">Ready to research faster?</h4>
@@ -222,15 +188,13 @@ export default function HomePage() {
               className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-5 py-2.5 text-sm shadow hover:opacity-95 transition"
             >
               ✨ Ask Herevna AI
-              {!isPro && (
-                <span className="ml-1 rounded-full bg-white/20 px-2 py-0.5 text-[10px]">Pro</span>
-              )}
+              {!isPro && <ProBadge className="ml-2 bg-white/20 text-white/90" />}
             </a>
           </div>
         </div>
       </section>
 
-      {/* Newsletter Signup */}
+      {/* Newsletter */}
       <section className="bg-slate-50 py-12 text-center">
         <h2 className="text-xl font-semibold text-gray-900">Stay updated with Herevna</h2>
         <p className="text-gray-600 text-sm mt-1">
@@ -251,64 +215,43 @@ export default function HomePage() {
   );
 }
 
-/* -------- Small presentational bits to avoid duplication -------- */
+/* ---- Helper Components ---- */
 
-function TileHeader({
-  title,
-  badge,
-  badgeClass,
-}: {
-  title: string;
-  badge: string;
-  badgeClass: string;
-}) {
+function UnlockedTile({ href, title, badge, badgeClass, copy, cta }: any) {
   return (
-    <div className="flex items-center justify-between">
-      <h3 className="text-lg font-semibold">{title}</h3>
-      <span className={`text-xs rounded-full px-2 py-1 ${badgeClass}`}>{badge}</span>
-    </div>
+    <a href={href} className="group block rounded-2xl border bg-white p-5 hover:shadow-md transition">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold">{title}</h3>
+        <span className={`text-xs rounded-full px-2 py-1 ${badgeClass}`}>{badge}</span>
+      </div>
+      <p className="mt-2 text-sm text-gray-600">{copy}</p>
+      <div className="mt-4 text-sm text-blue-600 group-hover:underline">{cta}</div>
+    </a>
   );
 }
 
-function TileCopy({ copy }: { copy: string }) {
-  return <p className="mt-2 text-sm text-gray-600">{copy}</p>;
-}
+function LockedAwareTile({ isPro, href, title, badge, badgeClass, copy, cta }: any) {
+  if (isPro) return <UnlockedTile href={href} title={title} badge={badge} badgeClass={badgeClass} copy={copy} cta={cta} />;
 
-function TileCta({ text }: { text: string }) {
-  return <div className="mt-4 text-sm text-blue-600 group-hover:underline">{text}</div>;
-}
-
-function LockedTile({
-  href,
-  title,
-  badge,
-  badgeClass,
-}: {
-  href: string;
-  title: string;
-  badge: string;
-  badgeClass: string;
-}) {
   return (
-    <div className="group relative block rounded-2xl border bg-white p-5 hover:shadow-md transition">
-      <a
-        href="#"
-        onClick={(e) => lockedClick(e, href)}
-        className="absolute inset-0"
-        aria-label={`${title} (locked)`}
-      />
-      <TileHeader title={title} badge={badge} badgeClass={badgeClass} />
-      <TileCopy copy="This feature is for Pro subscribers." />
-      <div className="mt-4 flex items-center gap-2 text-sm text-gray-500">
-        <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium">
-          Locked
-        </span>
-        <span className="hidden sm:inline">Subscription required</span>
+    <div className="relative group rounded-2xl border bg-white p-5 transition hover:shadow-md overflow-hidden">
+      <a href="#" onClick={(e) => lockedClick(e, href)} className="absolute inset-0 z-10" aria-label={`${title} (locked)`} />
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold flex items-center gap-2">
+          {title}
+          <ProBadge />
+        </h3>
+        <span className={`text-xs rounded-full px-2 py-1 ${badgeClass}`}>{badge}</span>
       </div>
+      <p className="mt-2 text-sm text-gray-600">{copy}</p>
+      <div className="mt-4 text-sm text-gray-500">Pro access required</div>
 
-      {/* hover tooltip */}
-      <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border bg-white px-2 py-1 text-xs text-gray-700 shadow opacity-0 group-hover:opacity-100 transition">
-        Click to subscribe
+      {/* Blur + lock overlay */}
+      <div className="absolute inset-0 bg-white/60 backdrop-blur-sm flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition">
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-gray-600 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 11V7a4 4 0 10-8 0v4H3a2 2 0 012 2v7a2 2 0 002 2h10a2 2 0 002-2v-7a2 2 0 012-2h-1V7a6 6 0 00-12 0v4" />
+        </svg>
+        <span className="text-xs text-gray-700 font-medium">Click to subscribe</span>
       </div>
     </div>
   );
