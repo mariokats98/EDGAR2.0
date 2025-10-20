@@ -54,22 +54,20 @@ export default function AboutPage() {
       <section className="mx-auto max-w-6xl px-4 py-10">
         <div className="grid gap-5 md:grid-cols-3">
           <ValueCard
-  title="Everything in One Dashboard"
-  copy="EDGAR filings, economic data, and market trends—brought together in a single, searchable view. Stop tab-hopping and focus on insights that matter."
-  icon={<IconDashboard />}
-/>
-
-<ValueCard
-  title="Visuals That Speak"
-  copy="Data that feels human. Each chart, table, and metric is designed for clarity and speed—so you spot patterns instantly without distractions."
-  icon={<IconChart />}
-/>
-
-<ValueCard
-  title="Built for How You Work"
-  copy="From screening tickers to tracking insider and congressional trades, Herevna Pro is shaped around the real workflows of researchers and investors."
-  icon={<IconWorkflow />}
-/>
+            title="Everything in One Dashboard"
+            copy="EDGAR filings, economic data, and market trends—brought together in a single, searchable view. Stop tab-hopping and focus on insights that matter."
+            icon={<IconDashboard />}
+          />
+          <ValueCard
+            title="Visuals That Speak"
+            copy="Data that feels human. Each chart, table, and metric is designed for clarity and speed—so you spot patterns instantly without distractions."
+            icon={<IconChart />}
+          />
+          <ValueCard
+            title="Built for How You Work"
+            copy="From screening tickers to tracking insider and congressional trades, Herevna Pro is shaped around the real workflows of researchers and investors."
+            icon={<IconWorkflow />}
+          />
         </div>
       </section>
 
@@ -170,7 +168,7 @@ function ValueCard({
   icon: React.ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border bg-white p-6 shadow-sm">
+    <div className="rounded-2xl border bg-white p-6 shadow-sm transition hover:shadow-md hover:-translate-y-[1px]">
       <div className="flex items-center gap-3">
         <div className="grid h-10 w-10 place-items-center rounded-lg bg-indigo-50 text-indigo-700">
           {icon}
@@ -199,24 +197,27 @@ function Check() {
     </svg>
   );
 }
-function IconLayers() {
+
+function IconDashboard() {
   return (
     <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M12 2L1 7l11 5 9-4.09V14h2V7L12 2zM1 17l11 5 11-5-2-1-9 4-9-4-2 1z" />
+      <path d="M3 3h8v8H3V3zm0 10h8v8H3v-8zm10 0h8v8h-8v-8zm0-10h8v8h-8V3z" />
     </svg>
   );
 }
-function IconSpark() {
+
+function IconChart() {
   return (
     <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M13 2l1.5 5H20l-4 3 1.5 5L13 12l-4.5 3L10 10 6 7h5.5L13 2z" />
+      <path d="M5 3h2v18H5V3zm6 6h2v12h-2V9zm6-4h2v16h-2V5z" />
     </svg>
   );
 }
-function IconFlow() {
+
+function IconWorkflow() {
   return (
     <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M3 7h8a3 3 0 010 6H8a3 3 0 000 6h13v-2H8a1 1 0 110-2h3a5 5 0 000-10H3v2z" />
+      <path d="M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 0h6v6h-6v-6zM10 7h4v2h-4V7zm0 8h4v2h-4v-2z" />
     </svg>
   );
 }
