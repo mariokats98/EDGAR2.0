@@ -1,9 +1,8 @@
 // app/layout.tsx
 import "./styles/globals.css";
 import Header from "./components/Header";
-import Providers from "./providers";
+import Providers from "./providers"; // <-- client component
 import { Analytics } from "@vercel/analytics/next";
-import { SessionProvider } from "next-auth/react";
 
 export const metadata = {
   title: "Herevna — EDGAR, BLS, FRED & Markets",
@@ -16,23 +15,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="min-h-screen bg-gradient-to-b from-white to-slate-50 text-gray-900 antialiased">
-        {/* Wrap everything with SessionProvider for NextAuth */}
-        <SessionProvider>
-          {/* Your custom app-wide Providers (if you have Theme, SWR, etc.) */}
-          <Providers>
-            {/* Global header */}
-            <Header />
-
-            {/* Main content area */}
-            <main className="min-h-[60vh]">{children}</main>
-
-            {/* Global footer */}
-            <SiteFooter />
-
-            {/* Vercel Analytics */}
-            <Analytics />
-          </Providers>
-        </SessionProvider>
+        {/* All client contexts live inside this Providers wrapper */}
+        <Providers>
+          <Header />
+          <main className="min-h-[60vh]">{children}</main>
+          <SiteFooter />
+          <Analytics />
+        </Providers>
       </body>
     </html>
   );
