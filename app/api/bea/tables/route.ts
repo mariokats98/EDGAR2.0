@@ -1,111 +1,98 @@
 // app/api/bea/tables/route.ts
 import { NextResponse } from "next/server";
 
-const BEA_BASE = "https://apps.bea.gov/api/data";
+type Option = { value: string; label: string };
 
-// Normalize dataset names (handles case, punctuation)
-const DATASET_ALIASES: Record<string, string> = {
-  nipa: "NIPA",
-  niunderlyingdetail: "NIUnderlyingDetail",
-  fixedassets: "FixedAssets",
-  gdpbyindustry: "GDPByIndustry",
-  underlyinggdpbyindustry: "UnderlyingGDPbyIndustry",
-  inputoutput: "InputOutput",
-  regional: "Regional",
-  ita: "ITA",
-  intlservtrade: "IntlServTrade",
-  intlservsta: "IntlServSTA",
-  iip: "IIP",
-  mne: "MNE",
-};
-function normDataset(s: string) {
-  const k = (s || "").replace(/[^a-z]/gi, "").toLowerCase();
-  return DATASET_ALIASES[k] || s || "NIPA";
+const BEA_API_BASE = "https://apps.bea.gov/api/data/";
+
+// prefer server-only secret; fall back to a public one if you had it
+const BEA_KEY =
+  process.env.BEA_API_KEY ??
+  process.env.NEXT_PUBLIC_BEA_API_KEY ??
+  "";
+
+// Helper: build safe query string (no undefineds, everything as string)
+function makeQS(params: Record<string, string | number | undefined>) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) qs.append(k, String(v));
+  }
+  return qs;
 }
 
-// Known/likely parameter names to list choices for each dataset
-const CANDIDATE_PARAMS: Record<string, string[]> = {
-  NIPA: ["TableName", "TableID"],
-  NIUnderlyingDetail: ["TableName", "TableID"],
-  FixedAssets: ["TableName", "TableID"],
-  GDPByIndustry: ["TableID", "TableName"],
-  Regional: ["TableName", "TableID"],
-  UnderlyingGDPbyIndustry: ["TableID", "TableName", "Industry"],
-  InputOutput: ["TableID", "TableName"],
-  ITA: ["Indicator", "Series", "TypeOfInvestment"],
-  IntlServTrade: ["TypeOfService", "TradeDirection", "AreaOrCountry"],
-  IntlServSTA: ["Channel", "Destination", "Industry"],
-  IIP: ["TypeOfInvestment", "Component"],
-  MNE: ["DirectionOfInvestment", "Series", "Classification"],
-};
-
-type Option = { key: string; desc: string };
-
+// GET /api/bea/tables?dataset=NIPA (dataset optional; defaults to NIPA)
+// Returns available parameter values for a few common BEA params you likely use
 export async function GET(req: Request) {
   try {
-    const url = new URL(req.url);
-    const raw = url.searchParams.get("dataset") || "NIPA";
-    const dataset = normDataset(raw);
-
-    const key = process.env.BEA_API_KEY;
-    if (!key) {
-      return NextResponse.json({ error: "Missing BEA_API_KEY env var." }, { status: 500 });
+    if (!BEA_KEY) {
+      return NextResponse.json(
+        { error: "BEA_API_KEY is not configured on the server" },
+        { status: 500 }
+      );
     }
 
-    const candidates = CANDIDATE_PARAMS[dataset] ?? ["TableName", "TableID", "Indicator", "Series"];
+    const { searchParams } = new URL(req.url);
+    const dataset = searchParams.get("dataset") || "NIPA";
 
-    async function fetchValues(paramName: string): Promise<Option[]> {
-      const qs = new URLSearchParams({
-        UserID: key,
-        method: "GetParameterValues",
-        datasetname: dataset,
-        ParameterName: paramName,
-        ResultFormat: "JSON",
-      });
-      const r = await fetch(`${BEA_BASE}/?${qs.toString()}`, { cache: "no-store" });
-      if (!r.ok) return [];
-      const j = await r.json();
-
-      // Handle BEA error format gracefully
-      if (j?.BEAAPI?.Error) return [];
-
-      const rows = j?.BEAAPI?.Results?.ParamValue ?? [];
-      const out: Option[] = rows.map((x: any) => {
-        const k = String(x?.Key ?? x?.SeriesID ?? x?.Value ?? "").trim();
-        const d =
-          String(
-            x?.Desc ||
-              x?.Description ||
-              x?.TableDescription ||
-              x?.SeriesDescription ||
-              x?.Note ||
-              k
-          ).trim();
-        return { key: k, desc: d || k };
-      });
-      const seen = new Set<string>();
-      return out.filter((o) => o.key && !seen.has(o.key) && seen.add(o.key));
-    }
-
-    for (const param of candidates) {
-      try {
-        const options = await fetchValues(param);
-        if (options.length > 0) {
-          options.sort((a, b) => a.desc.localeCompare(b.desc));
-          return NextResponse.json({ dataset, paramUsed: param, options });
-        }
-      } catch {
-        // try next candidate
-      }
-    }
+    // Example: fetch valid values for a couple of parameters your UI might need.
+    // Adjust the list as your UI expects (e.g., "TableName", "TableID", "Frequency", etc.)
+    const [tables, frequencies] = await Promise.all([
+      fetchValues(dataset, "TableName"),
+      fetchValues(dataset, "Frequency"),
+    ]);
 
     return NextResponse.json({
       dataset,
-      paramUsed: null,
-      options: [],
-      warning: "No listable selector found for this dataset.",
+      tables,
+      frequencies,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
+  } catch (err) {
+    console.error("BEA tables route error:", err);
+    return NextResponse.json(
+      { error: "Failed to fetch BEA data" },
+      { status: 500 }
+    );
   }
 }
+
+// Call BEA GetParameterValues for a specific parameter
+async function fetchValues(
+  dataset: string,
+  parameterName: string
+): Promise<Option[]> {
+  const qs = makeQS({
+    UserID: BEA_KEY, // MUST be string (we ensure non-undefined above)
+    method: "GetParameterValues",
+    datasetname: dataset,
+    ParameterName: parameterName,
+    ResultFormat: "JSON",
+  });
+
+  const url = `${BEA_API_BASE}?${qs.toString()}`;
+  const res = await fetch(url, { cache: "no-store" });
+
+  if (!res.ok) {
+    // Return empty list on failure rather than throwing, if you prefer
+    throw new Error(`BEA request failed for ${parameterName}: ${res.status}`);
+  }
+
+  const data = (await res.json()) as any;
+
+  // The BEA response shape depends on ParameterName. Common shape:
+  // { BEAAPI: { Results: { ParamValue: [{ Key: "...", Desc: "..." }, ...] } } }
+  const paramValues =
+    data?.BEAAPI?.Results?.ParamValue ??
+    data?.BEAAPI?.Results?.ParamValueList ??
+    [];
+
+  // Normalize to { value, label }
+  const options: Option[] = paramValues.map((row: any) => ({
+    value: String(row.Key ?? row.Value ?? row.ParameterValue ?? ""),
+    label: String(row.Desc ?? row.Description ?? row.Key ?? ""),
+  }));
+
+  // filter out empties just in case
+  return options.filter((o) => o.value);
+}
+
+export const dynamic = "force-dynamic";
