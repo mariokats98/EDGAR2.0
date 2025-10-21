@@ -2,82 +2,100 @@ import { NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
 import type Stripe from "stripe";
+import { Role } from "@prisma/client"; // ✅ use Prisma enum
 
 // App Router route-segment config (supported in Next 13/14)
-// Pin to the Node runtime (Stripe SDK needs Node, not Edge)
 export const runtime = "nodejs";
-// Make sure this route never gets statically optimized
 export const dynamic = "force-dynamic";
-// (optional) give the webhook more time if needed on Vercel
-export const maxDuration = 60;
+
+async function updateUserRoleByEmail(email: string, isActive: boolean) {
+  // role field is an enum; set it with Prisma's Role enum
+  await prisma.user.updateMany({
+    where: { email },
+    data: { role: isActive ? Role.PRO : Role.FREE }, // ✅ enum, not string
+  });
+}
 
 export async function POST(req: Request) {
-  // Stripe sends a signature header you must verify using the raw body
   const sig = req.headers.get("stripe-signature");
-  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  const signingSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-  if (!endpointSecret || !sig) {
-    return new NextResponse("Missing webhook secret or signature", { status: 400 });
+  if (!sig || !signingSecret) {
+    return NextResponse.json(
+      { error: "Missing Stripe webhook configuration" },
+      { status: 400 }
+    );
   }
 
   let event: Stripe.Event;
+
   try {
-    const raw = await req.text(); // raw body required for constructEvent
-    event = stripe.webhooks.constructEvent(raw, sig, endpointSecret);
+    const raw = await req.text(); // raw text body for signature verification
+    event = stripe.webhooks.constructEvent(raw, sig, signingSecret);
   } catch (err: any) {
-    console.error("Webhook signature verification failed:", err?.message);
-    return new NextResponse(`Webhook Error: ${err?.message ?? "invalid signature"}`, { status: 400 });
+    return NextResponse.json(
+      { error: `Webhook signature verification failed: ${err?.message || err}` },
+      { status: 400 }
+    );
   }
 
   try {
     switch (event.type) {
       case "checkout.session.completed": {
-        // no-op; we’ll flip role when subscription is created/updated below
+        const session = event.data.object as Stripe.Checkout.Session;
+        const email =
+          (session.customer_details?.email ||
+            (session.customer_email as string | null)) ?? null;
+
+        if (email) {
+          await updateUserRoleByEmail(email, true);
+        }
         break;
       }
 
-      case "customer.subscription.created":
-      case "customer.subscription.updated": {
+      case "customer.subscription.updated":
+      case "customer.subscription.created": {
         const sub = event.data.object as Stripe.Subscription;
-        const custId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
+        const email =
+          (sub?.metadata?.userEmail as string | undefined) ||
+          (sub?.customer_email as string | undefined) ||
+          null;
 
-        // get customer email to map to your user
-        const customer = await stripe.customers.retrieve(custId);
-        const email = (customer as Stripe.Customer).email ?? undefined;
+        const isActive =
+          sub.status === "active" ||
+          sub.status === "trialing" ||
+          sub.status === "past_due";
 
         if (email) {
-          const isActive = ["active", "trialing"].includes(sub.status);
-          await prisma.user.updateMany({
-            where: { email },
-            data: { role: isActive ? "PRO" : "FREE" },
-          });
+          await updateUserRoleByEmail(email, isActive);
         }
         break;
       }
 
       case "customer.subscription.deleted": {
         const sub = event.data.object as Stripe.Subscription;
-        const custId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
-        const customer = await stripe.customers.retrieve(custId);
-        const email = (customer as Stripe.Customer).email ?? undefined;
+        const email =
+          (sub?.metadata?.userEmail as string | undefined) ||
+          (sub?.customer_email as string | undefined) ||
+          null;
 
         if (email) {
-          await prisma.user.updateMany({
-            where: { email },
-            data: { role: "FREE" },
-          });
+          await updateUserRoleByEmail(email, false); // revert to FREE
         }
         break;
       }
 
       default:
-        // ignore other events
+        // no-op for other events
         break;
     }
 
-    return NextResponse.json({ received: true });
+    return NextResponse.json({ received: true }, { status: 200 });
   } catch (err: any) {
     console.error("Webhook handler error:", err);
-    return new NextResponse("Webhook handler error", { status: 500 });
+    return NextResponse.json(
+      { error: err?.message || "Unhandled webhook error" },
+      { status: 500 }
+    );
   }
 }
