@@ -17,13 +17,7 @@
   position: absolute;
   inset: 1px;
   border-radius: inherit;
-  background: linear-gradient(
-    270deg,
-    #2563eb,
-    #4f46e5,
-    #7c3aed,
-    #2563eb
-  );
+  background: linear-gradient(270deg, #2563eb, #4f46e5, #7c3aed, #2563eb);
   background-size: 300% 300%;
   z-index: 0;
   animation: liquid-move 7.5s ease-in-out infinite;
@@ -35,13 +29,7 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: linear-gradient(
-    270deg,
-    #2563eb,
-    #4f46e5,
-    #7c3aed,
-    #2563eb
-  );
+  background: linear-gradient(270deg, #2563eb, #4f46e5, #7c3aed, #2563eb);
   background-size: 300% 300%;
   filter: blur(10px);
   opacity: 0.85;
@@ -65,15 +53,9 @@
 
 /* animation keyframes */
 @keyframes liquid-move {
-  0% {
-    background-position: 0% 50%;
-  }
-  50% {
-    background-position: 100% 50%;
-  }
-  100% {
-    background-position: 0% 50%;
-  }
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 
 /* accessibility: disable motion */
@@ -83,23 +65,4 @@
     animation: none;
     background-position: 50% 50%;
   }
-}
-
-/* ---- Extra global enhancements ---- */
-html,
-body {
-  scroll-behavior: smooth;
-}
-
-a {
-  text-decoration: none;
-}
-
-button {
-  cursor: pointer;
-}
-
-/* hide focus outlines unless keyboard navigation */
-:focus:not(:focus-visible) {
-  outline: none;
 }
