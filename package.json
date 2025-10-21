@@ -4,11 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build:tickers": "node -e \"console.log('Skipping build:tickers (not used)')\"",
+    "build": "prisma migrate deploy && prisma generate && next build",
     "start": "next start",
-    "lint": "next lint",
-    "postinstall": "prisma generate",
-    "build:tickers": "node -e \"console.log('Skipping build:tickers (not used)')\""
+    "postinstall": "prisma generate"
   },
   "engines": {
     "node": "20.x"
@@ -20,20 +19,17 @@
     "next": "14.2.5",
     "next-auth": "4.24.11",
     "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "stripe": "^15.9.0"
+    "react-dom": "18.3.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
-    "@types/node": "^20.14.10",
+    "@types/node": "^20.12.12",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
-    "autoprefixer": "^10.4.20",
-    "eslint": "8.57.0",
-    "eslint-config-next": "14.2.5",
-    "postcss": "^8.4.47",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
     "prisma": "5.22.0",
-    "tailwindcss": "^3.4.10",
-    "typescript": "5.4.5"
+    "tailwindcss": "^3.4.3",
+    "typescript": "^5.6.3"
   }
 }
