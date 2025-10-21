@@ -6,10 +6,16 @@ declare global {
   var prisma: PrismaClient | undefined;
 }
 
+// Reuse the Prisma instance on hot reloads in dev. New one in prod.
 export const prisma =
   global.prisma ??
   new PrismaClient({
-    log: process.env.NODE_ENV === "development" ? ["query", "warn", "error"] : ["error"],
+    log:
+      process.env.NODE_ENV === "development"
+        ? ["query", "error", "warn"]
+        : ["error"],
   });
 
-if (process.env.NODE_ENV !== "production") global.prisma = prisma;
+if (process.env.NODE_ENV !== "production") {
+  global.prisma = prisma;
+}
