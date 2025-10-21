@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
-import prisma from "@/lib/prisma";
+import { prisma } from "@/lib/prisma";
 import type Stripe from "stripe";
 
 // App Router route-segment config (supported in Next 13/14)
