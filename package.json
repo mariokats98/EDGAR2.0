@@ -5,9 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build:tickers": "node -e \"console.log('Skipping build:tickers (not used)')\"",
-    "build": "prisma migrate deploy && prisma generate && next build",
+    "build": "sh -c 'export DATABASE_URL=\"$DATABASE_DATABASE_URL\" && prisma migrate deploy && prisma generate && next build'",
     "start": "next start",
-    "postinstall": "prisma generate"
+    "postinstall": "sh -c 'export DATABASE_URL=\"$DATABASE_DATABASE_URL\" && prisma generate'"
   },
   "engines": {
     "node": "20.x"
