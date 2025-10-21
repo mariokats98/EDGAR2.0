@@ -5,49 +5,47 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_DATABASE_URL") // keep this env name in Vercel
+  url      = env("DATABASE_DATABASE_URL")
 }
 
 enum Role {
-  FREE
-  PRO
+  USER
+  ADMIN
 }
 
-// NextAuth core models + your custom fields
 model User {
-  id               String    @id @default(cuid())
+  id               String   @id @default(cuid())
+  email            String?  @unique
   name             String?
-  email            String?   @unique
-  emailVerified    DateTime?
   image            String?
+  emailVerified    DateTime?
+  role             Role     @default(USER)
+  stripeCustomerId String?
+  // 👇 add this to support Credentials login
+  password         String?  // hashed password
 
-  // custom
-  role             Role      @default(FREE)
-  stripeCustomerId String?   @unique
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  // relations
-  accounts         Account[]
-  sessions         Session[]
-
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  accounts Account[]
+  sessions Session[]
 }
 
 model Account {
-  id                String   @id @default(cuid())
+  id                String  @id @default(cuid())
   userId            String
   type              String
   provider          String
   providerAccountId String
-  refresh_token     String?  @db.Text
-  access_token      String?  @db.Text
+  refresh_token     String?
+  access_token      String?
   expires_at        Int?
   token_type        String?
   scope             String?
-  id_token          String?  @db.Text
+  id_token          String?
   session_state     String?
 
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
 }
@@ -58,7 +56,7 @@ model Session {
   userId       String
   expires      DateTime
 
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model VerificationToken {
