@@ -1,5 +1,6 @@
-// app/api/auth/[...nextauth]/route.ts
-import { handlers } from "@/auth";
+// app/api/auth/[...nextauth]/route.ts — NextAuth v4 (App Router)
+import NextAuth from 'next-auth';
+import { authOptions } from '@/lib/auth';
 
-// NextAuth v5: expose GET and POST from handlers
-export const { GET, POST } = handlers;
+const handler = NextAuth(authOptions);
+export { handler as GET, handler as POST };
