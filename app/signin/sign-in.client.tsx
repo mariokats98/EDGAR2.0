@@ -1,72 +1,90 @@
-// app/signin/sign-in.client.tsx
-"use client";
+'use client';
 
-import { useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { signIn } from "next-auth/react";
+import * as React from 'react';
+import { useRouter } from 'next/navigation';
+import { signIn, type SignInResponse } from 'next-auth/react';
 
 export default function SignInClient() {
-  const params = useSearchParams();
-  const [email, setEmail] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+  const [email, setEmail] = React.useState('');
+  const [password, setPassword] = React.useState('');
+  const [error, setError] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(false);
 
-  // allow ?callbackUrl=/account or fall back to /account
-  const callbackUrl = params.get("callbackUrl") || "/account";
-
-  async function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
-    setSubmitting(true);
+    setLoading(true);
 
     try {
-      // Credentials flow: email-only. Your auth.ts creates user if missing.
-      const res = await signIn("credentials", {
+      // Explicitly type the return so TS doesn't treat it as `never`
+      const res = (await signIn<'credentials'>('credentials', {
+        redirect: false,
         email,
-        redirect: true,
-        callbackUrl,
-      });
+        password,
+      })) as SignInResponse | undefined;
 
-      // If redirect: true, NextAuth will navigate. If it returns, it failed.
-      if (res?.error) setError(res.error);
-    } catch (err: any) {
-      setError(err?.message || "Sign-in failed");
+      // If NextAuth didn’t redirect and returned a response, check for error
+      if (res?.error) {
+        setError(res.error);
+      } else if (res?.ok) {
+        // success without redirect
+        router.push('/account');
+      } else if (res?.url) {
+        // in case a URL is provided (rare with redirect:false)
+        window.location.href = res.url;
+      } else {
+        // no response object (e.g., provider misconfig)
+        setError('Sign-in failed. Please try again.');
+      }
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error ? err.message : typeof err === 'string' ? err : 'Sign-in failed';
+      setError(msg);
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
-      <label className="block">
-        <span className="mb-1 block text-sm font-medium">Email</span>
+    <form onSubmit={onSubmit} className="mx-auto max-w-sm space-y-4">
+      <div className="space-y-2">
+        <label className="block text-sm font-medium">Email</label>
         <input
           type="email"
-          required
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@company.com"
-          className="w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+          className="w-full rounded-md border px-3 py-2"
+          required
+          autoComplete="email"
         />
-      </label>
+      </div>
+
+      <div className="space-y-2">
+        <label className="block text-sm font-medium">Password</label>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="w-full rounded-md border px-3 py-2"
+          required
+          autoComplete="current-password"
+        />
+      </div>
 
       {error && (
-        <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p className="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">
           {error}
-        </div>
+        </p>
       )}
 
       <button
         type="submit"
-        disabled={submitting}
-        className="w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+        disabled={loading}
+        className="liquid-btn inline-flex w-full items-center justify-center rounded-full px-4 py-2 font-medium"
       >
-        {submitting ? "Signing in..." : "Continue"}
+        <span>{loading ? 'Signing in…' : 'Sign in'}</span>
       </button>
-
-      <p className="text-xs text-gray-500">
-        By continuing, you agree to the Terms and acknowledge the Data Disclaimer.
-      </p>
     </form>
   );
 }
