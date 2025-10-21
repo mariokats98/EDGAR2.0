@@ -2,17 +2,18 @@ import { NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
 import type Stripe from "stripe";
-import { Role } from "@prisma/client"; // ✅ use Prisma enum
+import { Role } from "@prisma/client";
 
-// App Router route-segment config (supported in Next 13/14)
+// App Router config
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 async function updateUserRoleByEmail(email: string, isActive: boolean) {
-  // role field is an enum; set it with Prisma's Role enum
+  // Your schema enum is { USER, ADMIN } — map subscription to an existing role.
+  // If you want separate tiers later, store them in another field (e.g., subscriptionTier).
   await prisma.user.updateMany({
     where: { email },
-    data: { role: isActive ? Role.PRO : Role.FREE }, // ✅ enum, not string
+    data: { role: isActive ? Role.ADMIN : Role.USER },
   });
 }
 
@@ -30,8 +31,8 @@ export async function POST(req: Request) {
   let event: Stripe.Event;
 
   try {
-    const raw = await req.text(); // raw text body for signature verification
-    event = stripe.webhooks.constructEvent(raw, sig, signingSecret);
+    const rawBody = await req.text(); // required for Stripe verification
+    event = stripe.webhooks.constructEvent(rawBody, sig, signingSecret);
   } catch (err: any) {
     return NextResponse.json(
       { error: `Webhook signature verification failed: ${err?.message || err}` },
@@ -47,18 +48,16 @@ export async function POST(req: Request) {
           (session.customer_details?.email ||
             (session.customer_email as string | null)) ?? null;
 
-        if (email) {
-          await updateUserRoleByEmail(email, true);
-        }
+        if (email) await updateUserRoleByEmail(email, true);
         break;
       }
 
-      case "customer.subscription.updated":
-      case "customer.subscription.created": {
+      case "customer.subscription.created":
+      case "customer.subscription.updated": {
         const sub = event.data.object as Stripe.Subscription;
         const email =
           (sub?.metadata?.userEmail as string | undefined) ||
-          (sub?.customer_email as string | undefined) ||
+          (sub as any)?.customer_email ||
           null;
 
         const isActive =
@@ -66,9 +65,7 @@ export async function POST(req: Request) {
           sub.status === "trialing" ||
           sub.status === "past_due";
 
-        if (email) {
-          await updateUserRoleByEmail(email, isActive);
-        }
+        if (email) await updateUserRoleByEmail(email, isActive);
         break;
       }
 
@@ -76,23 +73,21 @@ export async function POST(req: Request) {
         const sub = event.data.object as Stripe.Subscription;
         const email =
           (sub?.metadata?.userEmail as string | undefined) ||
-          (sub?.customer_email as string | undefined) ||
+          (sub as any)?.customer_email ||
           null;
 
-        if (email) {
-          await updateUserRoleByEmail(email, false); // revert to FREE
-        }
+        if (email) await updateUserRoleByEmail(email, false);
         break;
       }
 
       default:
-        // no-op for other events
+        // ignore other events
         break;
     }
 
     return NextResponse.json({ received: true }, { status: 200 });
   } catch (err: any) {
-    console.error("Webhook handler error:", err);
+    console.error("Webhook error:", err);
     return NextResponse.json(
       { error: err?.message || "Unhandled webhook error" },
       { status: 500 }
