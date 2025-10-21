@@ -1,57 +1,67 @@
-// lib/auth.ts — NextAuth v4 (App Router)
-import type { NextAuthOptions } from 'next-auth';
-import Credentials from 'next-auth/providers/credentials';
-import { PrismaAdapter } from '@next-auth/prisma-adapter';
-import { prisma } from './prisma';
-import { compare } from 'bcryptjs';
+// lib/auth.ts
+import { PrismaAdapter } from "@next-auth/prisma-adapter";
+import { NextAuthOptions } from "next-auth";
+import CredentialsProvider from "next-auth/providers/credentials";
+import prisma from "./prisma";
+import bcrypt from "bcryptjs";
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
-  session: { strategy: 'jwt' },
 
   providers: [
-    Credentials({
-      name: 'Credentials',
+    CredentialsProvider({
+      name: "Credentials",
       credentials: {
-        email: { label: 'Email', type: 'email' },
-        password: { label: 'Password', type: 'password' },
+        email: { label: "Email", type: "text" },
+        password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) return null;
+        if (!credentials?.email || !credentials.password) {
+          throw new Error("Missing credentials");
+        }
 
         const user = await prisma.user.findUnique({
           where: { email: credentials.email },
-          select: { id: true, email: true, password: true, name: true },
         });
 
-        if (!user || !user.password) return null;
+        if (!user || !user.password) {
+          throw new Error("Invalid credentials");
+        }
 
-        const ok = await compare(credentials.password, user.password);
-        if (!ok) return null;
+        const passwordValid = await bcrypt.compare(
+          credentials.password,
+          user.password
+        );
 
-        // What ends up in the JWT (when using session.strategy = 'jwt')
-        return { id: user.id, email: user.email, name: user.name ?? undefined };
+        if (!passwordValid) {
+          throw new Error("Invalid credentials");
+        }
+
+        return user;
       },
     }),
   ],
 
-  pages: {
-    signIn: '/signin',
-  },
+  session: { strategy: "jwt" },
 
   callbacks: {
     async jwt({ token, user }) {
-      // Merge freshly authorized user into token on sign-in
       if (user) {
-        token.id = (user as any).id;
+        token.id = user.id;
       }
       return token;
     },
     async session({ session, token }) {
-      if (session.user && token?.id) {
-        (session.user as any).id = token.id;
+      if (session.user && token.id) {
+        session.user.id = token.id as string;
       }
       return session;
     },
   },
+
+  pages: {
+    signIn: "/auth/signin",
+  },
+
+  secret: process.env.NEXTAUTH_SECRET,
 };
