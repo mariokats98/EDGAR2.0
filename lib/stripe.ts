@@ -1,13 +1,10 @@
-// lib/stripe.ts
 import Stripe from "stripe";
 
-const key = process.env.STRIPE_SECRET_KEY;
-if (!key) {
-  throw new Error("Missing STRIPE_SECRET_KEY");
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+if (!STRIPE_SECRET_KEY) {
+  throw new Error("STRIPE_SECRET_KEY is not set");
 }
 
-// Use the API version your installed stripe types accept.
-// If you later bump `stripe` to latest, you can update this string.
-export const stripe = new Stripe(key, {
+export const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2023-10-16",
 });
