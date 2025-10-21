@@ -17,24 +17,20 @@ export default function SignInClient() {
     setLoading(true);
 
     try {
-      // Explicitly type the return so TS doesn't treat it as `never`
-      const res = (await signIn<'credentials'>('credentials', {
+      // NextAuth v4: no generic on signIn, cast the response shape
+      const res = (await signIn('credentials', {
         redirect: false,
         email,
         password,
       })) as SignInResponse | undefined;
 
-      // If NextAuth didn’t redirect and returned a response, check for error
       if (res?.error) {
         setError(res.error);
       } else if (res?.ok) {
-        // success without redirect
         router.push('/account');
       } else if (res?.url) {
-        // in case a URL is provided (rare with redirect:false)
         window.location.href = res.url;
       } else {
-        // no response object (e.g., provider misconfig)
         setError('Sign-in failed. Please try again.');
       }
     } catch (err: unknown) {
