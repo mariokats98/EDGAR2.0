@@ -1,19 +1,19 @@
 // lib/auth.ts
-import type { NextAuthOptions } from 'next-auth';
-import CredentialsProvider from 'next-auth/providers/credentials';
-import { PrismaAdapter } from '@next-auth/prisma-adapter';
-import { prisma } from './prisma';
-import bcrypt from 'bcryptjs';
+import type { NextAuthOptions } from "next-auth";
+import CredentialsProvider from "next-auth/providers/credentials";
+import { PrismaAdapter } from "@next-auth/prisma-adapter";
+import { prisma } from "./prisma";
+import bcrypt from "bcryptjs";
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
 
   providers: [
     CredentialsProvider({
-      name: 'Credentials',
+      name: "Credentials",
       credentials: {
-        email: { label: 'Email', type: 'email' },
-        password: { label: 'Password', type: 'password' },
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
@@ -35,7 +35,6 @@ export const authOptions: NextAuthOptions = {
         const ok = await bcrypt.compare(credentials.password, user.password);
         if (!ok) return null;
 
-        // Return sanitized user object
         return {
           id: user.id,
           name: user.name ?? undefined,
@@ -47,17 +46,17 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
 
-  session: { strategy: 'jwt' },
+  session: { strategy: "jwt" },
 
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
-        // Add user role to token if exists
-        if ('role' in user) token.role = user.role as string;
+        if ("role" in user) token.role = user.role as string;
       }
       return token;
     },
+
     async session({ session, token }) {
       if (session.user && token) {
         (session.user as any).id = token.id as string;
@@ -65,6 +64,10 @@ export const authOptions: NextAuthOptions = {
       }
       return session;
     },
+  },
+
+  pages: {
+    signIn: "/login", // optional — adjust to your login route
   },
 
   secret: process.env.NEXTAUTH_SECRET,
