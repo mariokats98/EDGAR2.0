@@ -1,4 +1,3 @@
-// lib/auth.ts
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
@@ -32,9 +31,11 @@ export const authOptions: NextAuthOptions = {
 
         if (!user || !user.password) return null;
 
+        // ✅ Correct lowercase variable
         const ok = await bcrypt.compare(credentials.password, user.password);
         if (!ok) return null;
 
+        // Return sanitized user object
         return {
           id: user.id,
           name: user.name ?? undefined,
@@ -67,7 +68,7 @@ export const authOptions: NextAuthOptions = {
   },
 
   pages: {
-    signIn: "/login", // optional — adjust to your login route
+    signIn: "/login", // adjust if your login page differs
   },
 
   secret: process.env.NEXTAUTH_SECRET,
