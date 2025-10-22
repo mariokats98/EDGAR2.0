@@ -1,12 +1,12 @@
-// tailwind.config.ts
-import type { Config } from "tailwindcss";
-
+/** @type {import('tailwindcss').Config} */
 export default {
   content: [
-    "./app/**/*.{ts,tsx}",
-    "./components/**/*.{ts,tsx}",
-    "./lib/**/*.{ts,tsx}"
+    "./app/**/*.{ts,tsx,js,jsx,mdx}",
+    "./components/**/*.{ts,tsx,js,jsx,mdx}",
+    "./pages/**/*.{ts,tsx,js,jsx,mdx}"
   ],
-  theme: { extend: {} },
-  plugins: []
-} satisfies Config;
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+};
