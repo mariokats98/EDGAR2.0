@@ -1,68 +1,30 @@
-// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Use YOUR storage_* vars exactly as provided by your provider
+  url       = env("storage_DATABASE_URL")
+  // Direct connection for Prisma (non-pooled). If your provider gave this:
+  directUrl = env("storage_PRISMA_DATABASE_URL")
+  // If they also provided a pooled “POSTGRES_URL”, you can ignore it for Prisma.
+}
+
+model User {
+  id               String   @id @default(uuid())
+  name             String?
+  email            String?  @unique
+  emailVerified    DateTime?
+  image            String?
+  password         String?
+  role             Role     @default(USER)
+  stripeCustomerId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }
 
 enum Role {
   USER
   ADMIN
-}
-
-model User {
-  id               String   @id @default(cuid())
-  email            String?  @unique
-  name             String?
-  image            String?
-  emailVerified    DateTime?
-  role             Role     @default(USER)
-  stripeCustomerId String?
-  // 👇 add this to support Credentials login
-  password         String?  // hashed password
-
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-
-  accounts Account[]
-  sessions Session[]
-}
-
-model Account {
-  id                String  @id @default(cuid())
-  userId            String
-  type              String
-  provider          String
-  providerAccountId String
-  refresh_token     String?
-  access_token      String?
-  expires_at        Int?
-  token_type        String?
-  scope             String?
-  id_token          String?
-  session_state     String?
-
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([provider, providerAccountId])
-}
-
-model Session {
-  id           String   @id @default(cuid())
-  sessionToken String   @unique
-  userId       String
-  expires      DateTime
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model VerificationToken {
-  identifier String
-  token      String   @unique
-  expires    DateTime
-
-  @@unique([identifier, token])
 }
