@@ -1,75 +1,78 @@
 // lib/auth.ts
-import type { NextAuthOptions } from "next-auth";
-import CredentialsProvider from "next-auth/providers/credentials";
-import { PrismaAdapter } from "@next-auth/prisma-adapter";
-import { prisma } from "./prisma";
-import bcrypt from "bcryptjs";
-import type { User } from "@prisma/client";
+import type { NextAuthOptions } from 'next-auth';
+import CredentialsProvider from 'next-auth/providers/credentials';
+import { PrismaAdapter } from '@next-auth/prisma-adapter';
+import { prisma } from './prisma';
+import bcrypt from 'bcryptjs';
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
-  session: { strategy: "jwt" },
 
-  // If you also use OAuth providers, add them here.
+  // If you also use OAuth providers, add them here (e.g., Google, GitHub).
   providers: [
     CredentialsProvider({
-      name: "Credentials",
+      name: 'Credentials',
       credentials: {
-        email: { label: "Email", type: "email", placeholder: "you@example.com" },
-        password: { label: "Password", type: "password" },
+        email: { label: 'Email', type: 'email' },
+        password: { label: 'Password', type: 'password' },
       },
       async authorize(credentials) {
-        // Basic input guard
-        const email = credentials?.email?.toLowerCase().trim();
-        const password = credentials?.password;
-        if (!email || !password) return null;
+        if (!credentials?.email || !credentials?.password) return null;
 
-        // Pull the user including password hash
+        // Include password in the selection so TS knows it exists
         const user = await prisma.user.findUnique({
-          where: { email },
+          where: { email: credentials.email },
           select: {
             id: true,
             name: true,
             email: true,
             image: true,
-            role: true,          // enum from your Prisma schema (e.g., USER | ADMIN)
-            password: true,      // make sure your Prisma schema has this field
+            role: true,
+            password: true, // <-- must exist in your Prisma schema
           },
         });
 
-        if (!user?.password) return null;
+        if (!user || !user.password) return null;
 
-        const ok = await bcrypt.compare(password, user.password);
+        const ok = await bcrypt.compare(credentials.password, user.password);
         if (!ok) return null;
 
-        // Return a user object WITHOUT the password
-        const { password: _pw, ...safe } = user;
-        return safe as Omit<typeof user, "password">;
+        // Return object without the password
+        return {
+          id: user.id,
+          name: user.name ?? undefined,
+          email: user.email ?? undefined,
+          image: user.image ?? undefined,
+          // @ts-expect-error add to token in callbacks
+          role: user.role,
+        };
       },
     }),
   ],
 
-  pages: {
-    signIn: "/signin", // adjust if your sign-in route differs
-  },
+  session: { strategy: 'jwt' },
 
   callbacks: {
-    // Put the role on the token
     async jwt({ token, user }) {
+      // Persist role/id from user to token on sign in
       if (user) {
-        const u = user as Pick<User, "id" | "role"> & { email?: string | null };
-        token.id = u.id;
-        token.role = u.role;
+        token.id = user.id;
+        // @ts-ignore
+        if (user.role) token.role = user.role;
       }
       return token;
     },
-    // Expose role/id on the session
     async session({ session, token }) {
-      if (token && session.user) {
+      if (session.user && token) {
+        // @ts-ignore
         session.user.id = token.id as string;
-        session.user.role = token.role as User["role"];
+        // @ts-ignore
+        session.user.role = token.role as string | undefined;
       }
       return session;
     },
   },
+
+  // Important in Vercel/production
+  secret: process.env.NEXTAUTH_SECRET,
 };
