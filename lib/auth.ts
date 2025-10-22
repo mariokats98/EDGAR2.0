@@ -8,7 +8,6 @@ import bcrypt from 'bcryptjs';
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
 
-  // If you also use OAuth providers, add them here (e.g., Google, GitHub).
   providers: [
     CredentialsProvider({
       name: 'Credentials',
@@ -19,7 +18,6 @@ export const authOptions: NextAuthOptions = {
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
 
-        // Include password in the selection so TS knows it exists
         const user = await prisma.user.findUnique({
           where: { email: credentials.email },
           select: {
@@ -28,7 +26,7 @@ export const authOptions: NextAuthOptions = {
             email: true,
             image: true,
             role: true,
-            password: true, // <-- must exist in your Prisma schema
+            password: true,
           },
         });
 
@@ -37,13 +35,12 @@ export const authOptions: NextAuthOptions = {
         const ok = await bcrypt.compare(credentials.password, user.password);
         if (!ok) return null;
 
-        // Return object without the password
+        // Return sanitized user object
         return {
           id: user.id,
           name: user.name ?? undefined,
           email: user.email ?? undefined,
           image: user.image ?? undefined,
-          // @ts-expect-error add to token in callbacks
           role: user.role,
         };
       },
@@ -54,25 +51,21 @@ export const authOptions: NextAuthOptions = {
 
   callbacks: {
     async jwt({ token, user }) {
-      // Persist role/id from user to token on sign in
       if (user) {
         token.id = user.id;
-        // @ts-ignore
-        if (user.role) token.role = user.role;
+        // Add user role to token if exists
+        if ('role' in user) token.role = user.role as string;
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user && token) {
-        // @ts-ignore
-        session.user.id = token.id as string;
-        // @ts-ignore
-        session.user.role = token.role as string | undefined;
+        (session.user as any).id = token.id as string;
+        (session.user as any).role = token.role as string | undefined;
       }
       return session;
     },
   },
 
-  // Important in Vercel/production
   secret: process.env.NEXTAUTH_SECRET,
 };
