@@ -6,7 +6,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  // Match your new Prisma environment variable naming
+  // Uses your new storage_ env var naming
   url      = env("storage_PRISMA_DATABASE_URL")
 }
 
@@ -35,8 +35,10 @@ model User {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
+  // Relations
   accounts         Account[]
   sessions         Session[]
+  subscriptions    Subscription[]  // <-- ✅ back relation added
 }
 
 model Account {
@@ -80,23 +82,20 @@ model VerificationToken {
 //////////////////////////////////////////////////////////
 
 model Subscription {
-  id                String   @id @default(cuid())
-  userId            String
-  stripeSubscriptionId String @unique
-  stripeCustomerId  String
-  stripePriceId     String?
+  id                     String   @id @default(cuid())
+  userId                 String
+  stripeSubscriptionId   String   @unique
+  stripeCustomerId       String
+  stripePriceId          String?
   stripeCurrentPeriodEnd DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 //////////////////////////////////////////////////////////
-// WATCHLIST / CUSTOM DATA (OPTIONAL)
+// (Optional) Example custom model for your app
 //////////////////////////////////////////////////////////
 
-// Example model if you want to store user alerts, filings, etc.
-// Uncomment or expand as needed.
-//
 // model Watchlist {
 //   id        String   @id @default(cuid())
 //   userId    String
