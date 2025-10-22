@@ -25,17 +25,16 @@ export const authOptions: NextAuthOptions = {
             email: true,
             image: true,
             role: true,
-            password: true,
+            password: true, // must exist in your schema
           },
         });
 
         if (!user || !user.password) return null;
 
-        // ✅ Correct lowercase variable
+        // ✅ lowercase "ok" — this was the failing line in the bad file
         const ok = await bcrypt.compare(credentials.password, user.password);
         if (!ok) return null;
 
-        // Return sanitized user object
         return {
           id: user.id,
           name: user.name ?? undefined,
@@ -52,23 +51,22 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
-        token.id = user.id;
-        if ("role" in user) token.role = user.role as string;
+        token.id = (user as any).id;
+        (token as any).role = (user as any).role;
       }
       return token;
     },
-
     async session({ session, token }) {
-      if (session.user && token) {
+      if (session.user) {
         (session.user as any).id = token.id as string;
-        (session.user as any).role = token.role as string | undefined;
+        (session.user as any).role = (token as any).role as string | undefined;
       }
       return session;
     },
   },
 
   pages: {
-    signIn: "/login", // adjust if your login page differs
+    signIn: "/login", // change if your sign-in page differs
   },
 
   secret: process.env.NEXTAUTH_SECRET,
